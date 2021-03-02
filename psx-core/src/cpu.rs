@@ -2,13 +2,10 @@ mod instruction;
 mod instructions_table;
 mod register;
 
+use crate::memory::BusLine;
+
 use instruction::{Instruction, Opcode};
 use register::Registers;
-
-pub trait CpuBusProvider {
-    fn read_u32(&mut self, addr: u32) -> u32;
-    fn write_u32(&mut self, addr: u32, data: u32);
-}
 
 pub struct Cpu {
     regs: Registers,
@@ -22,7 +19,7 @@ impl Cpu {
         }
     }
 
-    pub fn execute_next<P: CpuBusProvider>(&mut self, bus: &mut P) {
+    pub fn execute_next<P: BusLine>(&mut self, bus: &mut P) {
         let instruction = bus.read_u32(self.regs.pc);
         let instruction = Instruction::from_u32(instruction);
 
@@ -58,7 +55,7 @@ impl Cpu {
         self.regs.write_register(instruction.rt, result);
     }
 
-    fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: Instruction, bus: &mut P) {
+    fn execute_instruction<P: BusLine>(&mut self, instruction: Instruction, bus: &mut P) {
         match instruction.opcode {
             //Opcode::Lb => {}
             //Opcode::Lbu => {}
