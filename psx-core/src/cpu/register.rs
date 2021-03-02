@@ -25,7 +25,7 @@ impl RegisterType {
             8..=15 => Self::T(ident - 8),
             16..=23 => Self::S(ident - 16),
             24..=25 => Self::T(ident - 16), // t8 and t9
-            26..=27 => Self::K(ident - 25),
+            26..=27 => Self::K(ident - 26),
             28 => Self::Gp,
             29 => Self::Sp,
             30 => Self::Fp,
