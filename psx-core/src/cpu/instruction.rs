@@ -1,4 +1,5 @@
 use super::instructions_table::{PRIMARY_OPCODES, SECONDARY_OPCODES};
+use super::register::RegisterType;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Opcode {
@@ -52,19 +53,16 @@ pub enum Opcode {
     Lui,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Instruction {
-    opcode: Opcode,
+    pub opcode: Opcode,
 
-    primary_identifier: u8,
-    secondary_identifier: u8,
-
-    imm5: u8,
-    rd: u8,
-    rt: u8,
-    rs: u8,
-    imm16: u16,
-    imm26: u32,
+    pub imm5: u8,
+    pub rd: RegisterType,
+    pub rt: RegisterType,
+    pub rs: RegisterType,
+    pub imm16: u16,
+    pub imm26: u32,
 }
 
 impl Instruction {
@@ -73,8 +71,11 @@ impl Instruction {
         let secondary_identifier = instruction as u8 & 0x3F;
         let imm5 = (instruction >> 6) as u8 & 0x1F;
         let rd = (instruction >> 11) as u8 & 0x1F;
+        let rd = RegisterType::from_byte(rd);
         let rt = (instruction >> 16) as u8 & 0x1F;
+        let rt = RegisterType::from_byte(rt);
         let rs = (instruction >> 21) as u8 & 0x1F;
+        let rs = RegisterType::from_byte(rs);
         // combination of the above
         let imm16 = instruction as u16;
         let imm26 = instruction & 0x3FFFFFF;
@@ -86,10 +87,15 @@ impl Instruction {
             opcode = Self::get_opcode_from_secondary(secondary_identifier);
         }
 
+        if let Opcode::NotImplemented = opcode {
+            println!(
+                "LOG: not implemented opcode: primary = {:02X}, secondary = {:02X}",
+                primary_identifier, secondary_identifier
+            );
+        }
+
         Self {
             opcode,
-            primary_identifier,
-            secondary_identifier,
             imm5,
             rd,
             rt,
