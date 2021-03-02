@@ -2,7 +2,7 @@ mod instruction;
 mod instructions_table;
 mod register;
 
-use instruction::Instruction;
+use instruction::{Instruction, Opcode};
 use register::Registers;
 
 pub trait CpuBusProvider {
@@ -40,66 +40,80 @@ impl Cpu {
 
     fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: Instruction, bus: &mut P) {
         match instruction.opcode {
-            //instruction::Opcode::Lb => {}
-            //instruction::Opcode::Lbu => {}
-            //instruction::Opcode::Lh => {}
-            //instruction::Opcode::Lhu => {}
-            //instruction::Opcode::Lw => {}
-            //instruction::Opcode::Lwl => {}
-            //instruction::Opcode::Lwr => {}
-            //instruction::Opcode::Sb => {}
-            //instruction::Opcode::Sh => {}
-            instruction::Opcode::Sw => {
+            //Opcode::Lb => {}
+            //Opcode::Lbu => {}
+            //Opcode::Lh => {}
+            //Opcode::Lhu => {}
+            //Opcode::Lw => {}
+            //Opcode::Lwl => {}
+            //Opcode::Lwr => {}
+            //Opcode::Sb => {}
+            //Opcode::Sh => {}
+            Opcode::Sw => {
                 let rs = self.regs.read_register(instruction.rs);
                 let rt = self.regs.read_register(instruction.rt);
                 // TODO: check if wrapping or not
                 let computed_addr = rs + (instruction.imm16 as u32);
                 bus.write_u32(computed_addr, rt);
             }
-            //instruction::Opcode::Swl => {}
-            //instruction::Opcode::Swr => {}
-            //instruction::Opcode::Slt => {}
-            //instruction::Opcode::Sltu => {}
-            //instruction::Opcode::Slti => {}
-            //instruction::Opcode::Sltiu => {}
-            //instruction::Opcode::Addu => {}
-            //instruction::Opcode::Add => {}
-            //instruction::Opcode::Subu => {}
-            //instruction::Opcode::Sub => {}
-            instruction::Opcode::Addiu => {
+            //Opcode::Swl => {}
+            //Opcode::Swr => {}
+            //Opcode::Slt => {}
+            //Opcode::Sltu => {}
+            //Opcode::Slti => {}
+            //Opcode::Sltiu => {}
+            //Opcode::Addu => {}
+            //Opcode::Add => {}
+            //Opcode::Subu => {}
+            //Opcode::Sub => {}
+            Opcode::Addiu => {
                 let rs = self.regs.read_register(instruction.rs);
                 let result = rs.wrapping_add(Self::sign_extend(instruction.imm16));
                 self.regs.write_register(instruction.rt, result);
             }
-            //instruction::Opcode::Addi => {}
-            //instruction::Opcode::And => {}
-            //instruction::Opcode::Or => {}
-            //instruction::Opcode::Xor => {}
-            //instruction::Opcode::Nor => {}
-            //instruction::Opcode::Andi => {}
-            instruction::Opcode::Ori => {
+            //Opcode::Addi => {}
+            //Opcode::And => {}
+            //Opcode::Or => {}
+            //Opcode::Xor => {}
+            //Opcode::Nor => {}
+            //Opcode::Andi => {}
+            Opcode::Ori => {
                 let rs = self.regs.read_register(instruction.rs);
                 let result = rs | (instruction.imm16 as u32);
                 self.regs.write_register(instruction.rt, result);
             }
-            //instruction::Opcode::Xori => {}
-            //instruction::Opcode::Sllv => {}
-            //instruction::Opcode::Srlv => {}
-            //instruction::Opcode::Srav => {}
-            instruction::Opcode::Sll => {
+            //Opcode::Xori => {}
+            //Opcode::Sllv => {}
+            //Opcode::Srlv => {}
+            //Opcode::Srav => {}
+            Opcode::Sll => {
                 let rt = self.regs.read_register(instruction.rt);
                 let result = rt << instruction.imm5;
                 self.regs.write_register(instruction.rd, result);
             }
-            //instruction::Opcode::Srl => {}
-            //instruction::Opcode::Sra => {}
-            instruction::Opcode::Lui => {
+            //Opcode::Srl => {}
+            //Opcode::Sra => {}
+            Opcode::Lui => {
                 let result = (instruction.imm16 as u32) << 16;
                 self.regs.write_register(instruction.rt, result);
             }
-            instruction::Opcode::Special => unreachable!(),
-            instruction::Opcode::Invalid => unreachable!(),
-            instruction::Opcode::NotImplemented => todo!("opcode not registered"),
+            Opcode::J => {
+                let base = self.regs.pc & 0xF0000000;
+                let offset = instruction.imm26 * 4;
+
+                self.regs.pc = base + offset;
+            }
+            //Opcode::Jal => {}
+            //Opcode::Jr => {}
+            //Opcode::Jalr => {}
+            //Opcode::Beq => {}
+            //Opcode::Bne => {}
+            //Opcode::Bgtz => {}
+            //Opcode::Blez => {}
+            //Opcode::Bcondz => {}
+            Opcode::Special => unreachable!(),
+            Opcode::Invalid => unreachable!(),
+            Opcode::NotImplemented => todo!("opcode not registered"),
             _ => todo!("unimplemented_instruction {:?}", instruction.opcode),
         }
     }

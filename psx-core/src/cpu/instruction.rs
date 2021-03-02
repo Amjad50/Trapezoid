@@ -7,6 +7,7 @@ pub enum Opcode {
     Invalid,
     NotImplemented,
 
+    // (u) means unsigned, (t) means overflow trap, (i) means immediate
     Lb,
     Lbu,
     Lh,
@@ -23,7 +24,6 @@ pub enum Opcode {
     Swl,
     Swr,
 
-    // (u) means unsigned, (t) means overflow trap, (i) means immediate
     Slt,
     Sltu,
     Slti,
@@ -51,6 +51,26 @@ pub enum Opcode {
     Srl,
     Sra,
     Lui,
+
+    J,
+    Jal,
+
+    Jr,
+    Jalr,
+
+    Beq,
+    Bne,
+    Bgtz,
+    Blez,
+
+    /// depending on the value of `rt` it will execute:
+    ///  rt   | instr
+    /// ---------------
+    ///  0x00 | Bltz
+    ///  0x01 | Bgez
+    ///  0x10 | Bltzal
+    ///  0x11 | Bgezal
+    Bcondz,
 }
 
 #[derive(Clone, Copy, Debug)]
