@@ -172,6 +172,56 @@ impl Cpu {
                 let result = (instruction.imm16 as u32) << 16;
                 self.regs.write_register(instruction.rt, result);
             }
+            Opcode::Mult => {
+                let rs = self.regs.read_register(instruction.rs) as i32 as i64;
+                let rt = self.regs.read_register(instruction.rt) as i32 as i64;
+
+                let result = (rs * rt) as u64;
+
+                self.regs.hi = (result >> 32) as u32;
+                self.regs.lo = result as u32;
+            }
+            Opcode::Multu => {
+                let rs = self.regs.read_register(instruction.rs) as u64;
+                let rt = self.regs.read_register(instruction.rt) as u64;
+
+                let result = rs * rt;
+
+                self.regs.hi = (result >> 32) as u32;
+                self.regs.lo = result as u32;
+            }
+            Opcode::Div => {
+                let rs = self.regs.read_register(instruction.rs) as i32 as i64;
+                let rt = self.regs.read_register(instruction.rt) as i32 as i64;
+
+                let div = (rs / rt) as u32;
+                let remainder = (rs % rt) as u32;
+
+                self.regs.hi = remainder;
+                self.regs.lo = div;
+            }
+            Opcode::Divu => {
+                let rs = self.regs.read_register(instruction.rs) as u64;
+                let rt = self.regs.read_register(instruction.rt) as u64;
+
+                let div = (rs / rt) as u32;
+                let remainder = (rs % rt) as u32;
+
+                self.regs.hi = remainder;
+                self.regs.lo = div;
+            }
+            Opcode::Mfhi => {
+                self.regs.write_register(instruction.rd, self.regs.hi);
+            }
+            Opcode::Mthi => {
+                self.regs.hi = self.regs.read_register(instruction.rs);
+            }
+            Opcode::Mflo => {
+                self.regs.write_register(instruction.rd, self.regs.lo);
+            }
+            Opcode::Mtlo => {
+                self.regs.lo = self.regs.read_register(instruction.rs);
+            }
             Opcode::J => {
                 let base = self.regs.pc & 0xF0000000;
                 let offset = instruction.imm26 * 4;
@@ -179,13 +229,17 @@ impl Cpu {
                 self.regs.pc = base + offset;
             }
             //Opcode::Jal => {}
-            //Opcode::Jr => {}
+            Opcode::Jr => {
+                self.regs.pc = self.regs.read_register(instruction.rs);
+            }
             //Opcode::Jalr => {}
             //Opcode::Beq => {}
             //Opcode::Bne => {}
             //Opcode::Bgtz => {}
             //Opcode::Blez => {}
             //Opcode::Bcondz => {}
+            //Opcode::Syscall => {}
+            //Opcode::Break => {}
             Opcode::Special => unreachable!(),
             Opcode::Invalid => unreachable!(),
             Opcode::NotImplemented => todo!("opcode not registered"),

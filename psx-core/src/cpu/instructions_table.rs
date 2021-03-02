@@ -72,6 +72,7 @@ pub(super) const PRIMARY_OPCODES: &[Opcode; 0x40] = &[
     Invalid,
 ];
 
+#[rustfmt::skip]
 pub(super) const SECONDARY_OPCODES: &[Opcode; 0x40] = &[
     // 0x00
     Sll,
@@ -86,23 +87,23 @@ pub(super) const SECONDARY_OPCODES: &[Opcode; 0x40] = &[
     Jalr,
     Invalid,
     Invalid,
-    NotImplemented,
-    NotImplemented,
+    Syscall,
+    Break,
     Invalid,
     Invalid,
     // 0x10
-    NotImplemented,
-    NotImplemented,
-    NotImplemented,
-    NotImplemented,
+    Mfhi,
+    Mthi,
+    Mflo,
+    Mtlo,
     Invalid,
     Invalid,
     Invalid,
     Invalid,
-    NotImplemented,
-    NotImplemented,
-    NotImplemented,
-    NotImplemented,
+    Mult,
+    Multu,
+    Div,
+    Divu,
     Invalid,
     Invalid,
     Invalid,

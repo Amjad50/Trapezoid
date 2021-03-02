@@ -52,6 +52,16 @@ pub enum Opcode {
     Sra,
     Lui,
 
+    Mult,
+    Multu,
+    Div,
+    Divu,
+
+    Mfhi,
+    Mthi,
+    Mflo,
+    Mtlo,
+
     J,
     Jal,
 
@@ -71,6 +81,9 @@ pub enum Opcode {
     ///  0x10 | Bltzal
     ///  0x11 | Bgezal
     Bcondz,
+
+    Syscall,
+    Break,
 }
 
 #[derive(Clone, Copy, Debug)]
