@@ -1,3 +1,8 @@
+mod instruction;
+mod instructions_table;
+
+use instruction::Instruction;
+
 pub trait CpuBusProvider {
     fn read(&mut self, addr: u32) -> u8;
     fn write(&mut self, addr: u32, data: u8);
@@ -17,24 +22,11 @@ impl Cpu {
 
     pub fn execute_next<P: CpuBusProvider>(&mut self, bus: &mut P) {
         let instruction = Self::read_u32(bus, self.reg_pc);
+        let instruction = Instruction::from_u32(instruction);
 
         self.reg_pc += 4;
 
-        let primary = (instruction >> 26) as u8;
-        let secondary = instruction as u8 & 0x3F;
-        let imm5 = (instruction >> 6) as u8 & 0x1F;
-        let rd = (instruction >> 11) as u8 & 0x1F;
-        let rt = (instruction >> 16) as u8 & 0x1F;
-        let rs = (instruction >> 21) as u8 & 0x1F;
-        // combination of the above
-        let imm16 = instruction as u16;
-        let imm26 = instruction & 0x3FFFFFF;
-
-        println!("instrction 0x{0:08X}, 0b{0:032b}", instruction);
-        println!(
-            "{0:06b}({0:02X}) {1:05b}({1:02X}) {2:05b}({2:02X}) {3:05b}({3:02X}) {4:05b}({4:02X}) {5:06b}({5:02X})",
-            primary, rs, rt, rd, imm5, secondary
-        );
+        println!("{:02X?}", instruction);
     }
 }
 
