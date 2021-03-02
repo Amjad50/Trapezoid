@@ -3,3 +3,10 @@
 [[package]]
 name = "psx"
 version = "0.1.0"
+dependencies = [
+ "psx-core",
+]
+
+[[package]]
+name = "psx-core"
+version = "0.1.0"
