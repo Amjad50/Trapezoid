@@ -2,6 +2,8 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use byteorder::{ByteOrder, LittleEndian};
+
 use crate::cpu::CpuBusProvider;
 
 pub struct Bios {
@@ -20,10 +22,10 @@ impl Bios {
         Ok(Self { data })
     }
 
-    pub fn read(&self, addr: u32) -> u8 {
+    pub fn read_u32(&self, addr: u32) -> u32 {
         let index = (addr & 0xFFFFF) as usize;
 
-        self.data[index]
+        LittleEndian::read_u32(&self.data[index..index + 4])
     }
 }
 
@@ -38,16 +40,32 @@ impl CpuBus {
 }
 
 impl CpuBusProvider for CpuBus {
-    fn read(&mut self, addr: u32) -> u8 {
+    fn read_u32(&mut self, addr: u32) -> u32 {
+        assert!(addr % 4 == 0, "unalligned read");
+
         match addr {
-            0xBFC00000..=0xBFC80000 => self.bios.read(addr),
+            0xBFC00000..=0xBFC80000 => self.bios.read_u32(addr),
             _ => {
-                todo!()
+                todo!("read from {:08X}", addr)
             }
         }
     }
 
-    fn write(&mut self, addr: u32, data: u8) {
-        todo!()
+    fn write_u32(&mut self, addr: u32, data: u32) {
+        assert!(addr % 4 == 0, "unalligned write");
+
+        match addr {
+            // hw registers
+            0x1F801010 => {
+                assert!(
+                    data == 0x0013243F,
+                    "0x1F801010 write does not equal 0x0013243F, instead {:08X}",
+                    data
+                )
+            }
+            _ => {
+                todo!("write to {:08X}", addr)
+            }
+        }
     }
 }

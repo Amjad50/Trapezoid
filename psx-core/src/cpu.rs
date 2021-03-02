@@ -6,8 +6,8 @@ use instruction::Instruction;
 use register::Registers;
 
 pub trait CpuBusProvider {
-    fn read(&mut self, addr: u32) -> u8;
-    fn write(&mut self, addr: u32, data: u8);
+    fn read_u32(&mut self, addr: u32) -> u32;
+    fn write_u32(&mut self, addr: u32, data: u32);
 }
 
 pub struct Cpu {
@@ -23,7 +23,7 @@ impl Cpu {
     }
 
     pub fn execute_next<P: CpuBusProvider>(&mut self, bus: &mut P) {
-        let instruction = Self::read_u32(bus, self.regs.pc);
+        let instruction = bus.read_u32(self.regs.pc);
         let instruction = Instruction::from_u32(instruction);
 
         self.regs.pc += 4;
@@ -45,7 +45,13 @@ impl Cpu {
             //instruction::Opcode::Lwr => {}
             //instruction::Opcode::Sb => {}
             //instruction::Opcode::Sh => {}
-            //instruction::Opcode::Sw => {}
+            instruction::Opcode::Sw => {
+                let rs = self.regs.read_register(instruction.rs);
+                let rt = self.regs.read_register(instruction.rt);
+                // TODO: check if wrapping or not
+                let computed_addr = rs + (instruction.imm16 as u32);
+                bus.write_u32(computed_addr, rt);
+            }
             //instruction::Opcode::Swl => {}
             //instruction::Opcode::Swr => {}
             //instruction::Opcode::Slt => {}
@@ -64,8 +70,8 @@ impl Cpu {
             //instruction::Opcode::Nor => {}
             //instruction::Opcode::Andi => {}
             instruction::Opcode::Ori => {
-                let inp = self.regs.read_register(instruction.rs);
-                let result = inp | (instruction.imm16 as u32);
+                let rs = self.regs.read_register(instruction.rs);
+                let result = rs | (instruction.imm16 as u32);
                 self.regs.write_register(instruction.rt, result);
             }
             //instruction::Opcode::Xori => {}
@@ -84,21 +90,5 @@ impl Cpu {
             instruction::Opcode::NotImplemented => todo!("opcode not registered"),
             _ => todo!("unimplemented_instruction {:?}", instruction.opcode),
         }
-    }
-}
-
-impl Cpu {
-    fn read_u32<P: CpuBusProvider>(bus: &mut P, addr: u32) -> u32 {
-        let mut result = 0;
-
-        // little endian
-        for new_addr in (addr..addr + 4).rev() {
-            let byte = bus.read(new_addr);
-
-            result <<= 8;
-            result |= byte as u32;
-        }
-
-        result
     }
 }
