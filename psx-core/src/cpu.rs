@@ -38,13 +38,40 @@ impl Cpu {
         data as i16 as i32 as u32
     }
 
+    fn execute_alu_reg<F>(&mut self, instruction: Instruction, handler: F)
+    where
+        F: FnOnce(u32, u32) -> u32,
+    {
+        let rs = self.regs.read_register(instruction.rs);
+        let rt = self.regs.read_register(instruction.rt);
+
+        let result = handler(rs, rt);
+        self.regs.write_register(instruction.rd, result);
+    }
+
+    fn execute_alu_imm<F>(&mut self, instruction: Instruction, handler: F)
+    where
+        F: FnOnce(u32, &Instruction) -> u32,
+    {
+        let rs = self.regs.read_register(instruction.rs);
+        let result = handler(rs, &instruction);
+        self.regs.write_register(instruction.rt, result);
+    }
+
     fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: Instruction, bus: &mut P) {
         match instruction.opcode {
             //Opcode::Lb => {}
             //Opcode::Lbu => {}
             //Opcode::Lh => {}
             //Opcode::Lhu => {}
-            //Opcode::Lw => {}
+            Opcode::Lw => {
+                let rs = self.regs.read_register(instruction.rs);
+                // TODO: check if wrapping or not
+                let computed_addr = rs + (instruction.imm16 as u32);
+                let data = bus.read_u32(computed_addr);
+
+                self.regs.write_register(instruction.rt, data);
+            }
             //Opcode::Lwl => {}
             //Opcode::Lwr => {}
             //Opcode::Sb => {}
@@ -58,41 +85,89 @@ impl Cpu {
             }
             //Opcode::Swl => {}
             //Opcode::Swr => {}
-            //Opcode::Slt => {}
-            //Opcode::Sltu => {}
-            //Opcode::Slti => {}
-            //Opcode::Sltiu => {}
-            //Opcode::Addu => {}
+            Opcode::Slt => {
+                let rs = self.regs.read_register(instruction.rs) as i32;
+                let rt = self.regs.read_register(instruction.rt) as i32;
+
+                self.regs.write_register(instruction.rd, (rs < rt) as u32);
+            }
+            Opcode::Sltu => {
+                let rs = self.regs.read_register(instruction.rs);
+                let rt = self.regs.read_register(instruction.rt);
+
+                self.regs.write_register(instruction.rd, (rs < rt) as u32);
+            }
+            Opcode::Slti => {
+                let rs = self.regs.read_register(instruction.rs) as i32;
+                let imm = instruction.imm16 as i16 as i32;
+
+                self.regs.write_register(instruction.rd, (rs < imm) as u32);
+            }
+            Opcode::Sltiu => {
+                let rs = self.regs.read_register(instruction.rs);
+                let imm = Self::sign_extend(instruction.imm16);
+
+                self.regs.write_register(instruction.rd, (rs < imm) as u32);
+            }
+            Opcode::Addu => {
+                self.execute_alu_reg(instruction, |rs, rt| rs.wrapping_add(rt));
+            }
             //Opcode::Add => {}
-            //Opcode::Subu => {}
+            Opcode::Subu => {
+                self.execute_alu_reg(instruction, |rs, rt| rs.wrapping_sub(rt));
+            }
             //Opcode::Sub => {}
             Opcode::Addiu => {
-                let rs = self.regs.read_register(instruction.rs);
-                let result = rs.wrapping_add(Self::sign_extend(instruction.imm16));
-                self.regs.write_register(instruction.rt, result);
+                self.execute_alu_imm(instruction, |rs, instr| {
+                    rs.wrapping_add(Self::sign_extend(instr.imm16))
+                });
             }
             //Opcode::Addi => {}
-            //Opcode::And => {}
-            //Opcode::Or => {}
-            //Opcode::Xor => {}
-            //Opcode::Nor => {}
-            //Opcode::Andi => {}
-            Opcode::Ori => {
-                let rs = self.regs.read_register(instruction.rs);
-                let result = rs | (instruction.imm16 as u32);
-                self.regs.write_register(instruction.rt, result);
+            Opcode::And => {
+                self.execute_alu_reg(instruction, |rs, rt| rs & rt);
             }
-            //Opcode::Xori => {}
-            //Opcode::Sllv => {}
-            //Opcode::Srlv => {}
-            //Opcode::Srav => {}
+            Opcode::Or => {
+                self.execute_alu_reg(instruction, |rs, rt| rs | rt);
+            }
+            Opcode::Xor => {
+                self.execute_alu_reg(instruction, |rs, rt| rs ^ rt);
+            }
+            Opcode::Nor => {
+                self.execute_alu_reg(instruction, |rs, rt| !(rs | rt));
+            }
+            Opcode::Andi => {
+                self.execute_alu_imm(instruction, |rs, instr| rs & (instr.imm16 as u32));
+            }
+            Opcode::Ori => {
+                self.execute_alu_imm(instruction, |rs, instr| rs | (instr.imm16 as u32));
+            }
+            Opcode::Xori => {
+                self.execute_alu_imm(instruction, |rs, instr| rs ^ (instr.imm16 as u32));
+            }
+            Opcode::Sllv => {
+                self.execute_alu_reg(instruction, |rs, rt| rt << (rs & 0x1F));
+            }
+            Opcode::Srlv => {
+                self.execute_alu_reg(instruction, |rs, rt| rt >> (rs & 0x1F));
+            }
+            Opcode::Srav => {
+                self.execute_alu_reg(instruction, |rs, rt| ((rs as i32) >> rt) as u32);
+            }
             Opcode::Sll => {
                 let rt = self.regs.read_register(instruction.rt);
                 let result = rt << instruction.imm5;
                 self.regs.write_register(instruction.rd, result);
             }
-            //Opcode::Srl => {}
-            //Opcode::Sra => {}
+            Opcode::Srl => {
+                let rt = self.regs.read_register(instruction.rt);
+                let result = rt >> instruction.imm5;
+                self.regs.write_register(instruction.rd, result);
+            }
+            Opcode::Sra => {
+                let rt = self.regs.read_register(instruction.rt);
+                let result = ((rt as i32) >> instruction.imm5) as u32;
+                self.regs.write_register(instruction.rd, result);
+            }
             Opcode::Lui => {
                 let result = (instruction.imm16 as u32) << 16;
                 self.regs.write_register(instruction.rt, result);
