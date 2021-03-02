@@ -34,6 +34,10 @@ impl Cpu {
 }
 
 impl Cpu {
+    fn sign_extend(data: u16) -> u32 {
+        data as i16 as i32 as u32
+    }
+
     fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: Instruction, bus: &mut P) {
         match instruction.opcode {
             //instruction::Opcode::Lb => {}
@@ -62,7 +66,11 @@ impl Cpu {
             //instruction::Opcode::Add => {}
             //instruction::Opcode::Subu => {}
             //instruction::Opcode::Sub => {}
-            //instruction::Opcode::Addiu => {}
+            instruction::Opcode::Addiu => {
+                let rs = self.regs.read_register(instruction.rs);
+                let result = rs.wrapping_add(Self::sign_extend(instruction.imm16));
+                self.regs.write_register(instruction.rt, result);
+            }
             //instruction::Opcode::Addi => {}
             //instruction::Opcode::And => {}
             //instruction::Opcode::Or => {}
@@ -78,7 +86,11 @@ impl Cpu {
             //instruction::Opcode::Sllv => {}
             //instruction::Opcode::Srlv => {}
             //instruction::Opcode::Srav => {}
-            //instruction::Opcode::Sll => {}
+            instruction::Opcode::Sll => {
+                let rt = self.regs.read_register(instruction.rt);
+                let result = rt << instruction.imm5;
+                self.regs.write_register(instruction.rd, result);
+            }
             //instruction::Opcode::Srl => {}
             //instruction::Opcode::Sra => {}
             instruction::Opcode::Lui => {

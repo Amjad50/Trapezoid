@@ -59,10 +59,17 @@ impl CpuBusProvider for CpuBus {
             0x1F801010 => {
                 assert!(
                     data == 0x0013243F,
-                    "0x1F801010 write does not equal 0x0013243F, instead {:08X}",
+                    "{:08X} write does not equal 0x0013243F, instead {:08X}",
+                    addr,
                     data
                 )
             }
+            0x1F801060 => assert!(
+                data == 0xB88,
+                "{:08X} write does not equal 0xB88, instead {:08X}",
+                addr,
+                data
+            ),
             _ => {
                 todo!("write to {:08X}", addr)
             }
