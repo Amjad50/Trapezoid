@@ -73,11 +73,8 @@ impl BusLine for CacheControl {
     }
 
     fn write_u32(&mut self, _addr: u32, data: u32) {
-        assert_eq!(
-            data, 0x804,
-            "cache_control value is wrong, should be 0x804, got {:08X}",
-            data
-        );
+        // TODO: implement this registerproperly
+        println!("LOG cache control written with {:08X}", data);
         self.0 = data;
     }
 }
