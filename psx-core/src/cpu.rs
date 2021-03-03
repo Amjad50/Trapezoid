@@ -219,7 +219,13 @@ impl Cpu {
                     rs.wrapping_add(Self::sign_extend(instr.imm16))
                 });
             }
-            //Opcode::Addi => {}
+            Opcode::Addi => {
+                self.execute_alu_imm(instruction, |rs, instr| {
+                    // TODO: implement overflow trap
+                    rs.checked_add(Self::sign_extend(instr.imm16))
+                        .expect("overflow trap")
+                });
+            }
             Opcode::And => {
                 self.execute_alu_reg(instruction, |rs, rt| rs & rt);
             }
