@@ -1,4 +1,5 @@
 mod memory_control;
+mod ram;
 
 use std::fs::File;
 use std::io::Read;
@@ -7,6 +8,7 @@ use std::path::Path;
 use byteorder::{ByteOrder, LittleEndian};
 
 use memory_control::{CacheControl, MemoryControl1, MemoryControl2};
+use ram::MainRam;
 
 pub trait BusLine {
     fn read_u32(&mut self, addr: u32) -> u32;
@@ -41,6 +43,8 @@ pub struct CpuBus {
     mem_ctrl_1: MemoryControl1,
     mem_ctrl_2: MemoryControl2,
     cache_control: CacheControl,
+
+    main_ram: MainRam,
 }
 
 impl CpuBus {
@@ -50,6 +54,7 @@ impl CpuBus {
             mem_ctrl_1: MemoryControl1::default(),
             mem_ctrl_2: MemoryControl2::default(),
             cache_control: CacheControl::default(),
+            main_ram: MainRam::default(),
         }
     }
 }
@@ -59,6 +64,7 @@ impl BusLine for CpuBus {
         assert!(addr % 4 == 0, "unalligned read");
 
         match addr {
+            0x00000000..=0x00200000 => self.main_ram.read_u32(addr),
             0xBFC00000..=0xBFC80000 => self.bios.read_u32(addr),
             0x1F801000..=0x1F801020 => self.mem_ctrl_1.read_u32(addr),
             0x1F801060 => self.mem_ctrl_2.read_u32(addr),
@@ -73,6 +79,7 @@ impl BusLine for CpuBus {
         assert!(addr % 4 == 0, "unalligned write");
 
         match addr {
+            0x00000000..=0x00200000 => self.main_ram.write_u32(addr, data),
             0x1F801000..=0x1F801020 => self.mem_ctrl_1.write_u32(addr, data),
             0x1F801060 => self.mem_ctrl_2.write_u32(addr, data),
             0xFFFE0130 => self.cache_control.write_u32(addr, data),
