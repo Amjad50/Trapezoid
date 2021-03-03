@@ -237,9 +237,18 @@ impl Cpu {
             //Opcode::Bcondz => {}
             //Opcode::Syscall => {}
             //Opcode::Break => {}
+            //Opcode::Cop(_) => {}
+            //Opcode::Mfc(_) => {}
+            //Opcode::Cfc(_) => {}
+            //Opcode::Mtc(_) => {}
+            //Opcode::Ctc(_) => {}
+            //Opcode::Bcf(_) => {}
+            //Opcode::Bct(_) => {}
+            //Opcode::Rfe => {}
+            //Opcode::Lwc(_) => {}
+            //Opcode::Swc(_) => {}
             Opcode::Special => unreachable!(),
             Opcode::Invalid => unreachable!(),
-            Opcode::NotImplemented => todo!("opcode not registered"),
             _ => todo!("unimplemented_instruction {:?}", instruction.opcode),
         }
     }
