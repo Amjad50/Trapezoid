@@ -83,6 +83,8 @@ impl SystemControlCoprocessor {
 pub struct Cpu {
     regs: Registers,
     cop0: SystemControlCoprocessor,
+
+    jump_dest_next: Option<u32>,
 }
 
 impl Cpu {
@@ -91,6 +93,7 @@ impl Cpu {
             // reset value
             regs: Registers::new(),
             cop0: SystemControlCoprocessor::default(),
+            jump_dest_next: None,
         }
     }
 
@@ -99,6 +102,10 @@ impl Cpu {
         let instruction = Instruction::from_u32(instruction);
 
         self.regs.pc += 4;
+
+        if let Some(jump_dest) = self.jump_dest_next.take() {
+            self.regs.pc = jump_dest;
+        }
 
         println!("{:02X?}", instruction);
         self.execute_instruction(instruction, bus);
@@ -128,6 +135,24 @@ impl Cpu {
         let rs = self.regs.read_register(instruction.rs);
         let result = handler(rs, &instruction);
         self.regs.write_register(instruction.rt, result);
+    }
+
+    fn execute_branch<F>(&mut self, instruction: Instruction, have_rt: bool, handler: F)
+    where
+        F: FnOnce(u32, u32) -> bool,
+    {
+        // FIXME: are rs and rt signed?
+        let rs = self.regs.read_register(instruction.rs);
+        let rt = if have_rt {
+            self.regs.read_register(instruction.rt)
+        } else {
+            0
+        };
+        let signed_imm16 = Self::sign_extend(instruction.imm16).wrapping_mul(4);
+
+        if handler(rs, rt) {
+            self.jump_dest_next = Some(self.regs.pc.wrapping_add(signed_imm16));
+        }
     }
 
     fn execute_instruction<P: BusLine>(&mut self, instruction: Instruction, bus: &mut P) {
@@ -298,17 +323,25 @@ impl Cpu {
                 let base = self.regs.pc & 0xF0000000;
                 let offset = instruction.imm26 * 4;
 
-                self.regs.pc = base + offset;
+                self.jump_dest_next = Some(base + offset);
             }
             //Opcode::Jal => {}
             Opcode::Jr => {
-                self.regs.pc = self.regs.read_register(instruction.rs);
+                self.jump_dest_next = Some(self.regs.read_register(instruction.rs));
             }
             //Opcode::Jalr => {}
-            //Opcode::Beq => {}
-            //Opcode::Bne => {}
-            //Opcode::Bgtz => {}
-            //Opcode::Blez => {}
+            Opcode::Beq => {
+                self.execute_branch(instruction, true, |rs, rt| rs == rt);
+            }
+            Opcode::Bne => {
+                self.execute_branch(instruction, true, |rs, rt| rs != rt);
+            }
+            Opcode::Bgtz => {
+                self.execute_branch(instruction, false, |rs, _| rs > 0);
+            }
+            Opcode::Blez => {
+                self.execute_branch(instruction, false, |rs, _| rs <= 0);
+            }
             //Opcode::Bcondz => {}
             //Opcode::Syscall => {}
             //Opcode::Break => {}
