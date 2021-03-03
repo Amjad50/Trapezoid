@@ -29,7 +29,7 @@ impl SystemControlCoprocessor {
         0
     }
 
-    pub fn write_ctrl(&mut self, num: u8, data: u32) {
+    pub fn write_ctrl(&mut self, num: u8, _data: u32) {
         assert!(num <= 0x1F);
         // no contrl registers
     }
