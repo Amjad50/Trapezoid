@@ -352,7 +352,14 @@ impl Cpu {
 
                 self.jump_dest_next = Some(base + offset);
             }
-            //Opcode::Jal => {}
+            Opcode::Jal => {
+                let base = self.regs.pc & 0xF0000000;
+                let offset = instruction.imm26 * 4;
+
+                self.jump_dest_next = Some(base + offset);
+
+                self.regs.ra = self.regs.pc + 4;
+            }
             Opcode::Jr => {
                 self.jump_dest_next = Some(self.regs.read_register(instruction.rs));
             }
