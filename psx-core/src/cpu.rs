@@ -98,6 +98,7 @@ impl Cpu {
     }
 
     pub fn execute_next<P: BusLine>(&mut self, bus: &mut P) {
+        let pc = self.regs.pc;
         let instruction = bus.read_u32(self.regs.pc);
         let instruction = Instruction::from_u32(instruction);
 
@@ -107,7 +108,7 @@ impl Cpu {
             self.regs.pc = jump_dest;
         }
 
-        println!("{:02X?}", instruction);
+        println!("{:08X}: {:02X?}", pc, instruction);
         self.execute_instruction(instruction, bus);
     }
 }
