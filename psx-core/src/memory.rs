@@ -9,7 +9,7 @@ use std::path::Path;
 use byteorder::{ByteOrder, LittleEndian};
 
 use crate::spu::SpuRegisters;
-use expansion_regions::ExpansionRegion2;
+use expansion_regions::{ExpansionRegion1, ExpansionRegion2};
 use memory_control::{CacheControl, MemoryControl1, MemoryControl2};
 use ram::MainRam;
 
@@ -69,6 +69,7 @@ pub struct CpuBus {
 
     spu_registers: SpuRegisters,
 
+    expansion_region_1: ExpansionRegion1,
     expansion_region_2: ExpansionRegion2,
 }
 
@@ -81,6 +82,7 @@ impl CpuBus {
             cache_control: CacheControl::default(),
             main_ram: MainRam::default(),
             spu_registers: SpuRegisters::default(),
+            expansion_region_1: ExpansionRegion1::default(),
             expansion_region_2: ExpansionRegion2::default(),
         }
     }
@@ -147,6 +149,7 @@ impl BusLine for CpuBus {
     }
     fn read_u8(&mut self, addr: u32) -> u8 {
         match addr {
+            0x1F000000..=0x1F080000 => self.expansion_region_1.read_u8(addr & 0xFFFFF),
             0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
             _ => {
@@ -157,6 +160,7 @@ impl BusLine for CpuBus {
 
     fn write_u8(&mut self, addr: u32, data: u8) {
         match addr {
+            0x1F000000..=0x1F080000 => self.expansion_region_1.write_u8(addr & 0xFFFFF, data),
             0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),
             _ => {
                 todo!("u8 write to {:08X}", addr)
