@@ -13,6 +13,9 @@ use ram::MainRam;
 pub trait BusLine {
     fn read_u32(&mut self, addr: u32) -> u32;
     fn write_u32(&mut self, addr: u32, data: u32);
+
+    fn read_u16(&mut self, addr: u32) -> u16;
+    fn write_u16(&mut self, addr: u32, data: u16);
 }
 
 pub struct Bios {
@@ -61,7 +64,7 @@ impl CpuBus {
 
 impl BusLine for CpuBus {
     fn read_u32(&mut self, addr: u32) -> u32 {
-        assert!(addr % 4 == 0, "unalligned read");
+        assert!(addr % 4 == 0, "unalligned u32 read");
 
         match addr {
             0x00000000..=0x00200000 => self.main_ram.read_u32(addr),
@@ -70,13 +73,13 @@ impl BusLine for CpuBus {
             0x1F801060 => self.mem_ctrl_2.read_u32(addr),
             0xFFFE0130 => self.cache_control.read_u32(addr),
             _ => {
-                todo!("read from {:08X}", addr)
+                todo!("u32 read from {:08X}", addr)
             }
         }
     }
 
     fn write_u32(&mut self, addr: u32, data: u32) {
-        assert!(addr % 4 == 0, "unalligned write");
+        assert!(addr % 4 == 0, "unalligned u32 write");
 
         match addr {
             0x00000000..=0x00200000 => self.main_ram.write_u32(addr, data),
@@ -84,7 +87,27 @@ impl BusLine for CpuBus {
             0x1F801060 => self.mem_ctrl_2.write_u32(addr, data),
             0xFFFE0130 => self.cache_control.write_u32(addr, data),
             _ => {
-                todo!("write to {:08X}", addr)
+                todo!("u32 write to {:08X}", addr)
+            }
+        }
+    }
+
+    fn read_u16(&mut self, addr: u32) -> u16 {
+        assert!(addr % 2 == 0, "unalligned u16 read");
+
+        match addr {
+            _ => {
+                todo!("u16 write to {:08X}", addr)
+            }
+        }
+    }
+
+    fn write_u16(&mut self, addr: u32, _data: u16) {
+        assert!(addr % 2 == 0, "unalligned u16 write");
+
+        match addr {
+            _ => {
+                todo!("u16 write to {:08X}", addr)
             }
         }
     }

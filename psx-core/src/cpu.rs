@@ -159,8 +159,22 @@ impl Cpu {
         match instruction.opcode {
             //Opcode::Lb => {}
             //Opcode::Lbu => {}
-            //Opcode::Lh => {}
-            //Opcode::Lhu => {}
+            Opcode::Lh => {
+                let rs = self.regs.read_register(instruction.rs);
+                let computed_addr = rs + (instruction.imm16 as u32);
+                // zero extend
+                let data = bus.read_u16(computed_addr) as u32;
+
+                self.regs.write_register(instruction.rt, data as u32);
+            }
+            Opcode::Lhu => {
+                let rs = self.regs.read_register(instruction.rs);
+                let computed_addr = rs + (instruction.imm16 as u32);
+                // sign extend
+                let data = Self::sign_extend(bus.read_u16(computed_addr));
+
+                self.regs.write_register(instruction.rt, data);
+            }
             Opcode::Lw => {
                 let rs = self.regs.read_register(instruction.rs);
                 // TODO: check if wrapping or not
@@ -172,7 +186,13 @@ impl Cpu {
             //Opcode::Lwl => {}
             //Opcode::Lwr => {}
             //Opcode::Sb => {}
-            //Opcode::Sh => {}
+            Opcode::Sh => {
+                let rs = self.regs.read_register(instruction.rs);
+                let rt = self.regs.read_register(instruction.rt);
+                // TODO: check if wrapping or not
+                let computed_addr = rs + (instruction.imm16 as u32);
+                bus.write_u16(computed_addr, rt as u16);
+            }
             Opcode::Sw => {
                 let rs = self.regs.read_register(instruction.rs);
                 let rt = self.regs.read_register(instruction.rt);

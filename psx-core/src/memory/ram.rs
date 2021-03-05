@@ -26,4 +26,12 @@ impl BusLine for MainRam {
 
         LittleEndian::write_u32(&mut self.data[index..index + 4], data)
     }
+
+    fn read_u16(&mut self, _addr: u32) -> u16 {
+        todo!()
+    }
+
+    fn write_u16(&mut self, _addr: u32, _data: u16) {
+        todo!()
+    }
 }

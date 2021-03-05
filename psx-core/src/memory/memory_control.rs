@@ -43,6 +43,14 @@ impl BusLine for MemoryControl1 {
 
         self.data[index] = data;
     }
+
+    fn read_u16(&mut self, _addr: u32) -> u16 {
+        todo!()
+    }
+
+    fn write_u16(&mut self, _addr: u32, _data: u16) {
+        todo!()
+    }
 }
 
 // RAM_SIZE
@@ -62,6 +70,14 @@ impl BusLine for MemoryControl2 {
         );
         self.0 = data;
     }
+
+    fn read_u16(&mut self, _addr: u32) -> u16 {
+        todo!()
+    }
+
+    fn write_u16(&mut self, _addr: u32, _data: u16) {
+        todo!()
+    }
 }
 
 #[derive(Default)]
@@ -76,5 +92,13 @@ impl BusLine for CacheControl {
         // TODO: implement this registerproperly
         println!("LOG cache control written with {:08X}", data);
         self.0 = data;
+    }
+
+    fn read_u16(&mut self, _addr: u32) -> u16 {
+        todo!()
+    }
+
+    fn write_u16(&mut self, _addr: u32, _data: u16) {
+        todo!()
     }
 }
