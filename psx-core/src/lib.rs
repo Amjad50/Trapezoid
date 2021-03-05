@@ -1,5 +1,6 @@
 mod cpu;
 mod memory;
+mod spu;
 
 use std::path::Path;
 
