@@ -254,11 +254,19 @@ impl Cpu {
             Opcode::Addu => {
                 self.execute_alu_reg(instruction, |rs, rt| rs.wrapping_add(rt));
             }
-            //Opcode::Add => {}
+            Opcode::Add => {
+                self.execute_alu_reg(instruction, |rs, rt| {
+                    rs.checked_add(rt).expect("overflow trap")
+                });
+            }
             Opcode::Subu => {
                 self.execute_alu_reg(instruction, |rs, rt| rs.wrapping_sub(rt));
             }
-            //Opcode::Sub => {}
+            Opcode::Sub => {
+                self.execute_alu_reg(instruction, |rs, rt| {
+                    rs.checked_sub(rt).expect("overflow trap")
+                });
+            }
             Opcode::Addiu => {
                 self.execute_alu_imm(instruction, |rs, instr| {
                     rs.wrapping_add(Self::sign_extend_16(instr.imm16))
@@ -267,8 +275,9 @@ impl Cpu {
             Opcode::Addi => {
                 self.execute_alu_imm(instruction, |rs, instr| {
                     // TODO: implement overflow trap
-                    rs.checked_add(Self::sign_extend_16(instr.imm16))
-                        .expect("overflow trap")
+                    (rs as i32)
+                        .checked_add(Self::sign_extend_16(instr.imm16) as i32)
+                        .expect("overflow trap") as u32
                 });
             }
             Opcode::And => {
