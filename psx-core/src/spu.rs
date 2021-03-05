@@ -33,9 +33,16 @@ impl BusLine for SpuRegisters {
     }
 
     fn write_u16(&mut self, addr: u32, data: u16) {
-        println!("SPU write {:04X} = {}", addr, data);
         let index = addr as usize;
 
         LittleEndian::write_u16(&mut self.data[index..index + 2], data)
+    }
+
+    fn read_u8(&mut self, _addr: u32) -> u8 {
+        todo!()
+    }
+
+    fn write_u8(&mut self, _addr: u32, _data: u8) {
+        todo!()
     }
 }

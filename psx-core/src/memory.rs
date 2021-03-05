@@ -1,3 +1,4 @@
+mod expansion_regions;
 mod memory_control;
 mod ram;
 
@@ -8,6 +9,7 @@ use std::path::Path;
 use byteorder::{ByteOrder, LittleEndian};
 
 use crate::spu::SpuRegisters;
+use expansion_regions::ExpansionRegion2;
 use memory_control::{CacheControl, MemoryControl1, MemoryControl2};
 use ram::MainRam;
 
@@ -17,6 +19,9 @@ pub trait BusLine {
 
     fn read_u16(&mut self, addr: u32) -> u16;
     fn write_u16(&mut self, addr: u32, data: u16);
+
+    fn read_u8(&mut self, addr: u32) -> u8;
+    fn write_u8(&mut self, addr: u32, data: u8);
 }
 
 pub struct Bios {
@@ -51,6 +56,8 @@ pub struct CpuBus {
     main_ram: MainRam,
 
     spu_registers: SpuRegisters,
+
+    expansion_region_2: ExpansionRegion2,
 }
 
 impl CpuBus {
@@ -61,8 +68,8 @@ impl CpuBus {
             mem_ctrl_2: MemoryControl2::default(),
             cache_control: CacheControl::default(),
             main_ram: MainRam::default(),
-
             spu_registers: SpuRegisters::default(),
+            expansion_region_2: ExpansionRegion2::default(),
         }
     }
 }
@@ -122,6 +129,23 @@ impl BusLine for CpuBus {
             0x1F801C00..=0x1F802000 => self.spu_registers.write_u16((addr & 0xFFF) - 0xC00, data),
             _ => {
                 todo!("u16 write to {:08X}", addr)
+            }
+        }
+    }
+    fn read_u8(&mut self, addr: u32) -> u8 {
+        match addr {
+            0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
+            _ => {
+                todo!("u8 write to {:08X}", addr)
+            }
+        }
+    }
+
+    fn write_u8(&mut self, addr: u32, data: u8) {
+        match addr {
+            0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),
+            _ => {
+                todo!("u8 write to {:08X}", addr)
             }
         }
     }

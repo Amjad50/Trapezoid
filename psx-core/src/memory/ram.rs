@@ -34,4 +34,12 @@ impl BusLine for MainRam {
     fn write_u16(&mut self, _addr: u32, _data: u16) {
         todo!()
     }
+
+    fn read_u8(&mut self, _addr: u32) -> u8 {
+        todo!()
+    }
+
+    fn write_u8(&mut self, _addr: u32, _data: u8) {
+        todo!()
+    }
 }

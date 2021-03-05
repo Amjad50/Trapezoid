@@ -114,8 +114,12 @@ impl Cpu {
 }
 
 impl Cpu {
-    fn sign_extend(data: u16) -> u32 {
+    fn sign_extend_16(data: u16) -> u32 {
         data as i16 as i32 as u32
+    }
+
+    fn sign_extend_8(data: u8) -> u32 {
+        data as i8 as i32 as u32
     }
 
     fn execute_alu_reg<F>(&mut self, instruction: Instruction, handler: F)
@@ -149,7 +153,7 @@ impl Cpu {
         } else {
             0
         };
-        let signed_imm16 = Self::sign_extend(instruction.imm16).wrapping_mul(4);
+        let signed_imm16 = Self::sign_extend_16(instruction.imm16).wrapping_mul(4);
 
         if handler(rs, rt) {
             self.jump_dest_next = Some(self.regs.pc.wrapping_add(signed_imm16));
@@ -158,21 +162,35 @@ impl Cpu {
 
     fn execute_instruction<P: BusLine>(&mut self, instruction: Instruction, bus: &mut P) {
         match instruction.opcode {
-            //Opcode::Lb => {}
-            //Opcode::Lbu => {}
+            Opcode::Lb => {
+                let rs = self.regs.read_register(instruction.rs);
+                let computed_addr = rs + (instruction.imm16 as u32);
+                // zero extend
+                let data = bus.read_u8(computed_addr) as u32;
+
+                self.regs.write_register(instruction.rt, data);
+            }
+            Opcode::Lbu => {
+                let rs = self.regs.read_register(instruction.rs);
+                let computed_addr = rs + (instruction.imm16 as u32);
+                // sign extend
+                let data = Self::sign_extend_8(bus.read_u8(computed_addr));
+
+                self.regs.write_register(instruction.rt, data);
+            }
             Opcode::Lh => {
                 let rs = self.regs.read_register(instruction.rs);
                 let computed_addr = rs + (instruction.imm16 as u32);
                 // zero extend
                 let data = bus.read_u16(computed_addr) as u32;
 
-                self.regs.write_register(instruction.rt, data as u32);
+                self.regs.write_register(instruction.rt, data);
             }
             Opcode::Lhu => {
                 let rs = self.regs.read_register(instruction.rs);
                 let computed_addr = rs + (instruction.imm16 as u32);
                 // sign extend
-                let data = Self::sign_extend(bus.read_u16(computed_addr));
+                let data = Self::sign_extend_16(bus.read_u16(computed_addr));
 
                 self.regs.write_register(instruction.rt, data);
             }
@@ -186,7 +204,13 @@ impl Cpu {
             }
             //Opcode::Lwl => {}
             //Opcode::Lwr => {}
-            //Opcode::Sb => {}
+            Opcode::Sb => {
+                let rs = self.regs.read_register(instruction.rs);
+                let rt = self.regs.read_register(instruction.rt);
+                // TODO: check if wrapping or not
+                let computed_addr = rs + (instruction.imm16 as u32);
+                bus.write_u8(computed_addr, rt as u8);
+            }
             Opcode::Sh => {
                 let rs = self.regs.read_register(instruction.rs);
                 let rt = self.regs.read_register(instruction.rt);
@@ -223,7 +247,7 @@ impl Cpu {
             }
             Opcode::Sltiu => {
                 let rs = self.regs.read_register(instruction.rs);
-                let imm = Self::sign_extend(instruction.imm16);
+                let imm = Self::sign_extend_16(instruction.imm16);
 
                 self.regs.write_register(instruction.rd, (rs < imm) as u32);
             }
@@ -237,13 +261,13 @@ impl Cpu {
             //Opcode::Sub => {}
             Opcode::Addiu => {
                 self.execute_alu_imm(instruction, |rs, instr| {
-                    rs.wrapping_add(Self::sign_extend(instr.imm16))
+                    rs.wrapping_add(Self::sign_extend_16(instr.imm16))
                 });
             }
             Opcode::Addi => {
                 self.execute_alu_imm(instruction, |rs, instr| {
                     // TODO: implement overflow trap
-                    rs.checked_add(Self::sign_extend(instr.imm16))
+                    rs.checked_add(Self::sign_extend_16(instr.imm16))
                         .expect("overflow trap")
                 });
             }

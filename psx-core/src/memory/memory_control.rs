@@ -51,6 +51,14 @@ impl BusLine for MemoryControl1 {
     fn write_u16(&mut self, _addr: u32, _data: u16) {
         todo!()
     }
+
+    fn read_u8(&mut self, _addr: u32) -> u8 {
+        todo!()
+    }
+
+    fn write_u8(&mut self, _addr: u32, _data: u8) {
+        todo!()
+    }
 }
 
 // RAM_SIZE
@@ -78,6 +86,14 @@ impl BusLine for MemoryControl2 {
     fn write_u16(&mut self, _addr: u32, _data: u16) {
         todo!()
     }
+
+    fn read_u8(&mut self, _addr: u32) -> u8 {
+        todo!()
+    }
+
+    fn write_u8(&mut self, _addr: u32, _data: u8) {
+        todo!()
+    }
 }
 
 #[derive(Default)]
@@ -99,6 +115,14 @@ impl BusLine for CacheControl {
     }
 
     fn write_u16(&mut self, _addr: u32, _data: u16) {
+        todo!()
+    }
+
+    fn read_u8(&mut self, _addr: u32) -> u8 {
+        todo!()
+    }
+
+    fn write_u8(&mut self, _addr: u32, _data: u8) {
         todo!()
     }
 }
