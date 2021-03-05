@@ -45,6 +45,18 @@ impl Bios {
 
         LittleEndian::read_u32(&self.data[index..index + 4])
     }
+
+    pub fn read_u16(&self, addr: u32) -> u16 {
+        let index = (addr & 0xFFFFF) as usize;
+
+        LittleEndian::read_u16(&self.data[index..index + 4])
+    }
+
+    pub fn read_u8(&self, addr: u32) -> u8 {
+        let index = (addr & 0xFFFFF) as usize;
+
+        self.data[index]
+    }
 }
 
 pub struct CpuBus {
@@ -116,6 +128,7 @@ impl BusLine for CpuBus {
 
         match addr {
             0x1F801C00..=0x1F802000 => self.spu_registers.read_u16((addr & 0xFFF) - 0xC00),
+            0xBFC00000..=0xBFC80000 => self.bios.read_u16(addr),
             _ => {
                 todo!("u16 write to {:08X}", addr)
             }
@@ -135,6 +148,7 @@ impl BusLine for CpuBus {
     fn read_u8(&mut self, addr: u32) -> u8 {
         match addr {
             0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
+            0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
             _ => {
                 todo!("u8 write to {:08X}", addr)
             }

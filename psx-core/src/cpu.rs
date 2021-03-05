@@ -160,70 +160,70 @@ impl Cpu {
         }
     }
 
+    fn execute_load<F>(&mut self, instruction: Instruction, mut handler: F)
+    where
+        F: FnMut(u32) -> u32,
+    {
+        let rs = self.regs.read_register(instruction.rs);
+        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+
+        let data = handler(computed_addr);
+
+        self.regs.write_register(instruction.rt, data);
+    }
+
+    fn execute_store<F>(&mut self, instruction: Instruction, mut handler: F)
+    where
+        F: FnMut(u32, u32),
+    {
+        let rs = self.regs.read_register(instruction.rs);
+        let rt = self.regs.read_register(instruction.rt);
+        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+
+        handler(computed_addr, rt);
+    }
+
     fn execute_instruction<P: BusLine>(&mut self, instruction: Instruction, bus: &mut P) {
         match instruction.opcode {
             Opcode::Lb => {
-                let rs = self.regs.read_register(instruction.rs);
-                let computed_addr = rs + (instruction.imm16 as u32);
-                // zero extend
-                let data = bus.read_u8(computed_addr) as u32;
-
-                self.regs.write_register(instruction.rt, data);
+                self.execute_load(instruction, |computed_addr| {
+                    bus.read_u8(computed_addr) as u32
+                });
             }
             Opcode::Lbu => {
-                let rs = self.regs.read_register(instruction.rs);
-                let computed_addr = rs + (instruction.imm16 as u32);
-                // sign extend
-                let data = Self::sign_extend_8(bus.read_u8(computed_addr));
-
-                self.regs.write_register(instruction.rt, data);
+                self.execute_load(instruction, |computed_addr| {
+                    Self::sign_extend_8(bus.read_u8(computed_addr))
+                });
             }
             Opcode::Lh => {
-                let rs = self.regs.read_register(instruction.rs);
-                let computed_addr = rs + (instruction.imm16 as u32);
-                // zero extend
-                let data = bus.read_u16(computed_addr) as u32;
-
-                self.regs.write_register(instruction.rt, data);
+                self.execute_load(instruction, |computed_addr| {
+                    bus.read_u16(computed_addr) as u32
+                });
             }
             Opcode::Lhu => {
-                let rs = self.regs.read_register(instruction.rs);
-                let computed_addr = rs + (instruction.imm16 as u32);
-                // sign extend
-                let data = Self::sign_extend_16(bus.read_u16(computed_addr));
-
-                self.regs.write_register(instruction.rt, data);
+                self.execute_load(instruction, |computed_addr| {
+                    Self::sign_extend_16(bus.read_u16(computed_addr))
+                });
             }
             Opcode::Lw => {
-                let rs = self.regs.read_register(instruction.rs);
-                // TODO: check if wrapping or not
-                let computed_addr = rs + (instruction.imm16 as u32);
-                let data = bus.read_u32(computed_addr);
-
-                self.regs.write_register(instruction.rt, data);
+                self.execute_load(instruction, |computed_addr| bus.read_u32(computed_addr));
             }
             //Opcode::Lwl => {}
             //Opcode::Lwr => {}
             Opcode::Sb => {
-                let rs = self.regs.read_register(instruction.rs);
-                let rt = self.regs.read_register(instruction.rt);
-                // TODO: check if wrapping or not
-                let computed_addr = rs + (instruction.imm16 as u32);
-                bus.write_u8(computed_addr, rt as u8);
+                self.execute_store(instruction, |computed_addr, data| {
+                    bus.write_u8(computed_addr, data as u8)
+                });
             }
             Opcode::Sh => {
-                let rs = self.regs.read_register(instruction.rs);
-                let rt = self.regs.read_register(instruction.rt);
-                // TODO: check if wrapping or not
-                let computed_addr = rs + (instruction.imm16 as u32);
-                bus.write_u16(computed_addr, rt as u16);
+                self.execute_store(instruction, |computed_addr, data| {
+                    bus.write_u16(computed_addr, data as u16)
+                });
             }
             Opcode::Sw => {
-                let rs = self.regs.read_register(instruction.rs);
-                let rt = self.regs.read_register(instruction.rt);
-                // TODO: check if wrapping or not
-                let computed_addr = rs + (instruction.imm16 as u32);
-                bus.write_u32(computed_addr, rt);
+                self.execute_store(instruction, |computed_addr, data| {
+                    bus.write_u32(computed_addr, data)
+                });
             }
             //Opcode::Swl => {}
             //Opcode::Swr => {}
