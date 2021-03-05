@@ -129,6 +129,10 @@ impl BusLine for CpuBus {
         assert!(addr % 2 == 0, "unalligned u16 read");
 
         match addr {
+            0x00000000..=0x00200000 => self.main_ram.read_u16(addr),
+            0x80000000..=0x80200000 => self.main_ram.read_u16(addr & 0xFFFFFF),
+            0xA0000000..=0xA0200000 => self.main_ram.read_u16(addr & 0xFFFFFF),
+
             0x1F801C00..=0x1F802000 => self.spu_registers.read_u16((addr & 0xFFF) - 0xC00),
             0xBFC00000..=0xBFC80000 => self.bios.read_u16(addr),
             _ => {
@@ -141,6 +145,10 @@ impl BusLine for CpuBus {
         assert!(addr % 2 == 0, "unalligned u16 write");
 
         match addr {
+            0x00000000..=0x00200000 => self.main_ram.write_u16(addr, data),
+            0x80000000..=0x80200000 => self.main_ram.write_u16(addr & 0xFFFFFF, data),
+            0xA0000000..=0xA0200000 => self.main_ram.write_u16(addr & 0xFFFFFF, data),
+
             0x1F801C00..=0x1F802000 => self.spu_registers.write_u16((addr & 0xFFF) - 0xC00, data),
             _ => {
                 todo!("u16 write to {:08X}", addr)
@@ -149,6 +157,10 @@ impl BusLine for CpuBus {
     }
     fn read_u8(&mut self, addr: u32) -> u8 {
         match addr {
+            0x00000000..=0x00200000 => self.main_ram.read_u8(addr),
+            0x80000000..=0x80200000 => self.main_ram.read_u8(addr & 0xFFFFFF),
+            0xA0000000..=0xA0200000 => self.main_ram.read_u8(addr & 0xFFFFFF),
+
             0x1F000000..=0x1F080000 => self.expansion_region_1.read_u8(addr & 0xFFFFF),
             0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
@@ -160,6 +172,10 @@ impl BusLine for CpuBus {
 
     fn write_u8(&mut self, addr: u32, data: u8) {
         match addr {
+            0x00000000..=0x00200000 => self.main_ram.write_u8(addr, data),
+            0x80000000..=0x80200000 => self.main_ram.write_u8(addr & 0xFFFFFF, data),
+            0xA0000000..=0xA0200000 => self.main_ram.write_u8(addr & 0xFFFFFF, data),
+
             0x1F000000..=0x1F080000 => self.expansion_region_1.write_u8(addr & 0xFFFFF, data),
             0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),
             _ => {
