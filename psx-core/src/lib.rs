@@ -1,3 +1,4 @@
+mod coprocessor;
 mod cpu;
 mod memory;
 mod spu;
