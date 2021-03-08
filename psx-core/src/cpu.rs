@@ -347,13 +347,13 @@ impl Cpu {
             //Opcode::Cop(_) => {}
             Opcode::Mfc(n) => {
                 let rd_raw = instruction.rd_raw;
-                let result = bus.cop_read_data(0, rd_raw);
+                let result = bus.cop_read_data(n, rd_raw);
 
                 self.regs.write_register(instruction.rt, result);
             }
             Opcode::Cfc(n) => {
                 let rd_raw = instruction.rd_raw;
-                let result = bus.cop_read_ctrl(0, rd_raw);
+                let result = bus.cop_read_ctrl(n, rd_raw);
 
                 self.regs.write_register(instruction.rt, result);
             }
@@ -361,13 +361,13 @@ impl Cpu {
                 let rd_raw = instruction.rd_raw;
                 let rt = self.regs.read_register(instruction.rt);
 
-                bus.cop_write_data(0, rd_raw, rt);
+                bus.cop_write_data(n, rd_raw, rt);
             }
             Opcode::Ctc(n) => {
                 let rd_raw = instruction.rd_raw;
                 let rt = self.regs.read_register(instruction.rt);
 
-                bus.cop_write_ctrl(0, rd_raw, rt);
+                bus.cop_write_ctrl(n, rd_raw, rt);
             }
             //Opcode::Bcf(_) => {}
             //Opcode::Bct(_) => {}
