@@ -1,4 +1,5 @@
 mod expansion_regions;
+mod interrupts;
 mod memory_control;
 mod ram;
 
@@ -12,6 +13,7 @@ use crate::coprocessor::SystemControlCoprocessor;
 use crate::cpu::CpuBusProvider;
 use crate::spu::SpuRegisters;
 use expansion_regions::{ExpansionRegion1, ExpansionRegion2};
+use interrupts::Interrupts;
 use memory_control::{CacheControl, MemoryControl1, MemoryControl2};
 use ram::MainRam;
 
@@ -66,6 +68,7 @@ pub struct CpuBus {
     mem_ctrl_1: MemoryControl1,
     mem_ctrl_2: MemoryControl2,
     cache_control: CacheControl,
+    interrupts: Interrupts,
 
     main_ram: MainRam,
 
@@ -84,6 +87,7 @@ impl CpuBus {
             mem_ctrl_1: MemoryControl1::default(),
             mem_ctrl_2: MemoryControl2::default(),
             cache_control: CacheControl::default(),
+            interrupts: Interrupts::default(),
             main_ram: MainRam::default(),
             spu_registers: SpuRegisters::default(),
             expansion_region_1: ExpansionRegion1::default(),
@@ -108,6 +112,7 @@ impl BusLine for CpuBus {
             0xBFC00000..=0xBFC80000 => self.bios.read_u32(addr),
             0x1F801000..=0x1F801020 => self.mem_ctrl_1.read_u32(addr),
             0x1F801060 => self.mem_ctrl_2.read_u32(addr),
+            0x1F801070..=0x1F801077 => self.interrupts.read_u32(addr & 0xF),
             0x1F801C00..=0x1F802000 => self.spu_registers.read_u32((addr & 0xFFF) - 0xC00),
             0xFFFE0130 => self.cache_control.read_u32(addr),
             _ => {
@@ -127,6 +132,7 @@ impl BusLine for CpuBus {
             0x1F801000..=0x1F801020 => self.mem_ctrl_1.write_u32(addr, data),
             0x1F801060 => self.mem_ctrl_2.write_u32(addr, data),
             0x1F801C00..=0x1F802000 => self.spu_registers.write_u32((addr & 0xFFF) - 0xC00, data),
+            0x1F801070..=0x1F801077 => self.interrupts.write_u32(addr & 0xF, data),
             0xFFFE0130 => self.cache_control.write_u32(addr, data),
             _ => {
                 todo!("u32 write to {:08X}", addr)
