@@ -71,7 +71,6 @@ pub enum Opcode {
     Bne,
     Bgtz,
     Blez,
-
     /// depending on the value of `rt` it will execute:
     ///  rt   | instr
     /// ---------------
@@ -80,6 +79,10 @@ pub enum Opcode {
     ///  0x10 | Bltzal
     ///  0x11 | Bgezal
     Bcondz,
+    Bltz,
+    Bgez,
+    Bltzal,
+    Bgezal,
 
     Syscall,
     Break,
@@ -141,6 +144,10 @@ impl Instruction {
             opcode = Self::get_cop_opcode(n, secondary_identifier, rt_raw, rs_raw);
         }
 
+        if let Opcode::Bcondz = opcode {
+            opcode = Self::get_bcondz_opcode(rt_raw);
+        }
+
         Self {
             opcode,
             imm5,
@@ -163,6 +170,16 @@ impl Instruction {
 
     fn get_opcode_from_secondary(secondary: u8) -> Opcode {
         SECONDARY_OPCODES[secondary as usize & 0x3F]
+    }
+
+    fn get_bcondz_opcode(rt_raw: u8) -> Opcode {
+        match rt_raw {
+            0x00 => Opcode::Bltz,
+            0x01 => Opcode::Bgez,
+            0x10 => Opcode::Bltzal,
+            0x11 => Opcode::Bgezal,
+            _ => Opcode::Invalid,
+        }
     }
 
     fn get_cop_opcode(cop_n: u8, secondary: u8, part_20_16: u8, part_25_21: u8) -> Opcode {

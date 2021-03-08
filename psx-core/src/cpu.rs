@@ -74,22 +74,24 @@ impl Cpu {
         self.regs.write_register(instruction.rt, result);
     }
 
-    fn execute_branch<F>(&mut self, instruction: Instruction, have_rt: bool, handler: F)
+    fn execute_branch<F>(&mut self, instruction: Instruction, have_rt: bool, handler: F) -> bool
     where
-        F: FnOnce(u32, u32) -> bool,
+        F: FnOnce(i32, i32) -> bool,
     {
-        // FIXME: are rs and rt signed?
-        let rs = self.regs.read_register(instruction.rs);
+        let rs = self.regs.read_register(instruction.rs) as i32;
         let rt = if have_rt {
-            self.regs.read_register(instruction.rt)
+            self.regs.read_register(instruction.rt) as i32
         } else {
             0
         };
         let signed_imm16 = Self::sign_extend_16(instruction.imm16).wrapping_mul(4);
 
-        if handler(rs, rt) {
+        let should_jump = handler(rs, rt);
+        if should_jump {
             self.jump_dest_next = Some(self.regs.pc.wrapping_add(signed_imm16));
         }
+
+        should_jump
     }
 
     fn execute_load<F>(&mut self, instruction: Instruction, mut handler: F)
@@ -328,7 +330,11 @@ impl Cpu {
             Opcode::Jr => {
                 self.jump_dest_next = Some(self.regs.read_register(instruction.rs));
             }
-            //Opcode::Jalr => {}
+            Opcode::Jalr => {
+                self.jump_dest_next = Some(self.regs.read_register(instruction.rs));
+
+                self.regs.write_register(instruction.rd, self.regs.pc + 4);
+            }
             Opcode::Beq => {
                 self.execute_branch(instruction, true, |rs, rt| rs == rt);
             }
@@ -341,7 +347,23 @@ impl Cpu {
             Opcode::Blez => {
                 self.execute_branch(instruction, false, |rs, _| rs <= 0);
             }
-            //Opcode::Bcondz => {}
+            Opcode::Bltz => {
+                self.execute_branch(instruction, false, |rs, _| rs < 0);
+            }
+            Opcode::Bgez => {
+                self.execute_branch(instruction, false, |rs, _| rs >= 0);
+            }
+            Opcode::Bltzal => {
+                if self.execute_branch(instruction, false, |rs, _| rs < 0) {
+                    self.regs.ra = self.regs.pc + 4;
+                }
+            }
+            Opcode::Bgezal => {
+                if self.execute_branch(instruction, false, |rs, _| rs >= 0) {
+                    self.regs.ra = self.regs.pc + 4;
+                }
+            }
+            Opcode::Bcondz => unreachable!("bcondz should be converted"),
             //Opcode::Syscall => {}
             //Opcode::Break => {}
             //Opcode::Cop(_) => {}
