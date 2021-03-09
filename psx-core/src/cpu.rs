@@ -2,20 +2,15 @@ mod instruction;
 mod instructions_table;
 mod register;
 
+use crate::coprocessor::SystemControlCoprocessor;
 use crate::memory::BusLine;
 
 use instruction::{Instruction, Opcode};
 use register::Registers;
 
-pub trait CpuBusProvider: BusLine {
-    fn cop_read_data(&mut self, cop_n: u8, reg: u8) -> u32;
-    fn cop_read_ctrl(&mut self, cop_n: u8, reg: u8) -> u32;
-    fn cop_write_data(&mut self, cop_n: u8, reg: u8, data: u32);
-    fn cop_write_ctrl(&mut self, cop_n: u8, reg: u8, data: u32);
-}
-
 pub struct Cpu {
     regs: Registers,
+    cop0: SystemControlCoprocessor,
 
     jump_dest_next: Option<u32>,
 }
@@ -25,13 +20,14 @@ impl Cpu {
         Self {
             // reset value
             regs: Registers::new(),
+            cop0: SystemControlCoprocessor::default(),
             jump_dest_next: None,
         }
     }
 
-    pub fn execute_next<P: CpuBusProvider>(&mut self, bus: &mut P) {
+    pub fn execute_next<P: BusLine>(&mut self, bus: &mut P) {
         let pc = self.regs.pc;
-        let instruction = bus.read_u32(self.regs.pc);
+        let instruction = self.bus_read_u32(bus, self.regs.pc);
         let instruction = Instruction::from_u32(instruction);
 
         self.regs.pc += 4;
@@ -96,67 +92,69 @@ impl Cpu {
 
     fn execute_load<F>(&mut self, instruction: Instruction, mut handler: F)
     where
-        F: FnMut(u32) -> u32,
+        F: FnMut(&Self, u32) -> u32,
     {
         let rs = self.regs.read_register(instruction.rs);
         let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
 
-        let data = handler(computed_addr);
+        let data = handler(self, computed_addr);
 
         self.regs.write_register(instruction.rt, data);
     }
 
     fn execute_store<F>(&mut self, instruction: Instruction, mut handler: F)
     where
-        F: FnMut(u32, u32),
+        F: FnMut(&Self, u32, u32),
     {
         let rs = self.regs.read_register(instruction.rs);
         let rt = self.regs.read_register(instruction.rt);
         let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
 
-        handler(computed_addr, rt);
+        handler(self, computed_addr, rt);
     }
 
-    fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: Instruction, bus: &mut P) {
+    fn execute_instruction<P: BusLine>(&mut self, instruction: Instruction, bus: &mut P) {
         match instruction.opcode {
             Opcode::Lb => {
-                self.execute_load(instruction, |computed_addr| {
-                    bus.read_u8(computed_addr) as u32
+                self.execute_load(instruction, |s, computed_addr| {
+                    s.bus_read_u8(bus, computed_addr) as u32
                 });
             }
             Opcode::Lbu => {
-                self.execute_load(instruction, |computed_addr| {
-                    Self::sign_extend_8(bus.read_u8(computed_addr))
+                self.execute_load(instruction, |s, computed_addr| {
+                    Self::sign_extend_8(s.bus_read_u8(bus, computed_addr))
                 });
             }
             Opcode::Lh => {
-                self.execute_load(instruction, |computed_addr| {
-                    bus.read_u16(computed_addr) as u32
+                self.execute_load(instruction, |s, computed_addr| {
+                    s.bus_read_u16(bus, computed_addr) as u32
                 });
             }
             Opcode::Lhu => {
-                self.execute_load(instruction, |computed_addr| {
-                    Self::sign_extend_16(bus.read_u16(computed_addr))
+                self.execute_load(instruction, |s, computed_addr| {
+                    Self::sign_extend_16(s.bus_read_u16(bus, computed_addr))
                 });
             }
             Opcode::Lw => {
-                self.execute_load(instruction, |computed_addr| bus.read_u32(computed_addr));
+                self.execute_load(instruction, |s, computed_addr| {
+                    s.bus_read_u32(bus, computed_addr)
+                });
             }
             //Opcode::Lwl => {}
             //Opcode::Lwr => {}
             Opcode::Sb => {
-                self.execute_store(instruction, |computed_addr, data| {
-                    bus.write_u8(computed_addr, data as u8)
+                self.execute_store(instruction, |s, computed_addr, data| {
+                    s.bus_write_u8(bus, computed_addr, data as u8)
                 });
             }
             Opcode::Sh => {
-                self.execute_store(instruction, |computed_addr, data| {
-                    bus.write_u16(computed_addr, data as u16)
+                self.execute_store(instruction, |s, computed_addr, data| {
+                    s.bus_write_u16(bus, computed_addr, data as u16)
                 });
             }
             Opcode::Sw => {
-                self.execute_store(instruction, |computed_addr, data| {
-                    bus.write_u32(computed_addr, data)
+                self.execute_store(instruction, |s, computed_addr, data| {
+                    s.bus_write_u32(bus, computed_addr, data)
                 });
             }
             //Opcode::Swl => {}
@@ -368,28 +366,28 @@ impl Cpu {
             //Opcode::Break => {}
             //Opcode::Cop(_) => {}
             Opcode::Mfc(n) => {
-                let rd_raw = instruction.rd_raw;
-                let result = bus.cop_read_data(n, rd_raw);
+                assert_eq!(n, 0);
+                let result = self.cop0.read_data(instruction.rd_raw);
 
                 self.regs.write_register(instruction.rt, result);
             }
             Opcode::Cfc(n) => {
-                let rd_raw = instruction.rd_raw;
-                let result = bus.cop_read_ctrl(n, rd_raw);
+                assert_eq!(n, 0);
+                let result = self.cop0.read_ctrl(instruction.rd_raw);
 
                 self.regs.write_register(instruction.rt, result);
             }
             Opcode::Mtc(n) => {
-                let rd_raw = instruction.rd_raw;
+                assert_eq!(n, 0);
                 let rt = self.regs.read_register(instruction.rt);
 
-                bus.cop_write_data(n, rd_raw, rt);
+                self.cop0.write_data(instruction.rd_raw, rt);
             }
             Opcode::Ctc(n) => {
-                let rd_raw = instruction.rd_raw;
+                assert_eq!(n, 0);
                 let rt = self.regs.read_register(instruction.rt);
 
-                bus.cop_write_ctrl(n, rd_raw, rt);
+                self.cop0.write_ctrl(instruction.rd_raw, rt);
             }
             //Opcode::Bcf(_) => {}
             //Opcode::Bct(_) => {}
@@ -399,6 +397,50 @@ impl Cpu {
             Opcode::Special => unreachable!(),
             Opcode::Invalid => unreachable!(),
             _ => todo!("unimplemented_instruction {:?}", instruction.opcode),
+        }
+    }
+}
+
+impl Cpu {
+    fn bus_read_u32<P: BusLine>(&self, bus: &mut P, addr: u32) -> u32 {
+        match addr {
+            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
+            _ => bus.read_u32(addr),
+        }
+    }
+
+    fn bus_write_u32<P: BusLine>(&self, bus: &mut P, addr: u32, data: u32) {
+        match addr {
+            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
+            _ => bus.write_u32(addr, data),
+        }
+    }
+
+    fn bus_read_u16<P: BusLine>(&self, bus: &mut P, addr: u32) -> u16 {
+        match addr {
+            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
+            _ => bus.read_u16(addr),
+        }
+    }
+
+    fn bus_write_u16<P: BusLine>(&self, bus: &mut P, addr: u32, data: u16) {
+        match addr {
+            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
+            _ => bus.write_u16(addr, data),
+        }
+    }
+
+    fn bus_read_u8<P: BusLine>(&self, bus: &mut P, addr: u32) -> u8 {
+        match addr {
+            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
+            _ => bus.read_u8(addr),
+        }
+    }
+
+    fn bus_write_u8<P: BusLine>(&self, bus: &mut P, addr: u32, data: u8) {
+        match addr {
+            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
+            _ => bus.write_u8(addr, data),
         }
     }
 }

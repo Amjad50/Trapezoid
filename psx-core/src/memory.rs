@@ -9,8 +9,6 @@ use std::path::Path;
 
 use byteorder::{ByteOrder, LittleEndian};
 
-use crate::coprocessor::SystemControlCoprocessor;
-use crate::cpu::CpuBusProvider;
 use crate::spu::SpuRegisters;
 use crate::timers::Timers;
 use expansion_regions::{ExpansionRegion1, ExpansionRegion2};
@@ -78,8 +76,6 @@ pub struct CpuBus {
     expansion_region_1: ExpansionRegion1,
     expansion_region_2: ExpansionRegion2,
 
-    cop0: SystemControlCoprocessor,
-
     timers: Timers,
 }
 
@@ -96,7 +92,6 @@ impl CpuBus {
             expansion_region_1: ExpansionRegion1::default(),
             expansion_region_2: ExpansionRegion2::default(),
 
-            cop0: SystemControlCoprocessor::default(),
             timers: Timers::default(),
         }
     }
@@ -108,7 +103,6 @@ impl BusLine for CpuBus {
 
         match addr {
             // TODO: implement I-cache isolation properly
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             0x00000000..=0x00200000 => self.main_ram.read_u32(addr),
             // TODO: implement mirroring in a better way (with cache as well maybe)
             0x80000000..=0x80200000 => self.main_ram.read_u32(addr & 0xFFFFFF),
@@ -130,7 +124,6 @@ impl BusLine for CpuBus {
         assert!(addr % 4 == 0, "unalligned u32 write");
 
         match addr {
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
             0x00000000..=0x00200000 => self.main_ram.write_u32(addr, data),
             0x80000000..=0x80200000 => self.main_ram.write_u32(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.main_ram.write_u32(addr & 0xFFFFFF, data),
@@ -150,7 +143,6 @@ impl BusLine for CpuBus {
         assert!(addr % 2 == 0, "unalligned u16 read");
 
         match addr {
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             0x00000000..=0x00200000 => self.main_ram.read_u16(addr),
             0x80000000..=0x80200000 => self.main_ram.read_u16(addr & 0xFFFFFF),
             0xA0000000..=0xA0200000 => self.main_ram.read_u16(addr & 0xFFFFFF),
@@ -168,7 +160,6 @@ impl BusLine for CpuBus {
         assert!(addr % 2 == 0, "unalligned u16 write");
 
         match addr {
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
             0x00000000..=0x00200000 => self.main_ram.write_u16(addr, data),
             0x80000000..=0x80200000 => self.main_ram.write_u16(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.main_ram.write_u16(addr & 0xFFFFFF, data),
@@ -182,7 +173,6 @@ impl BusLine for CpuBus {
     }
     fn read_u8(&mut self, addr: u32) -> u8 {
         match addr {
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             0x00000000..=0x00200000 => self.main_ram.read_u8(addr),
             0x80000000..=0x80200000 => self.main_ram.read_u8(addr & 0xFFFFFF),
             0xA0000000..=0xA0200000 => self.main_ram.read_u8(addr & 0xFFFFFF),
@@ -198,7 +188,6 @@ impl BusLine for CpuBus {
 
     fn write_u8(&mut self, addr: u32, data: u8) {
         match addr {
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
             0x00000000..=0x00200000 => self.main_ram.write_u8(addr, data),
             0x80000000..=0x80200000 => self.main_ram.write_u8(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.main_ram.write_u8(addr & 0xFFFFFF, data),
@@ -209,28 +198,5 @@ impl BusLine for CpuBus {
                 todo!("u8 write to {:08X}", addr)
             }
         }
-    }
-}
-
-// TODO: implement the other COPs, only cop0 for now
-impl CpuBusProvider for CpuBus {
-    fn cop_read_data(&mut self, cop_n: u8, reg: u8) -> u32 {
-        assert_eq!(cop_n, 0);
-        self.cop0.read_data(reg)
-    }
-
-    fn cop_read_ctrl(&mut self, cop_n: u8, reg: u8) -> u32 {
-        assert_eq!(cop_n, 0);
-        self.cop0.read_ctrl(reg)
-    }
-
-    fn cop_write_data(&mut self, cop_n: u8, reg: u8, data: u32) {
-        assert_eq!(cop_n, 0);
-        self.cop0.write_data(reg, data);
-    }
-
-    fn cop_write_ctrl(&mut self, cop_n: u8, reg: u8, data: u32) {
-        assert_eq!(cop_n, 0);
-        self.cop0.write_ctrl(reg, data);
     }
 }
