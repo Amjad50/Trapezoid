@@ -2,6 +2,7 @@ mod coprocessor;
 mod cpu;
 mod memory;
 mod spu;
+mod timers;
 
 use std::path::Path;
 

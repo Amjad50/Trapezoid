@@ -12,6 +12,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use crate::coprocessor::SystemControlCoprocessor;
 use crate::cpu::CpuBusProvider;
 use crate::spu::SpuRegisters;
+use crate::timers::Timers;
 use expansion_regions::{ExpansionRegion1, ExpansionRegion2};
 use interrupts::Interrupts;
 use memory_control::{CacheControl, MemoryControl1, MemoryControl2};
@@ -78,6 +79,8 @@ pub struct CpuBus {
     expansion_region_2: ExpansionRegion2,
 
     cop0: SystemControlCoprocessor,
+
+    timers: Timers,
 }
 
 impl CpuBus {
@@ -94,6 +97,7 @@ impl CpuBus {
             expansion_region_2: ExpansionRegion2::default(),
 
             cop0: SystemControlCoprocessor::default(),
+            timers: Timers::default(),
         }
     }
 }
@@ -114,6 +118,7 @@ impl BusLine for CpuBus {
             0x1F801060 => self.mem_ctrl_2.read_u32(addr),
             0x1F801070..=0x1F801077 => self.interrupts.read_u32(addr & 0xF),
             0x1F801C00..=0x1F802000 => self.spu_registers.read_u32((addr & 0xFFF) - 0xC00),
+            0x1F801100..=0x1F80112F => self.timers.read_u32(addr & 0xFF),
             0xFFFE0130 => self.cache_control.read_u32(addr),
             _ => {
                 todo!("u32 read from {:08X}", addr)
@@ -133,6 +138,7 @@ impl BusLine for CpuBus {
             0x1F801060 => self.mem_ctrl_2.write_u32(addr, data),
             0x1F801C00..=0x1F802000 => self.spu_registers.write_u32((addr & 0xFFF) - 0xC00, data),
             0x1F801070..=0x1F801077 => self.interrupts.write_u32(addr & 0xF, data),
+            0x1F801100..=0x1F80112F => self.timers.write_u32(addr & 0xFF, data),
             0xFFFE0130 => self.cache_control.write_u32(addr, data),
             _ => {
                 todo!("u32 write to {:08X}", addr)
@@ -149,6 +155,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.main_ram.read_u16(addr & 0xFFFFFF),
             0xA0000000..=0xA0200000 => self.main_ram.read_u16(addr & 0xFFFFFF),
 
+            0x1F801100..=0x1F80112F => self.timers.read_u16(addr & 0xFF),
             0x1F801C00..=0x1F802000 => self.spu_registers.read_u16((addr & 0xFFF) - 0xC00),
             0xBFC00000..=0xBFC80000 => self.bios.read_u16(addr),
             _ => {
@@ -166,6 +173,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.main_ram.write_u16(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.main_ram.write_u16(addr & 0xFFFFFF, data),
 
+            0x1F801100..=0x1F80112F => self.timers.write_u16(addr & 0xFF, data),
             0x1F801C00..=0x1F802000 => self.spu_registers.write_u16((addr & 0xFFF) - 0xC00, data),
             _ => {
                 todo!("u16 write to {:08X}", addr)
