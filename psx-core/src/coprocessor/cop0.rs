@@ -14,6 +14,32 @@ pub struct SystemControlCoprocessor {
 }
 
 impl SystemControlCoprocessor {
+    pub fn is_cache_isolated(&self) -> bool {
+        self.sr & 0x10000 != 0
+    }
+
+    pub fn read_cause(&self) -> u32 {
+        self.cause
+    }
+
+    pub fn write_cause(&mut self, data: u32) {
+        self.cause = data;
+    }
+
+    pub fn read_sr(&self) -> u32 {
+        self.sr
+    }
+
+    pub fn write_sr(&mut self, data: u32) {
+        self.sr = data;
+    }
+
+    pub fn write_epc(&mut self, data: u32) {
+        self.epc = data;
+    }
+}
+
+impl SystemControlCoprocessor {
     pub fn read_ctrl(&self, num: u8) -> u32 {
         assert!(num <= 0x1F);
         // no contrl registers
@@ -68,9 +94,5 @@ impl SystemControlCoprocessor {
             16..=31 => {} // garbage
             _ => unreachable!(),
         }
-    }
-
-    pub fn is_cache_isolated(&self) -> bool {
-        self.sr & 0x10000 != 0
     }
 }

@@ -362,7 +362,18 @@ impl Cpu {
                 }
             }
             Opcode::Bcondz => unreachable!("bcondz should be converted"),
-            //Opcode::Syscall => {}
+            Opcode::Syscall => {
+                let syscall_cause = 0x8;
+                let cause = syscall_cause << 2;
+                self.cop0.write_cause(cause);
+
+                let sr = self.cop0.read_sr();
+                let bev = (sr >> 22) & 1 == 1;
+
+                let jmp_vector = if bev { 0xBFC00180 } else { 0x80000080 };
+                self.cop0.write_epc(self.regs.pc - 4);
+                self.regs.pc = jmp_vector;
+            }
             //Opcode::Break => {}
             //Opcode::Cop(_) => {}
             Opcode::Mfc(n) => {
@@ -391,7 +402,17 @@ impl Cpu {
             }
             //Opcode::Bcf(_) => {}
             //Opcode::Bct(_) => {}
-            //Opcode::Rfe => {}
+            Opcode::Rfe => {
+                let mut sr = self.cop0.read_sr();
+                // clear first two bits
+                let second_two_bits = (sr >> 2) & 3;
+                let third_two_bits = (sr >> 4) & 3;
+                sr &= !0b1111;
+                sr |= second_two_bits;
+                sr |= third_two_bits << 2;
+
+                self.cop0.write_sr(sr);
+            }
             //Opcode::Lwc(_) => {}
             //Opcode::Swc(_) => {}
             Opcode::Special => unreachable!(),
