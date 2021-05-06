@@ -24,11 +24,11 @@ impl BusLine for Interrupts {
         }
     }
 
-    fn read_u16(&mut self, addr: u32) -> u16 {
+    fn read_u16(&mut self, _addr: u32) -> u16 {
         todo!()
     }
 
-    fn write_u16(&mut self, addr: u32, data: u16) {
+    fn write_u16(&mut self, _addr: u32, _data: u16) {
         todo!()
     }
 
