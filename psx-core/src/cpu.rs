@@ -175,13 +175,13 @@ impl Cpu {
                 let rs = self.regs.read_register(instruction.rs) as i32;
                 let imm = instruction.imm16 as i16 as i32;
 
-                self.regs.write_register(instruction.rd, (rs < imm) as u32);
+                self.regs.write_register(instruction.rt, (rs < imm) as u32);
             }
             Opcode::Sltiu => {
                 let rs = self.regs.read_register(instruction.rs);
                 let imm = Self::sign_extend_16(instruction.imm16);
 
-                self.regs.write_register(instruction.rd, (rs < imm) as u32);
+                self.regs.write_register(instruction.rt, (rs < imm) as u32);
             }
             Opcode::Addu => {
                 self.execute_alu_reg(instruction, |rs, rt| rs.wrapping_add(rt));
