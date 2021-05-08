@@ -25,9 +25,10 @@ impl BusLine for Timers {
         let timer_index = (addr >> 4) & 0x3;
         let reg_index = (addr & 0xF) / 4;
 
-        println!(
+        log::info!(
             "written timer register addr=0x{:X}, data=0x{:X}",
-            addr, data
+            addr,
+            data
         );
         self.timers[timer_index as usize][reg_index as usize] = data as u16;
     }
@@ -50,15 +51,17 @@ impl BusLine for Timers {
         let reg_index = (addr & 0xF) / 4;
 
         if is_inside_reg {
-            println!(
+            log::info!(
                 "written timer register addr=0x{:X}, data=0x{:X}",
-                addr, data
+                addr,
+                data
             );
             self.timers[timer_index as usize][reg_index as usize] = data;
         } else {
-            println!(
+            log::info!(
                 "written timer to garbage addr=0x{:X}, data=0x{:X}",
-                addr, data
+                addr,
+                data
             );
         }
     }

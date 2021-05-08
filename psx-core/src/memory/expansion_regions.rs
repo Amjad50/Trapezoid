@@ -40,6 +40,12 @@ impl BusLine for ExpansionRegion1 {
 
     fn write_u8(&mut self, addr: u32, data: u8) {
         self.data[addr as usize] = data;
+
+        log::info!(
+            "expansion region r1 write at {:05X}, value {:02X}",
+            addr,
+            data
+        );
     }
 }
 
@@ -76,6 +82,11 @@ impl BusLine for ExpansionRegion2 {
 
     fn write_u8(&mut self, addr: u32, data: u8) {
         // POST register used for debugging the BIOS and kernel init
+        log::info!(
+            "expansion region 2 write at {:02X}, value {:02X}",
+            addr,
+            data
+        );
         if addr == 0x41 {
             println!("TraceStep {:02X}", data);
         }

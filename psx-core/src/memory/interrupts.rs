@@ -16,7 +16,7 @@ impl BusLine for Interrupts {
     }
 
     fn write_u32(&mut self, addr: u32, data: u32) {
-        println!("write interrupts regs {:X} = {:08X}", addr, data);
+        log::info!("write interrupts 32, regs {:X} = {:08X}", addr, data);
         match addr {
             0 => self.stat = data as u16,
             4 => self.mask = data as u16,

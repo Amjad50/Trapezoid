@@ -106,7 +106,7 @@ impl BusLine for CacheControl {
 
     fn write_u32(&mut self, _addr: u32, data: u32) {
         // TODO: implement this registerproperly
-        println!("LOG cache control written with {:08X}", data);
+        log::info!("LOG cache control written with {:08X}", data);
         self.0 = data;
     }
 

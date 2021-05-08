@@ -4,6 +4,7 @@ use std::process::exit;
 use psx_core::Psx;
 
 fn main() {
+    env_logger::builder().format_timestamp(None).init();
     let args: Vec<_> = args().collect();
 
     if args.len() < 3 {

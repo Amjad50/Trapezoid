@@ -33,10 +33,11 @@ impl Cpu {
         self.regs.pc += 4;
 
         if let Some(jump_dest) = self.jump_dest_next.take() {
+            log::trace!("pc jump {:08X}", jump_dest);
             self.regs.pc = jump_dest;
         }
 
-        println!("{:08X}: {:02X?}", pc, instruction);
+        log::trace!("{:08X}: {:02X?}", pc, instruction);
         self.execute_instruction(instruction, bus);
     }
 }
