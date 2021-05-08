@@ -34,6 +34,12 @@ bitflags::bitflags! {
 #[derive(Default)]
 pub struct Gpu {
     gpu_stat: GpuStat,
+
+    drawing_area_top_left: (u32, u32),
+    drawing_area_bottom_right: (u32, u32),
+    drawing_offset: (i32, i32),
+    texture_window_mask: (u32, u32),
+    texture_window_offset: (u32, u32),
 }
 
 impl Gpu {
@@ -59,7 +65,7 @@ impl Gpu {
         let cmd = data >> 24;
         log::info!("gp0 command {:02X} data: {:08X}", cmd, data);
         match cmd {
-            0x00 => {
+            0x00 | 0x06 => {
                 // Nop
             }
             0xe1 => {
@@ -75,6 +81,39 @@ impl Gpu {
                 self.gpu_stat.bits &= !0x87FF;
                 self.gpu_stat.bits |= stat_lower_11_bits;
                 self.gpu_stat.bits |= stat_15_bit << 15;
+            }
+            0xe2 => {
+                // Texture window settings
+                let mask_x = data & 0x1F;
+                let mask_y = (data >> 5) & 0x1F;
+                let offset_x = (data >> 10) & 0x1F;
+                let offset_y = (data >> 15) & 0x1F;
+
+                self.texture_window_mask = (mask_x, mask_y);
+                self.texture_window_offset = (offset_x, offset_y);
+            }
+            0xe3 => {
+                // Set Drawing Area top left
+                let x = data & 0x3ff;
+                let y = (data >> 10) & 0x3ff;
+                self.drawing_area_top_left = (x, y);
+            }
+            0xe4 => {
+                // Set Drawing Area bottom right
+                let x = data & 0x3ff;
+                let y = (data >> 10) & 0x3ff;
+                self.drawing_area_bottom_right = (x, y);
+            }
+            0xe5 => {
+                // Set Drawing offset
+                // TODO: test the accuracy of the sign extension
+                let x = data & 0x7ff;
+                let sign_extend = 0xfffff800 * ((x >> 10) & 1);
+                let x = (x | sign_extend) as i32;
+                let y = (data >> 11) & 0x7ff;
+                let sign_extend = 0xfffff800 * ((y >> 10) & 1);
+                let y = (y | sign_extend) as i32;
+                self.drawing_offset = (x, y);
             }
             _ => todo!("gp0 command {:02X}", cmd),
         }
@@ -93,6 +132,13 @@ impl Gpu {
                         | GpuStat::READY_FOR_DMA_RECV
                         | GpuStat::READY_FOR_CMD_RECV,
                 );
+            }
+            0x04 => {
+                // DMA direction
+                self.gpu_stat.remove(GpuStat::DMA_DIRECTION);
+                self.gpu_stat.bits |= (data & 3) << 29;
+
+                // TODO: should also affect GpuStat::DMA_DATA_REQUEST
             }
             0x08 => {
                 // Display mode
