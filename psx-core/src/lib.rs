@@ -1,5 +1,6 @@
 mod coprocessor;
 mod cpu;
+mod gpu;
 mod memory;
 mod spu;
 mod timers;
