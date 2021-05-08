@@ -154,6 +154,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.main_ram.read_u16(addr & 0xFFFFFF),
             0xA0000000..=0xA0200000 => self.main_ram.read_u16(addr & 0xFFFFFF),
 
+            0x1F801070..=0x1F801077 => self.interrupts.read_u16(addr & 0xF),
             0x1F801100..=0x1F80112F => self.timers.read_u16(addr & 0xFF),
             0x1F801C00..=0x1F802000 => self.spu_registers.read_u16((addr & 0xFFF) - 0xC00),
             0xBFC00000..=0xBFC80000 => self.bios.read_u16(addr),
@@ -171,6 +172,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.main_ram.write_u16(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.main_ram.write_u16(addr & 0xFFFFFF, data),
 
+            0x1F801070..=0x1F801077 => self.interrupts.write_u16(addr & 0xF, data),
             0x1F801100..=0x1F80112F => self.timers.write_u16(addr & 0xFF, data),
             0x1F801C00..=0x1F802000 => self.spu_registers.write_u16((addr & 0xFFF) - 0xC00, data),
             _ => {

@@ -24,12 +24,29 @@ impl BusLine for Interrupts {
         }
     }
 
-    fn read_u16(&mut self, _addr: u32) -> u16 {
-        todo!()
+    fn read_u16(&mut self, addr: u32) -> u16 {
+        match addr {
+            0 => self.stat,
+            2 => 0,
+            4 => self.mask,
+            6 => 0,
+            _ => unreachable!(),
+        }
     }
 
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
-        todo!()
+    fn write_u16(&mut self, addr: u32, data: u16) {
+        log::info!("write interrupts 16, regs {:X} = {:08X}", addr, data);
+        match addr {
+            0 => {
+                self.stat = data;
+            }
+            2 => {}
+            4 => {
+                self.mask = data;
+            }
+            6 => {}
+            _ => unreachable!(),
+        }
     }
 
     fn read_u8(&mut self, _addr: u32) -> u8 {
