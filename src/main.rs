@@ -7,16 +7,13 @@ fn main() {
     env_logger::builder().format_timestamp(None).init();
     let args: Vec<_> = args().collect();
 
-    if args.len() < 3 {
-        println!("USAGE: {} <bios> <instructions to execute>", args[0]);
+    if args.len() < 2 {
+        println!("USAGE: {} <bios>", args[0]);
         exit(1);
     }
 
-    let count = args[2].parse::<u32>().unwrap();
-
     let mut psx = Psx::new(&args[1]).unwrap();
-
-    for _ in 0..count {
+    loop {
         psx.clock();
     }
 }
