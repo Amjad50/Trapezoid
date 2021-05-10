@@ -65,7 +65,6 @@ impl GpuStat {
     }
 }
 
-#[derive(Default)]
 pub struct Gpu {
     gpu_stat: GpuStat,
 
@@ -78,6 +77,25 @@ pub struct Gpu {
     vram_display_area_start: (u32, u32),
     display_horizontal_range: (u32, u32),
     display_vertical_range: (u32, u32),
+
+    vram: Box<[u16; 1024 * 512]>,
+}
+
+impl Default for Gpu {
+    fn default() -> Self {
+        Self {
+            gpu_stat: Default::default(),
+            drawing_area_top_left: Default::default(),
+            drawing_area_bottom_right: Default::default(),
+            drawing_offset: Default::default(),
+            texture_window_mask: Default::default(),
+            texture_window_offset: Default::default(),
+            vram_display_area_start: Default::default(),
+            display_horizontal_range: Default::default(),
+            display_vertical_range: Default::default(),
+            vram: Box::new([0; 1024 * 512]),
+        }
+    }
 }
 
 impl Gpu {
