@@ -74,6 +74,10 @@ pub struct Gpu {
     drawing_offset: (i32, i32),
     texture_window_mask: (u32, u32),
     texture_window_offset: (u32, u32),
+
+    vram_display_area_start: (u32, u32),
+    display_horizontal_range: (u32, u32),
+    display_vertical_range: (u32, u32),
 }
 
 impl Gpu {
@@ -207,6 +211,34 @@ impl Gpu {
                 self.gpu_stat.bits |= (data & 3) << 29;
 
                 // TODO: should also affect GpuStat::DMA_DATA_REQUEST
+            }
+            0x05 => {
+                // Vram Start of Display area
+
+                let x = data & 0x3ff;
+                let y = (data >> 10) & 0x1ff;
+
+                self.vram_display_area_start = (x, y);
+                log::info!("vram display start area {:?}", self.vram_display_area_start);
+            }
+            0x06 => {
+                // Screen Horizontal Display range
+                let x1 = data & 0xfff;
+                let x2 = (data >> 12) & 0xfff;
+
+                self.display_horizontal_range = (x1, x2);
+                log::info!(
+                    "display horizontal range {:?}",
+                    self.display_horizontal_range
+                );
+            }
+            0x07 => {
+                // Screen Vertical Display range
+                let y1 = data & 0x1ff;
+                let y2 = (data >> 10) & 0x1ff;
+
+                self.display_vertical_range = (y1, y2);
+                log::info!("display vertical range {:?}", self.display_vertical_range);
             }
             0x08 => {
                 // Display mode
