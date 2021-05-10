@@ -137,7 +137,7 @@ impl Dma {
                                 let n_entries = linked_list_data >> 24;
                                 log::info!("got {} entries", n_entries);
 
-                                for i in 0..n_entries {
+                                for i in 1..(n_entries + 1) {
                                     let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
                                     // gp0 command
                                     // TODO: make sure that `gp1(04h)` is set to 2
