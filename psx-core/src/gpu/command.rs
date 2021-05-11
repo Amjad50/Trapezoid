@@ -11,7 +11,7 @@ pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
         2 => todo!(),
         3 => todo!(),
         4 => todo!(),
-        5 => todo!(),
+        5 => Box::new(CpuToVramBlitCommand::new(data)),
         6 => todo!(),
         7 => Box::new(EnvironmentCommand::new(data)),
         _ => unreachable!(),
@@ -234,10 +234,108 @@ impl Gp0Command for MiscCommand {
             0x00 => {
                 // Nop
             }
+            0x01 => {
+                // Invalidate CLUT cache
+            }
             _ => todo!("gp0 misc command {:02X}", cmd),
         }
 
         true
+    }
+
+    fn still_need_params(&mut self) -> bool {
+        todo!()
+    }
+}
+
+struct CpuToVramBlitCommand {
+    input_state: u8,
+    start_dest: (u32, u32),
+    next_dest: (u32, u32),
+    start_size: (u32, u32),
+    remaining_size: (u32, u32),
+    next_data: u32,
+}
+
+impl Gp0Command for CpuToVramBlitCommand {
+    fn new(_data0: u32) -> Self
+    where
+        Self: Sized,
+    {
+        Self {
+            input_state: 0,
+            start_size: (0, 0),
+            remaining_size: (0, 0),
+            next_data: 0,
+            start_dest: (0, 0),
+            next_dest: (0, 0),
+        }
+    }
+
+    fn add_param(&mut self, param: u32) {
+        match self.input_state {
+            0 => {
+                let start_x = param & 0x3FF;
+                let start_y = (param >> 16) & 0x1FF;
+                self.start_dest = (start_x, start_y);
+                self.next_dest = (start_x, start_y);
+                log::info!("CPU to VRAM: input dest {:?}", self.start_dest);
+                self.input_state = 1;
+            }
+            1 => {
+                let size_x = ((param & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1;
+                let size_y = ((param >> 16).wrapping_sub(1) & 0x1FF) + 1;
+                self.start_size = (size_x, size_y);
+                self.remaining_size = (size_x, size_y);
+                log::info!("CPU to VRAM: size {:?}", self.start_size);
+                self.input_state = 2;
+            }
+            2 => {
+                self.next_data = param;
+                self.input_state = 3;
+            }
+            3 => self.next_data = param,
+            _ => unreachable!(),
+        }
+    }
+
+    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
+        if self.input_state != 3 {
+            return false;
+        }
+
+        let (x_counter, y_counter) = &mut self.remaining_size;
+
+        log::info!(
+            "IN TRANSFERE, dest={:?}, data={:08X}",
+            self.next_dest,
+            self.next_data
+        );
+        let d1 = self.next_data as u16;
+        let d2 = (self.next_data >> 16) as u16;
+
+        for data in &[d1, d2] {
+            ctx.vram.write_at_position(self.next_dest, *data);
+
+            self.next_dest.0 = (self.next_dest.0 + 1) & 0x3FF;
+            *x_counter -= 1;
+
+            if *x_counter == 0 {
+                self.next_dest.1 = (self.next_dest.1 + 1) & 0x1FF;
+
+                *y_counter -= 1;
+                *x_counter = self.start_size.0;
+                self.next_dest.0 = self.start_dest.0;
+
+                if *y_counter == 0 {
+                    // finish transfer
+                    log::info!("DONE TRANSFERE");
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     fn still_need_params(&mut self) -> bool {

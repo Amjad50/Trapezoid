@@ -69,8 +69,29 @@ impl GpuStat {
     }
 }
 
+pub struct Vram {
+    data: Box<[u16; 1024 * 512]>,
+}
+
+impl Default for Vram {
+    fn default() -> Self {
+        Self {
+            data: Box::new([0; 1024 * 512]),
+        }
+    }
+}
+
+impl Vram {
+    fn write_at_position(&mut self, position: (u32, u32), data: u16) {
+        let address = position.1 * 1024 + position.0;
+        self.data[address as usize] = data;
+    }
+}
+
+#[derive(Default)]
 pub struct GpuContext {
     gpu_stat: GpuStat,
+    vram: Vram,
 
     drawing_area_top_left: (u32, u32),
     drawing_area_bottom_right: (u32, u32),
@@ -81,25 +102,6 @@ pub struct GpuContext {
     vram_display_area_start: (u32, u32),
     display_horizontal_range: (u32, u32),
     display_vertical_range: (u32, u32),
-
-    vram: Box<[u16; 1024 * 512]>,
-}
-
-impl Default for GpuContext {
-    fn default() -> Self {
-        Self {
-            gpu_stat: Default::default(),
-            drawing_area_top_left: Default::default(),
-            drawing_area_bottom_right: Default::default(),
-            drawing_offset: Default::default(),
-            texture_window_mask: Default::default(),
-            texture_window_offset: Default::default(),
-            vram_display_area_start: Default::default(),
-            display_horizontal_range: Default::default(),
-            display_vertical_range: Default::default(),
-            vram: Box::new([0; 1024 * 512]),
-        }
-    }
 }
 
 #[derive(Default)]

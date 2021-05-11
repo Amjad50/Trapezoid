@@ -108,6 +108,72 @@ impl Default for Dma {
 }
 
 impl Dma {
+    fn perform_gpu_channel2_dma(&mut self, dma_bus: &mut super::DmaBus) {
+        let channel = &mut self.channels[2];
+        // GPU channel
+        match channel.channel_control.sync_mode() {
+            1 => {
+                // Gpu VRAM load/store
+                let direction_from_main_ram = channel
+                    .channel_control
+                    .intersects(ChannelControl::DIRECTION);
+                let address_step = channel.channel_control.address_step();
+
+                let block_size = (channel.block_control & 0xFFFF).max(0x10);
+                let blocks = channel.block_control >> 16;
+                // cannot overflow as it is 0x10 * 0xFFFF at max
+                let mut remaining_length = block_size * blocks;
+
+                let mut address = channel.base_address & 0xFFFFFC;
+
+                let next_address = |remaining_length: &mut u32, address: &mut u32| {
+                    *remaining_length -= 1;
+                    let (r, overflow) = (*address as i32).overflowing_add(address_step);
+                    assert!(!overflow);
+                    *address = r as u32;
+                };
+
+                if direction_from_main_ram {
+                    while remaining_length > 0 {
+                        let data = dma_bus.main_ram.read_u32(address);
+                        dma_bus.gpu.write_u32(0, data);
+                        // step
+                        next_address(&mut remaining_length, &mut address);
+                    }
+                } else {
+                    todo!()
+                }
+            }
+            2 => {
+                // Linked list mode, to sending GP0 commands
+                assert!(channel.channel_control.address_step() == 4);
+                let mut linked_entry_addr = channel.base_address & 0xFFFFFC;
+                while linked_entry_addr != 0xFFFFFF {
+                    let linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr & 0xFFFFFC);
+                    let n_entries = linked_list_data >> 24;
+                    log::info!(
+                        "got {} entries, from data {:08X} located at address {:08X}",
+                        n_entries,
+                        linked_list_data,
+                        linked_entry_addr
+                    );
+
+                    for i in 1..(n_entries + 1) {
+                        let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
+                        // gp0 command
+                        // TODO: make sure that `gp1(04h)` is set to 2
+                        dma_bus.gpu.write_u32(0, cmd);
+                    }
+
+                    linked_entry_addr = linked_list_data & 0xFFFFFF;
+                }
+
+                channel.base_address = 0xFFFFFF;
+            }
+            _ => unreachable!(),
+        }
+    }
+
     #[allow(dead_code)]
     pub(super) fn clock_dma(&mut self, dma_bus: &mut super::DmaBus) {
         // TODO: handle priority appropriately
@@ -126,33 +192,10 @@ impl Dma {
                     .remove(ChannelControl::START_BUSY | ChannelControl::START_TRIGGER);
 
                 match i {
-                    2 => {
-                        // linked_list mode
-                        if channel.channel_control.sync_mode() == 2 {
-                            assert!(channel.channel_control.address_step() == 4);
-                            let mut linked_entry_addr = channel.base_address & 0xFFFFFC;
-                            while linked_entry_addr != 0xFFFFFF {
-                                let linked_list_data =
-                                    dma_bus.main_ram.read_u32(linked_entry_addr & 0xFFFFFC);
-                                let n_entries = linked_list_data >> 24;
-                                log::info!("got {} entries", n_entries);
-
-                                for i in 1..(n_entries + 1) {
-                                    let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
-                                    // gp0 command
-                                    // TODO: make sure that `gp1(04h)` is set to 2
-                                    dma_bus.gpu.write_u32(0, cmd);
-                                }
-
-                                linked_entry_addr = linked_list_data & 0xFFFFFF;
-                            }
-
-                            channel.base_address = 0xFFFFFF;
-                        } else {
-                            todo!()
-                        }
-                    }
+                    2 => self.perform_gpu_channel2_dma(dma_bus),
                     6 => {
+                        // GPU channel (OTC)
+
                         // must be to main ram
                         assert!(!channel
                             .channel_control
@@ -169,6 +212,7 @@ impl Dma {
                             n_blocks = 0x10000;
                         }
 
+                        // TODO: check if we should add one more linked list entry
                         for _ in 0..(n_blocks - 1) {
                             let next = current - 4;
                             // write a pointer to the next address
