@@ -1,4 +1,8 @@
+mod command;
+
 use crate::memory::BusLine;
+
+use command::{instantiate_gp0_command, Gp0Command};
 
 bitflags::bitflags! {
     #[derive(Default)]
@@ -65,7 +69,7 @@ impl GpuStat {
     }
 }
 
-pub struct Gpu {
+pub struct GpuContext {
     gpu_stat: GpuStat,
 
     drawing_area_top_left: (u32, u32),
@@ -81,7 +85,7 @@ pub struct Gpu {
     vram: Box<[u16; 1024 * 512]>,
 }
 
-impl Default for Gpu {
+impl Default for GpuContext {
     fn default() -> Self {
         Self {
             gpu_stat: Default::default(),
@@ -95,6 +99,30 @@ impl Default for Gpu {
             display_vertical_range: Default::default(),
             vram: Box::new([0; 1024 * 512]),
         }
+    }
+}
+
+#[derive(Default)]
+pub struct Gpu {
+    gpu_context: GpuContext,
+    /// holds commands that needs extra parameter and complex, like sending
+    /// to/from VRAM, and rendering
+    current_command: Option<Box<dyn Gp0Command>>,
+}
+
+// for easier access to gpu context
+impl std::ops::Deref for Gpu {
+    type Target = GpuContext;
+
+    fn deref(&self) -> &Self::Target {
+        &self.gpu_context
+    }
+}
+
+// for easier access to gpu context
+impl std::ops::DerefMut for Gpu {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.gpu_context
     }
 }
 
@@ -115,93 +143,29 @@ impl Gpu {
         log::info!("GPUREAD = {:08X}", out);
         out
     }
-}
 
-impl Gpu {
     fn run_gp0_command(&mut self, data: u32) {
-        let cmd = data >> 24;
-        log::info!("gp0 command {:02X} data: {:08X}", cmd, data);
-        match cmd {
-            0x00 => {
-                // Nop
-            }
-            0xe1 => {
-                // Draw Mode setting
+        // TODO: instead of executing the commands here, it should be done
+        //  in a separate GPU clock, here should _only_ take input
 
-                // 0-3   Texture page X Base   (N*64)
-                // 4     Texture page Y Base   (N*256)
-                // 5-6   Semi Transparency     (0=B/2+F/2, 1=B+F, 2=B-F, 3=B+F/4)
-                // 7-8   Texture page colors   (0=4bit, 1=8bit, 2=15bit, 3=Reserved)
-                // 9     Dither 24bit to 15bit (0=Off/strip LSBs, 1=Dither Enabled)
-                // 10    Drawing to display area (0=Prohibited, 1=Allowed)
-                // 11    Set Mask-bit when drawing pixels (0=No, 1=Yes/Mask)
-                let stat_lower_11_bits = data & 0x7FF;
-                let stat_bit_15_texture_disable = (data >> 11) & 1;
+        // if we still executing some command
+        if let Some(cmd) = self.current_command.as_mut() {
+            // add the new data we received
+            log::info!("gp0 extra param {:08X}", data);
+            cmd.add_param(data);
+            // and exec, if it finished, then clear the current command
+            if cmd.exec_command(&mut self.gpu_context) {
+                self.current_command = None;
+            }
+            return;
+        }
 
-                #[allow(unused)]
-                let textured_rect_x_flip = (data >> 12) & 1;
-                #[allow(unused)]
-                let textured_rect_y_flip = (data >> 13) & 1;
+        log::info!("gp0 command {:08X}", data);
+        let mut cmd = instantiate_gp0_command(data);
 
-                self.gpu_stat.bits &= !0x87FF;
-                self.gpu_stat.bits |= stat_lower_11_bits;
-                self.gpu_stat.bits |= stat_bit_15_texture_disable << 15;
-            }
-            0xe2 => {
-                // Texture window settings
-                let mask_x = data & 0x1F;
-                let mask_y = (data >> 5) & 0x1F;
-                let offset_x = (data >> 10) & 0x1F;
-                let offset_y = (data >> 15) & 0x1F;
-
-                self.texture_window_mask = (mask_x, mask_y);
-                self.texture_window_offset = (offset_x, offset_y);
-
-                log::info!(
-                    "texture window mask = {:?}, offset = {:?}",
-                    self.texture_window_mask,
-                    self.texture_window_offset
-                );
-            }
-            0xe3 => {
-                // Set Drawing Area top left
-                let x = data & 0x3ff;
-                let y = (data >> 10) & 0x3ff;
-                self.drawing_area_top_left = (x, y);
-                log::info!("drawing area top left = {:?}", self.drawing_area_top_left,);
-            }
-            0xe4 => {
-                // Set Drawing Area bottom right
-                let x = data & 0x3ff;
-                let y = (data >> 10) & 0x3ff;
-                self.drawing_area_bottom_right = (x, y);
-                log::info!(
-                    "drawing area bottom right = {:?}",
-                    self.drawing_area_bottom_right,
-                );
-            }
-            0xe5 => {
-                // Set Drawing offset
-                // TODO: test the accuracy of the sign extension
-                let x = data & 0x7ff;
-                let sign_extend = 0xfffff800 * ((x >> 10) & 1);
-                let x = (x | sign_extend) as i32;
-                let y = (data >> 11) & 0x7ff;
-                let sign_extend = 0xfffff800 * ((y >> 10) & 1);
-                let y = (y | sign_extend) as i32;
-                self.drawing_offset = (x, y);
-                log::info!("drawing offset = {:?}", self.drawing_offset,);
-            }
-            0xe6 => {
-                // Mask Bit Setting
-
-                //  11    Set mask while drawing (0=TextureBit15, 1=ForceBit15=1)
-                //  12    Check mask before draw (0=Draw Always, 1=Draw if Bit15=0)
-                let stat_bits_11_12 = data & 3;
-                self.gpu_stat.bits &= !(3 << 11);
-                self.gpu_stat.bits |= stat_bits_11_12;
-            }
-            _ => todo!("gp0 command {:02X}", cmd),
+        // if its not finished yet
+        if !cmd.exec_command(&mut self.gpu_context) {
+            self.current_command = Some(cmd);
         }
     }
 
