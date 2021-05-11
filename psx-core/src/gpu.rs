@@ -108,6 +108,11 @@ pub struct Gpu {
     /// holds commands that needs extra parameter and complex, like sending
     /// to/from VRAM, and rendering
     current_command: Option<Box<dyn Gp0Command>>,
+
+    scanline: u32,
+    dot: u32,
+    drawing_odd: bool,
+    in_vblank: bool,
 }
 
 // for easier access to gpu context
@@ -127,10 +132,53 @@ impl std::ops::DerefMut for Gpu {
 }
 
 impl Gpu {
+    pub fn clock(&mut self) {
+        let max_dots = if self.gpu_stat.is_ntsc_video_mode() {
+            3413
+        } else {
+            3406
+        };
+        let max_scanlines = if self.gpu_stat.is_ntsc_video_mode() {
+            263
+        } else {
+            314
+        };
+        let vertical_resolution = self.gpu_stat.vertical_resolution();
+        let is_interlace = self.gpu_stat.intersects(GpuStat::VERTICAL_INTERLACE);
+
+        match self.scanline {
+            0 => self.in_vblank = false,
+            240 => self.in_vblank = true,
+            _ => {}
+        }
+
+        self.dot += 1;
+        if self.dot >= max_dots {
+            self.dot = 0;
+            self.scanline += 1;
+
+            if is_interlace && vertical_resolution == 240 && self.scanline < 240 {
+                self.drawing_odd = !self.drawing_odd;
+            }
+
+            if self.scanline >= max_scanlines {
+                self.scanline = 0;
+
+                if is_interlace && vertical_resolution == 480 {
+                    self.drawing_odd = !self.drawing_odd;
+                }
+            }
+        }
+    }
+}
+
+impl Gpu {
     fn gpu_stat(&self) -> u32 {
         // Ready to receive Cmd Word
         // Ready to receive DMA Block
-        let out = self.gpu_stat.bits | (0b101 << 26);
+        let out = self.gpu_stat.bits
+            | (0b101 << 26)
+            | (((self.drawing_odd && !self.in_vblank) as u32) << 31);
 
         log::info!("GPUSTAT = {:08X}", out);
         log::info!("GPUSTAT = {:?}", self.gpu_stat);

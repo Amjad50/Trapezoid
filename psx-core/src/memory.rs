@@ -130,6 +130,7 @@ impl BusLine for CpuBus {
         // TODO: handle DMA timing better (this should clock for at least once
         //  for every instruction)
         self.dma.clock_dma(&mut self.dma_bus);
+        self.dma_bus.gpu.clock();
 
         match addr {
             // TODO: implement I-cache isolation properly
