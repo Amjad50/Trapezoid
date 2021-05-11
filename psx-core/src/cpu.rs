@@ -141,8 +141,55 @@ impl Cpu {
                     s.bus_read_u32(bus, computed_addr)
                 });
             }
-            //Opcode::Lwl => {}
-            //Opcode::Lwr => {}
+            Opcode::Lwl => {
+                // TODO: test these unaligned addressing instructions
+                let rs = self.regs.read_register(instruction.rs);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+
+                // round to the nearest floor of four
+                let start = computed_addr & !3;
+                let end = computed_addr;
+                let offset = computed_addr & 3;
+                let mut result = 0;
+
+                // read the data in little endian
+                for part_addr in (start..=end).rev() {
+                    result <<= 8;
+                    result |= self.bus_read_u8(bus, part_addr) as u32;
+                }
+                // move it to the upper part
+                let shift = (3 - offset) * 8;
+                result <<= shift;
+
+                let mask = !((0xFFFFFFFF >> shift) << shift);
+                let original_rt = self.regs.read_register(instruction.rt);
+                let result = (original_rt & mask) | result;
+
+                self.regs.write_register(instruction.rt, result);
+            }
+            Opcode::Lwr => {
+                let rs = self.regs.read_register(instruction.rs);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+
+                let start = computed_addr;
+                let end = computed_addr | 3;
+                let offset = computed_addr & 3;
+                let mut result = 0;
+
+                // read the data in little endian
+                for part_addr in (start..=end).rev() {
+                    result <<= 8;
+                    result |= self.bus_read_u8(bus, part_addr) as u32;
+                }
+                // move it to the upper part
+                let shift = (3 - offset) * 8;
+
+                let mask = !(0xFFFFFFFF >> shift);
+                let original_rt = self.regs.read_register(instruction.rt);
+                let result = (original_rt & mask) | result;
+
+                self.regs.write_register(instruction.rt, result);
+            }
             Opcode::Sb => {
                 self.execute_store(instruction, |s, computed_addr, data| {
                     s.bus_write_u8(bus, computed_addr, data as u8)
@@ -158,8 +205,40 @@ impl Cpu {
                     s.bus_write_u32(bus, computed_addr, data)
                 });
             }
-            //Opcode::Swl => {}
-            //Opcode::Swr => {}
+            Opcode::Swl => {
+                let rs = self.regs.read_register(instruction.rs);
+                let mut rt = self.regs.read_register(instruction.rt);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+
+                // round to the nearest floor of four
+                let start = computed_addr & !3;
+                let end = computed_addr;
+                let offset = computed_addr & 3;
+
+                // move it from the upper part
+                let shift = (3 - offset) * 8;
+                rt >>= shift;
+
+                // write the data in little endian
+                for part_addr in start..=end {
+                    self.bus_write_u8(bus, part_addr, rt as u8);
+                    rt >>= 8;
+                }
+            }
+            Opcode::Swr => {
+                let rs = self.regs.read_register(instruction.rs);
+                let mut rt = self.regs.read_register(instruction.rt);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+
+                let start = computed_addr;
+                let end = computed_addr | 3;
+
+                // write the data in little endian
+                for part_addr in start..=end {
+                    self.bus_write_u8(bus, part_addr, rt as u8);
+                    rt >>= 8;
+                }
+            }
             Opcode::Slt => {
                 let rs = self.regs.read_register(instruction.rs) as i32;
                 let rt = self.regs.read_register(instruction.rt) as i32;
