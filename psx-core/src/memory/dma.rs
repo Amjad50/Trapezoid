@@ -29,6 +29,14 @@ impl ChannelControl {
     fn sync_mode(&self) -> u32 {
         (self.bits & Self::SYNC_MODE.bits) >> 9
     }
+
+    fn in_progress(&self) -> bool {
+        self.intersects(Self::START_BUSY)
+    }
+
+    fn finish_transfer(&mut self) {
+        self.remove(Self::START_BUSY)
+    }
 }
 
 #[derive(Default)]
@@ -121,8 +129,8 @@ impl Dma {
 
                 let block_size = (channel.block_control & 0xFFFF).max(0x10);
                 let blocks = channel.block_control >> 16;
-                // cannot overflow as it is 0x10 * 0xFFFF at max
-                let mut remaining_length = block_size * blocks;
+                // transfer one block only
+                let mut remaining_length = block_size;
 
                 let mut address = channel.base_address & 0xFFFFFC;
 
@@ -143,35 +151,80 @@ impl Dma {
                 } else {
                     todo!()
                 }
+
+                let blocks = blocks - 1;
+
+                channel.block_control &= 0xFFFF;
+                channel.block_control |= blocks << 16;
+                channel.base_address = address;
+                if blocks == 0 {
+                    channel.channel_control.finish_transfer();
+                }
             }
             2 => {
                 // Linked list mode, to sending GP0 commands
                 assert!(channel.channel_control.address_step() == 4);
-                let mut linked_entry_addr = channel.base_address & 0xFFFFFC;
-                while linked_entry_addr != 0xFFFFFF {
-                    let linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr & 0xFFFFFC);
-                    let n_entries = linked_list_data >> 24;
-                    log::info!(
-                        "got {} entries, from data {:08X} located at address {:08X}",
-                        n_entries,
-                        linked_list_data,
-                        linked_entry_addr
-                    );
+                let linked_entry_addr = channel.base_address & 0xFFFFFC;
 
-                    for i in 1..(n_entries + 1) {
-                        let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
-                        // gp0 command
-                        // TODO: make sure that `gp1(04h)` is set to 2
-                        dma_bus.gpu.write_u32(0, cmd);
-                    }
+                let linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr);
+                let n_entries = linked_list_data >> 24;
+                // make sure the GPU can handle this entry
+                assert!(n_entries < 16);
+                log::info!(
+                    "got {} entries, from data {:08X} located at address {:08X}",
+                    n_entries,
+                    linked_list_data,
+                    linked_entry_addr
+                );
 
-                    linked_entry_addr = linked_list_data & 0xFFFFFF;
+                for i in 1..(n_entries + 1) {
+                    let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
+                    // gp0 command
+                    // TODO: make sure that `gp1(04h)` is set to 2
+                    dma_bus.gpu.write_u32(0, cmd);
                 }
 
-                channel.base_address = 0xFFFFFF;
+                channel.base_address = linked_list_data & 0xFFFFFF;
+
+                if channel.base_address == 0xFFFFFF {
+                    channel.channel_control.finish_transfer();
+                }
             }
             _ => unreachable!(),
         }
+    }
+
+    fn perform_otc_channel6_dma(&mut self, dma_bus: &mut super::DmaBus) {
+        let channel = &mut self.channels[6];
+        // must be to main ram
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::DIRECTION));
+        // must be backwards
+        assert!(channel.channel_control.address_step() == -4);
+        // must be sync mode 0
+        assert!(channel.channel_control.sync_mode() == 0);
+        // make sure there is no chopping, so we can finish this in one go
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::CHOPPING_ENABLED));
+
+        // word align
+        let mut current = channel.base_address & 0xFFFFFC;
+        let mut n_entries = channel.block_control & 0xFFFF;
+        if n_entries == 0 {
+            n_entries = 0x10000;
+        }
+
+        // TODO: check if we should add one more linked list entry
+        for _ in 0..(n_entries - 1) {
+            let next = current - 4;
+            // write a pointer to the next address
+            dma_bus.main_ram.write_u32(current, next);
+            current = next;
+        }
+        dma_bus.main_ram.write_u32(current, 0xFFFFFF);
+        channel.channel_control.finish_transfer();
     }
 
     #[allow(dead_code)]
@@ -180,47 +233,16 @@ impl Dma {
         for (i, channel) in self.channels.iter_mut().enumerate() {
             let channel_enabled = (self.control >> (i * 4)) & 0b1000 != 0;
 
-            if channel_enabled
-                && channel
-                    .channel_control
-                    .intersects(ChannelControl::START_BUSY)
-            {
+            if channel_enabled && channel.channel_control.in_progress() {
                 log::info!("channel {} doing DMA", i);
                 // end transfer (remove busy bits)
                 channel
                     .channel_control
-                    .remove(ChannelControl::START_BUSY | ChannelControl::START_TRIGGER);
+                    .remove(ChannelControl::START_TRIGGER);
 
                 match i {
                     2 => self.perform_gpu_channel2_dma(dma_bus),
-                    6 => {
-                        // GPU channel (OTC)
-
-                        // must be to main ram
-                        assert!(!channel
-                            .channel_control
-                            .intersects(ChannelControl::DIRECTION));
-                        // must be backwards
-                        assert!(channel.channel_control.address_step() == -4);
-                        // must be sync mode 0
-                        assert!(channel.channel_control.bits & ChannelControl::SYNC_MODE.bits == 0);
-
-                        // word align
-                        let mut current = channel.base_address & 0xFFFFFC;
-                        let mut n_blocks = channel.block_control & 0xFFFF;
-                        if n_blocks == 0 {
-                            n_blocks = 0x10000;
-                        }
-
-                        // TODO: check if we should add one more linked list entry
-                        for _ in 0..(n_blocks - 1) {
-                            let next = current - 4;
-                            // write a pointer to the next address
-                            dma_bus.main_ram.write_u32(current, next);
-                            current = next;
-                        }
-                        dma_bus.main_ram.write_u32(current, 0xFFFFFF);
-                    }
+                    6 => self.perform_otc_channel6_dma(dma_bus),
                     _ => todo!(),
                 }
 

@@ -93,9 +93,8 @@ impl Gp0Command for PolygonCommand {
     fn exec_command(&mut self, _ctx: &mut GpuContext) -> bool {
         log::info!("POLYGON executing {:?}", self);
 
-        if (self.input_pointer == 4 && self.is_4_vertices)
-            || (!self.is_4_vertices && self.input_pointer == 3)
-        {
+        if !self.still_need_params() {
+            // TODO: implement
             true
         } else {
             false
@@ -103,7 +102,8 @@ impl Gp0Command for PolygonCommand {
     }
 
     fn still_need_params(&mut self) -> bool {
-        todo!()
+        !((self.input_pointer == 4 && self.is_4_vertices)
+            || (self.input_pointer == 3 && !self.is_4_vertices))
     }
 }
 
@@ -209,7 +209,7 @@ impl Gp0Command for EnvironmentCommand {
     }
 
     fn still_need_params(&mut self) -> bool {
-        todo!()
+        false
     }
 }
 
@@ -244,7 +244,7 @@ impl Gp0Command for MiscCommand {
     }
 
     fn still_need_params(&mut self) -> bool {
-        todo!()
+        false
     }
 }
 
@@ -254,7 +254,7 @@ struct CpuToVramBlitCommand {
     next_dest: (u32, u32),
     start_size: (u32, u32),
     remaining_size: (u32, u32),
-    next_data: u32,
+    next_data: Option<u32>,
 }
 
 impl Gp0Command for CpuToVramBlitCommand {
@@ -266,7 +266,7 @@ impl Gp0Command for CpuToVramBlitCommand {
             input_state: 0,
             start_size: (0, 0),
             remaining_size: (0, 0),
-            next_data: 0,
+            next_data: None,
             start_dest: (0, 0),
             next_dest: (0, 0),
         }
@@ -290,47 +290,41 @@ impl Gp0Command for CpuToVramBlitCommand {
                 log::info!("CPU to VRAM: size {:?}", self.start_size);
                 self.input_state = 2;
             }
-            2 => {
-                self.next_data = param;
-                self.input_state = 3;
-            }
-            3 => self.next_data = param,
+            2 => self.next_data = Some(param),
             _ => unreachable!(),
         }
     }
 
     fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
-        if self.input_state != 3 {
-            return false;
-        }
+        if let Some(next_data) = self.next_data.take() {
+            let (x_counter, y_counter) = &mut self.remaining_size;
 
-        let (x_counter, y_counter) = &mut self.remaining_size;
+            log::info!(
+                "IN TRANSFERE, dest={:?}, data={:08X}",
+                self.next_dest,
+                next_data
+            );
+            let d1 = next_data as u16;
+            let d2 = (next_data >> 16) as u16;
 
-        log::info!(
-            "IN TRANSFERE, dest={:?}, data={:08X}",
-            self.next_dest,
-            self.next_data
-        );
-        let d1 = self.next_data as u16;
-        let d2 = (self.next_data >> 16) as u16;
+            for data in &[d1, d2] {
+                ctx.vram.write_at_position(self.next_dest, *data);
 
-        for data in &[d1, d2] {
-            ctx.vram.write_at_position(self.next_dest, *data);
+                self.next_dest.0 = (self.next_dest.0 + 1) & 0x3FF;
+                *x_counter -= 1;
 
-            self.next_dest.0 = (self.next_dest.0 + 1) & 0x3FF;
-            *x_counter -= 1;
+                if *x_counter == 0 {
+                    self.next_dest.1 = (self.next_dest.1 + 1) & 0x1FF;
 
-            if *x_counter == 0 {
-                self.next_dest.1 = (self.next_dest.1 + 1) & 0x1FF;
+                    *y_counter -= 1;
+                    *x_counter = self.start_size.0;
+                    self.next_dest.0 = self.start_dest.0;
 
-                *y_counter -= 1;
-                *x_counter = self.start_size.0;
-                self.next_dest.0 = self.start_dest.0;
-
-                if *y_counter == 0 {
-                    // finish transfer
-                    log::info!("DONE TRANSFERE");
-                    return true;
+                    if *y_counter == 0 {
+                        // finish transfer
+                        log::info!("DONE TRANSFERE");
+                        return true;
+                    }
                 }
             }
         }
@@ -339,6 +333,7 @@ impl Gp0Command for CpuToVramBlitCommand {
     }
 
     fn still_need_params(&mut self) -> bool {
-        todo!()
+        // still inputtning header (state not 3) or we still have some rows
+        self.input_state != 2 || self.remaining_size.1 > 0
     }
 }

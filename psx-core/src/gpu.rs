@@ -1,6 +1,7 @@
 mod command;
 
 use crate::memory::BusLine;
+use std::collections::VecDeque;
 
 use command::{instantiate_gp0_command, Gp0Command};
 
@@ -110,6 +111,8 @@ pub struct Gpu {
     /// holds commands that needs extra parameter and complex, like sending
     /// to/from VRAM, and rendering
     current_command: Option<Box<dyn Gp0Command>>,
+    // TODO: replace by fixed vec deque to not exceed the limited size
+    command_fifo: VecDeque<u32>,
 
     scanline: u32,
     dot: u32,
@@ -135,6 +138,32 @@ impl std::ops::DerefMut for Gpu {
 
 impl Gpu {
     pub fn clock(&mut self) {
+        self.drawing_clock();
+        self.clock_gp0_command();
+    }
+}
+
+impl Gpu {
+    fn gpu_stat(&self) -> u32 {
+        // Ready to receive Cmd Word
+        // Ready to receive DMA Block
+        let out = self.gpu_stat.bits
+            | (0b101 << 26)
+            | (((self.drawing_odd && !self.in_vblank) as u32) << 31);
+
+        log::info!("GPUSTAT = {:08X}", out);
+        log::info!("GPUSTAT = {:?}", self.gpu_stat);
+        out
+    }
+
+    fn gpu_read(&self) -> u32 {
+        // TODO: get response from commands
+        let out = 0;
+        log::info!("GPUREAD = {:08X}", out);
+        out
+    }
+
+    fn drawing_clock(&mut self) {
         let max_dots = if self.gpu_stat.is_ntsc_video_mode() {
             3413
         } else {
@@ -172,51 +201,70 @@ impl Gpu {
             }
         }
     }
-}
 
-impl Gpu {
-    fn gpu_stat(&self) -> u32 {
-        // Ready to receive Cmd Word
-        // Ready to receive DMA Block
-        let out = self.gpu_stat.bits
-            | (0b101 << 26)
-            | (((self.drawing_odd && !self.in_vblank) as u32) << 31);
+    fn clock_gp0_command(&mut self) {
+        // try to empty the fifo
+        while let Some(gp0_data) = self.command_fifo.pop_front() {
+            log::info!("fifo len {}", self.command_fifo.len() + 1);
+            if let Some(cmd) = self.current_command.as_mut() {
+                // add the new data we received
+                if cmd.still_need_params() {
+                    log::info!("gp0 extra param {:08X}", gp0_data);
+                    cmd.add_param(gp0_data);
+                    if cmd.exec_command(&mut self.gpu_context) {
+                        self.current_command = None;
+                    }
+                } else {
+                    // put the data back
+                    self.command_fifo.push_front(gp0_data);
+                    break;
+                }
+            } else {
+                log::info!("gp0 command {:08X} init", gp0_data);
+                let mut cmd = instantiate_gp0_command(gp0_data);
 
-        log::info!("GPUSTAT = {:08X}", out);
-        log::info!("GPUSTAT = {:?}", self.gpu_stat);
-        out
-    }
-
-    fn gpu_read(&self) -> u32 {
-        // TODO: get response from commands
-        let out = 0;
-        log::info!("GPUREAD = {:08X}", out);
-        out
-    }
-
-    fn run_gp0_command(&mut self, data: u32) {
-        // TODO: instead of executing the commands here, it should be done
-        //  in a separate GPU clock, here should _only_ take input
-
-        // if we still executing some command
+                // if its not finished yet
+                if !cmd.exec_command(&mut self.gpu_context) {
+                    self.current_command = Some(cmd);
+                }
+            }
+        }
+        // clock the command even if no fifo is present
         if let Some(cmd) = self.current_command.as_mut() {
-            // add the new data we received
-            log::info!("gp0 extra param {:08X}", data);
-            cmd.add_param(data);
-            // and exec, if it finished, then clear the current command
             if cmd.exec_command(&mut self.gpu_context) {
                 self.current_command = None;
             }
+        }
+    }
+
+    /// Some gp0 commands are executing even if the fifo is not empty, so we
+    /// should bypass the fifo and execute them here
+    fn execute_gp0_or_add_to_fifo(&mut self, data: u32) {
+        let cmd = data >> 24;
+        log::info!("gp0 command {:02X} data: {:08X}", cmd, data);
+        // TODO: handle commands that bypass the fifo, like `0x00, 0xe3, 0xe4, 0xe5, etc.`
+        match cmd {
+            _ => {
+                // add the command or param to the fifo
+                assert!(self.command_fifo.len() < 16);
+                self.command_fifo.push_back(data);
+            }
+        }
+    }
+
+    fn handle_gp0_input(&mut self, data: u32) {
+        // if we still executing some command
+        if let Some(cmd) = self.current_command.as_mut() {
+            // add the new data we received
+            if !cmd.still_need_params() {
+                self.execute_gp0_or_add_to_fifo(data);
+            } else {
+                assert!(self.command_fifo.len() < 16);
+                self.command_fifo.push_back(data);
+            }
             return;
         }
-
-        log::info!("gp0 command {:08X}", data);
-        let mut cmd = instantiate_gp0_command(data);
-
-        // if its not finished yet
-        if !cmd.exec_command(&mut self.gpu_context) {
-            self.current_command = Some(cmd);
-        }
+        self.execute_gp0_or_add_to_fifo(data);
     }
 
     fn run_gp1_command(&mut self, data: u32) {
@@ -308,7 +356,7 @@ impl BusLine for Gpu {
 
     fn write_u32(&mut self, addr: u32, data: u32) {
         match addr {
-            0 => self.run_gp0_command(data),
+            0 => self.handle_gp0_input(data),
             4 => self.run_gp1_command(data),
             _ => unreachable!(),
         }
