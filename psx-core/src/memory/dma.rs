@@ -169,13 +169,13 @@ impl Dma {
                 let linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr);
                 let n_entries = linked_list_data >> 24;
                 // make sure the GPU can handle this entry
-                assert!(n_entries < 16);
                 log::info!(
                     "got {} entries, from data {:08X} located at address {:08X}",
                     n_entries,
                     linked_list_data,
                     linked_entry_addr
                 );
+                assert!(n_entries < 16);
 
                 for i in 1..(n_entries + 1) {
                     let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
