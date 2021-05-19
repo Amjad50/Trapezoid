@@ -87,11 +87,17 @@ impl Vram {
         let address = position.1 * 1024 + position.0;
         self.data[address as usize] = data;
     }
+
+    fn read_at_position(&self, position: (u32, u32)) -> u16 {
+        let address = position.1 * 1024 + position.0;
+        self.data[address as usize]
+    }
 }
 
 #[derive(Default)]
 pub struct GpuContext {
     gpu_stat: GpuStat,
+    gpu_read: Option<u32>,
     vram: Vram,
 
     drawing_area_top_left: (u32, u32),
@@ -149,6 +155,7 @@ impl Gpu {
         // Ready to receive DMA Block
         let out = self.gpu_stat.bits
             | (0b101 << 26)
+            | ((self.gpu_read.is_some() as u32) << 27)
             | (((self.drawing_odd && !self.in_vblank) as u32) << 31);
 
         log::info!("GPUSTAT = {:08X}", out);
@@ -156,9 +163,8 @@ impl Gpu {
         out
     }
 
-    fn gpu_read(&self) -> u32 {
-        // TODO: get response from commands
-        let out = 0;
+    fn gpu_read(&mut self) -> u32 {
+        let out = self.gpu_read.take().unwrap_or(0);
         log::info!("GPUREAD = {:08X}", out);
         out
     }

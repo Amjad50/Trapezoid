@@ -12,7 +12,7 @@ pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
         3 => todo!(),
         4 => todo!(),
         5 => Box::new(CpuToVramBlitCommand::new(data)),
-        6 => todo!(),
+        6 => Box::new(VramToCpuBlitCommand::new(data)),
         7 => Box::new(EnvironmentCommand::new(data)),
         _ => unreachable!(),
     }
@@ -91,10 +91,9 @@ impl Gp0Command for PolygonCommand {
     }
 
     fn exec_command(&mut self, _ctx: &mut GpuContext) -> bool {
-        log::info!("POLYGON executing {:?}", self);
-
         if !self.still_need_params() {
             // TODO: implement
+            log::info!("POLYGON executing {:?}", self);
             true
         } else {
             false
@@ -335,5 +334,96 @@ impl Gp0Command for CpuToVramBlitCommand {
     fn still_need_params(&mut self) -> bool {
         // still inputtning header (state not 3) or we still have some rows
         self.input_state != 2 || self.remaining_size.1 > 0
+    }
+}
+
+struct VramToCpuBlitCommand {
+    input_state: u8,
+    start_src: (u32, u32),
+    next_src: (u32, u32),
+    start_size: (u32, u32),
+    remaining_size: (u32, u32),
+}
+
+impl Gp0Command for VramToCpuBlitCommand {
+    fn new(_data0: u32) -> Self
+    where
+        Self: Sized,
+    {
+        Self {
+            input_state: 0,
+            start_size: (0, 0),
+            remaining_size: (0, 0),
+            start_src: (0, 0),
+            next_src: (0, 0),
+        }
+    }
+
+    fn add_param(&mut self, param: u32) {
+        match self.input_state {
+            0 => {
+                let start_x = param & 0x3FF;
+                let start_y = (param >> 16) & 0x1FF;
+                self.start_src = (start_x, start_y);
+                self.next_src = (start_x, start_y);
+                log::info!("VRAM to CPU: input src {:?}", self.start_src);
+                self.input_state = 1;
+            }
+            1 => {
+                let size_x = ((param & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1;
+                let size_y = ((param >> 16).wrapping_sub(1) & 0x1FF) + 1;
+                self.start_size = (size_x, size_y);
+                self.remaining_size = (size_x, size_y);
+                log::info!("VRAM to CPU: size {:?}", self.start_size);
+                self.input_state = 2;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
+        if self.input_state != 2 || ctx.gpu_read.is_some() {
+            return false;
+        }
+
+        let (x_counter, y_counter) = &mut self.remaining_size;
+
+        // this is to save the src to print it later only
+        let src_for_dbg = self.next_src;
+        let mut data_parts = [0, 0];
+
+        for i in 0..2 {
+            data_parts[i] = ctx.vram.read_at_position(self.next_src) as u32;
+
+            self.next_src.0 = (self.next_src.0 + 1) & 0x3FF;
+            *x_counter -= 1;
+
+            if *x_counter == 0 {
+                self.next_src.1 = (self.next_src.1 + 1) & 0x1FF;
+
+                *y_counter -= 1;
+                *x_counter = self.start_size.0;
+                self.next_src.0 = self.start_src.0;
+            }
+        }
+
+        // TODO: check order
+        let data = ((data_parts[1] as u32) << 16) | data_parts[0];
+        log::info!("IN TRANSFERE, src={:?}, data={:08X}", src_for_dbg, data);
+
+        ctx.gpu_read = Some(data);
+
+        if *y_counter == 0 {
+            // finish transfer
+            log::info!("DONE TRANSFERE");
+            true
+        } else {
+            false
+        }
+    }
+
+    fn still_need_params(&mut self) -> bool {
+        // still inputting header (state not 3) or we still have some rows
+        self.input_state != 2
     }
 }
