@@ -8,6 +8,10 @@ use crate::memory::BusLine;
 use instruction::{Instruction, Opcode};
 use register::Registers;
 
+pub trait CpuBusProvider: BusLine {
+    fn pending_interrupts(&self) -> bool;
+}
+
 pub struct Cpu {
     regs: Registers,
     cop0: SystemControlCoprocessor,
@@ -25,24 +29,75 @@ impl Cpu {
         }
     }
 
-    pub fn execute_next<P: BusLine>(&mut self, bus: &mut P) {
-        let pc = self.regs.pc;
-        let instruction = self.bus_read_u32(bus, self.regs.pc);
-        let instruction = Instruction::from_u32(instruction);
+    pub fn execute_next<P: CpuBusProvider>(&mut self, bus: &mut P) {
+        // cause.10 is not a latch, so it should be updated continually
+        let new_cause =
+            (self.cop0.read_cause() & !0x400) | ((bus.pending_interrupts() as u32) << 10);
+        self.cop0.write_cause(new_cause);
 
-        self.regs.pc += 4;
+        if !self.check_and_execute_interrupt() {
+            let pc = self.regs.pc;
+            let instruction = self.bus_read_u32(bus, self.regs.pc);
+            let instruction = Instruction::from_u32(instruction);
 
-        if let Some(jump_dest) = self.jump_dest_next.take() {
-            log::trace!("pc jump {:08X}", jump_dest);
-            self.regs.pc = jump_dest;
+            self.regs.pc += 4;
+
+            if let Some(jump_dest) = self.jump_dest_next.take() {
+                log::trace!("pc jump {:08X}", jump_dest);
+                self.regs.pc = jump_dest;
+            }
+
+            log::trace!("{:08X}: {:02X?}", pc, instruction);
+            self.execute_instruction(instruction, bus);
         }
-
-        log::trace!("{:08X}: {:02X?}", pc, instruction);
-        self.execute_instruction(instruction, bus);
     }
 }
 
 impl Cpu {
+    fn execute_exception(&mut self, cause_code: u8) {
+        log::info!("executing exception: cause code: {:02X}", cause_code);
+
+        let old_cause = self.cop0.read_cause();
+        let new_cause = (old_cause & 0xFFFFFF00) | ((cause_code & 0x1F) as u32) << 2;
+        self.cop0.write_cause(new_cause);
+
+        // move the current exception enable to the next position
+        let mut sr = self.cop0.read_sr();
+        let first_two_bits = sr & 3;
+        let second_two_bits = (sr >> 2) & 3;
+        sr &= !0b111111;
+        sr |= first_two_bits << 2;
+        sr |= second_two_bits << 4;
+        self.cop0.write_sr(sr);
+
+        let bev = (sr >> 22) & 1 == 1;
+
+        let jmp_vector = if bev { 0xBFC00180 } else { 0x80000080 };
+
+        // TODO: check the written value to EPC
+        let target_pc = match cause_code {
+            0x00 => self.regs.pc,
+            0x08 => self.regs.pc - 4,
+            _ => todo!(),
+        };
+
+        self.cop0.write_epc(target_pc);
+        self.regs.pc = jmp_vector;
+    }
+
+    fn check_and_execute_interrupt(&mut self) -> bool {
+        let cause = self.cop0.read_cause();
+        let sr = self.cop0.read_sr();
+
+        // cause.10 is set and sr.10 and sr.0 are set, then execute the interrupt
+        if cause & 0x400 != 0 && sr & 0x401 == 0x401 {
+            self.execute_exception(0x00);
+            true
+        } else {
+            false
+        }
+    }
+
     fn sign_extend_16(data: u16) -> u32 {
         data as i16 as i32 as u32
     }
@@ -114,7 +169,7 @@ impl Cpu {
         handler(self, computed_addr, rt);
     }
 
-    fn execute_instruction<P: BusLine>(&mut self, instruction: Instruction, bus: &mut P) {
+    fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: Instruction, bus: &mut P) {
         match instruction.opcode {
             Opcode::Lb => {
                 self.execute_load(instruction, |s, computed_addr| {
@@ -443,16 +498,7 @@ impl Cpu {
             }
             Opcode::Bcondz => unreachable!("bcondz should be converted"),
             Opcode::Syscall => {
-                let syscall_cause = 0x8;
-                let cause = syscall_cause << 2;
-                self.cop0.write_cause(cause);
-
-                let sr = self.cop0.read_sr();
-                let bev = (sr >> 22) & 1 == 1;
-
-                let jmp_vector = if bev { 0xBFC00180 } else { 0x80000080 };
-                self.cop0.write_epc(self.regs.pc - 4);
-                self.regs.pc = jmp_vector;
+                self.execute_exception(0x08);
             }
             //Opcode::Break => {}
             //Opcode::Cop(_) => {}

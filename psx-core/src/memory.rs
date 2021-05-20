@@ -10,6 +10,7 @@ use std::path::Path;
 
 use byteorder::{ByteOrder, LittleEndian};
 
+use crate::cpu::CpuBusProvider;
 use crate::gpu::Gpu;
 use crate::spu::SpuRegisters;
 use crate::timers::Timers;
@@ -129,7 +130,7 @@ impl BusLine for CpuBus {
         assert!(addr % 4 == 0, "unalligned u32 read");
         // TODO: handle DMA timing better (this should clock for at least once
         //  for every instruction)
-        self.dma.clock_dma(&mut self.dma_bus);
+        self.dma.clock_dma(&mut self.dma_bus, &mut self.interrupts);
         self.dma_bus.gpu.clock();
 
         match addr {
@@ -235,5 +236,11 @@ impl BusLine for CpuBus {
                 todo!("u8 write to {:08X}", addr)
             }
         }
+    }
+}
+
+impl CpuBusProvider for CpuBus {
+    fn pending_interrupts(&self) -> bool {
+        self.interrupts.pending_interrupts()
     }
 }

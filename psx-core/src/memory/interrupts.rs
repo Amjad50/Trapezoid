@@ -2,7 +2,7 @@ use super::BusLine;
 
 bitflags::bitflags! {
     #[derive(Default)]
-    struct InterruptRegister: u16 {
+    struct InterruptFlags: u16 {
         const VBLANK                 = 1 << 0;
         const GPU                    = 1 << 1;
         const CDROM                  = 1 << 2;
@@ -17,10 +17,20 @@ bitflags::bitflags! {
     }
 }
 
+pub trait InterruptRequester {
+    fn request_dma(&mut self);
+}
+
 #[derive(Default)]
 pub struct Interrupts {
-    stat: InterruptRegister,
-    mask: InterruptRegister,
+    stat: InterruptFlags,
+    mask: InterruptFlags,
+}
+
+impl Interrupts {
+    pub fn pending_interrupts(&self) -> bool {
+        !(self.stat & self.mask).is_empty()
+    }
 }
 
 impl BusLine for Interrupts {
@@ -36,11 +46,12 @@ impl BusLine for Interrupts {
         log::info!("write interrupts 32, regs {:X} = {:08X}", addr, data);
         match addr {
             0 => {
-                self.stat = InterruptRegister::from_bits_truncate(data as u16);
+                let bits_to_keep = InterruptFlags::from_bits_truncate(data as u16);
+                self.stat.bits &= bits_to_keep.bits;
                 log::info!("write interrupts stat {:?}", self.stat);
             }
             4 => {
-                self.mask = InterruptRegister::from_bits_truncate(data as u16);
+                self.mask = InterruptFlags::from_bits_truncate(data as u16);
                 log::info!("write interrupts mask {:?}", self.mask);
             }
             _ => unreachable!(),
@@ -61,12 +72,13 @@ impl BusLine for Interrupts {
         log::info!("write interrupts 16, regs {:X} = {:08X}", addr, data);
         match addr {
             0 => {
-                self.stat = InterruptRegister::from_bits_truncate(data);
+                let bits_to_keep = InterruptFlags::from_bits_truncate(data);
+                self.stat.bits &= bits_to_keep.bits;
                 log::info!("write interrupts stat {:?}", self.stat);
             }
             2 => {}
             4 => {
-                self.mask = InterruptRegister::from_bits_truncate(data);
+                self.mask = InterruptFlags::from_bits_truncate(data);
                 log::info!("write interrupts mask {:?}", self.mask);
             }
             6 => {}
@@ -80,5 +92,12 @@ impl BusLine for Interrupts {
 
     fn write_u8(&mut self, _addr: u32, _data: u8) {
         todo!()
+    }
+}
+
+impl InterruptRequester for Interrupts {
+    fn request_dma(&mut self) {
+        log::info!("requesting DMA interrupt");
+        self.stat.insert(InterruptFlags::DMA & self.mask);
     }
 }
