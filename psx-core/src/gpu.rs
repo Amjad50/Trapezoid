@@ -287,6 +287,18 @@ impl Gpu {
                         | GpuStat::READY_FOR_CMD_RECV,
                 );
             }
+            0x01 => {
+                // Reset command fifo buffer
+                log::info!(
+                    "Gpu resetting fifo, now at length={}",
+                    self.command_fifo.len()
+                );
+                self.command_fifo.clear();
+            }
+            0x02 => {
+                // Reset IRQ
+                self.gpu_stat.remove(GpuStat::INTERRUPT_REQUEST);
+            }
             0x03 => {
                 // Display enable
                 self.gpu_stat.set(GpuStat::DISPLAY_DISABLED, data & 1 == 1)
