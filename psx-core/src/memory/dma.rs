@@ -79,6 +79,9 @@ impl ChannelControl {
 
 #[derive(Default)]
 struct DmaChannel {
+    // TODO: delay stuff are temporary to fix the DMA timing
+    delay: u32,
+    during_delay: bool,
     base_address: u32,
     block_control: u32,
     channel_control: ChannelControl,
@@ -201,12 +204,23 @@ impl Dma {
                 }
             }
             2 => {
+                if channel.during_delay {
+                    assert!(channel.delay > 0);
+                    channel.delay -= 1;
+                    if channel.delay == 0 {
+                        channel.during_delay = false;
+                        channel.channel_control.finish_transfer();
+                        self.interrupt.request_interrupt(2);
+                    }
+                    return;
+                }
+
                 // Linked list mode, to sending GP0 commands
                 assert!(channel.channel_control.address_step() == 4);
-                let linked_entry_addr = channel.base_address & 0xFFFFFC;
+                let mut linked_entry_addr = channel.base_address & 0xFFFFFC;
 
-                let linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr);
-                let n_entries = linked_list_data >> 24;
+                let mut linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr);
+                let mut n_entries = linked_list_data >> 24;
                 // make sure the GPU can handle this entry
                 log::info!(
                     "got {} entries, from data {:08X} located at address {:08X}",
@@ -215,6 +229,25 @@ impl Dma {
                     linked_entry_addr
                 );
                 assert!(n_entries < 16);
+
+                while n_entries == 0 && linked_list_data & 0xFFFFFF != 0xFFFFFF {
+                    linked_entry_addr = linked_list_data & 0xFFFFFC;
+                    linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr);
+                    n_entries = linked_list_data >> 24;
+
+                    if n_entries != 0 {
+                        channel.base_address = linked_entry_addr & 0xFFFFFF;
+                        return;
+                    }
+
+                    log::info!(
+                        "skipping: got {} entries, from data {:08X} located at address {:08X}",
+                        n_entries,
+                        linked_list_data,
+                        linked_entry_addr
+                    );
+                }
+                channel.delay += n_entries;
 
                 for i in 1..(n_entries + 1) {
                     let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
@@ -226,8 +259,7 @@ impl Dma {
                 channel.base_address = linked_list_data & 0xFFFFFF;
 
                 if channel.base_address == 0xFFFFFF {
-                    channel.channel_control.finish_transfer();
-                    self.interrupt.request_interrupt(2);
+                    channel.during_delay = true;
                 }
             }
             _ => unreachable!(),
