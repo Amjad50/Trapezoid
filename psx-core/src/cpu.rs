@@ -173,22 +173,22 @@ impl Cpu {
         match instruction.opcode {
             Opcode::Lb => {
                 self.execute_load(instruction, |s, computed_addr| {
-                    s.bus_read_u8(bus, computed_addr) as u32
+                    Self::sign_extend_8(s.bus_read_u8(bus, computed_addr))
                 });
             }
             Opcode::Lbu => {
                 self.execute_load(instruction, |s, computed_addr| {
-                    Self::sign_extend_8(s.bus_read_u8(bus, computed_addr))
+                    s.bus_read_u8(bus, computed_addr) as u32
                 });
             }
             Opcode::Lh => {
                 self.execute_load(instruction, |s, computed_addr| {
-                    s.bus_read_u16(bus, computed_addr) as u32
+                    Self::sign_extend_16(s.bus_read_u16(bus, computed_addr))
                 });
             }
             Opcode::Lhu => {
                 self.execute_load(instruction, |s, computed_addr| {
-                    Self::sign_extend_16(s.bus_read_u16(bus, computed_addr))
+                    s.bus_read_u16(bus, computed_addr) as u32
                 });
             }
             Opcode::Lw => {
@@ -375,7 +375,7 @@ impl Cpu {
                 self.execute_alu_reg(instruction, |rs, rt| rt >> (rs & 0x1F));
             }
             Opcode::Srav => {
-                self.execute_alu_reg(instruction, |rs, rt| ((rs as i32) >> rt) as u32);
+                self.execute_alu_reg(instruction, |rs, rt| ((rt as i32) >> (rs & 0x1F)) as u32);
             }
             Opcode::Sll => {
                 let rt = self.regs.read_register(instruction.rt);
