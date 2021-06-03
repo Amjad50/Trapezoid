@@ -134,9 +134,11 @@ impl CpuBus {
 impl BusLine for CpuBus {
     fn read_u32(&mut self, addr: u32) -> u32 {
         assert!(addr % 4 == 0, "unalligned u32 read");
-        // TODO: handle DMA timing better (this should clock for at least once
+        // TODO: handle Cpu timing better (this should clock for at least once
         //  for every instruction)
         self.dma.clock_dma(&mut self.dma_bus, &mut self.interrupts);
+        // almost 2 GPU clocks per 1 CPU
+        self.dma_bus.gpu.clock();
         self.dma_bus.gpu.clock();
 
         match addr {
