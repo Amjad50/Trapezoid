@@ -1,4 +1,4 @@
-use super::gpu_context::DrawingVertex;
+use super::gpu_context::{DrawingTextureParams, DrawingVertex};
 use super::GpuContext;
 
 // TODO: using dyn and dynamic dispatch might not be the best case for fast performance
@@ -36,7 +36,7 @@ struct PolygonCommand {
     semi_transparent: bool,
     texture_blending: bool,
     vertices: [DrawingVertex; 4],
-    texture_data: [u32; 4],
+    texture_params: DrawingTextureParams,
     current_input_state: u8,
     input_pointer: usize,
 }
@@ -58,7 +58,7 @@ impl Gp0Command for PolygonCommand {
                 DrawingVertex::new_with_color(data0),
                 DrawingVertex::new_with_color(data0),
             ],
-            texture_data: [0; 4],
+            texture_params: DrawingTextureParams::default(),
             current_input_state: 1,
             input_pointer: 0,
         }
@@ -82,7 +82,12 @@ impl Gp0Command for PolygonCommand {
                 }
             }
             2 => {
-                self.texture_data[self.input_pointer] = param;
+                match self.input_pointer {
+                    0 => self.texture_params.clut_from_u32(param),
+                    1 => self.texture_params.tex_page_from_u32(param),
+                    _ => {}
+                }
+                self.vertices[self.input_pointer].tex_coord_from_u32(param);
                 if self.gouraud {
                     self.current_input_state = 0;
                 } else {
@@ -97,11 +102,15 @@ impl Gp0Command for PolygonCommand {
     fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
         if !self.still_need_params() {
             log::info!("POLYGON executing {:#?}", self);
-            if self.textured || self.semi_transparent || self.texture_blending {
+            if self.semi_transparent || self.texture_blending {
                 todo!()
             }
 
-            ctx.draw_polygon(&self.vertices[..self.input_pointer]);
+            ctx.draw_polygon(
+                &self.vertices[..self.input_pointer],
+                &self.texture_params,
+                self.textured,
+            );
 
             true
         } else {
@@ -331,6 +340,9 @@ impl Gp0Command for CpuToVramBlitCommand {
                     if *y_counter == 0 {
                         // finish transfer
                         log::info!("DONE TRANSFERE");
+                        // update the texture buffer from the vram when we finish
+                        // writing to vram
+                        ctx.update_texture_buffer();
                         return true;
                     }
                 }

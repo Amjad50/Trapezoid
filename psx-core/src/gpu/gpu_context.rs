@@ -1,10 +1,11 @@
 use super::GpuStat;
 
 use glium::{
+    buffer::{Buffer, BufferMode, BufferType},
     implement_vertex,
     index::PrimitiveType,
     program,
-    texture::{ClientFormat, MipmapsOption, RawImage2d, Texture2d},
+    texture::{ClientFormat, MipmapsOption, RawImage2d, Texture2d, UncompressedFloatFormat},
     uniform,
     uniforms::MagnifySamplerFilter,
     BlitTarget, IndexBuffer, Rect, Surface, VertexBuffer,
@@ -28,6 +29,7 @@ impl GlContext {
 }
 
 impl glium::backend::Facade for GlContext {
+    #[inline]
     fn get_context(&self) -> &Rc<glium::backend::Context> {
         &self.context
     }
@@ -37,15 +39,18 @@ impl glium::backend::Facade for GlContext {
 pub struct DrawingVertex {
     position: [f32; 2],
     color: [f32; 3],
+    tex_coord: [u8; 2],
 }
 
 impl DrawingVertex {
+    #[inline]
     pub fn new_with_color(color: u32) -> Self {
         let mut s = Self::default();
         s.color_from_u32(color);
         s
     }
 
+    #[inline]
     pub fn position_from_u32(&mut self, position: u32) {
         let x = position & 0x7ff;
         let sign_extend = 0xfffff800 * ((x >> 10) & 1);
@@ -57,6 +62,7 @@ impl DrawingVertex {
         self.position = [x as f32, y as f32];
     }
 
+    #[inline]
     pub fn color_from_u32(&mut self, color: u32) {
         let r = (color & 0xFF) as u8;
         let g = ((color >> 8) & 0xFF) as u8;
@@ -64,40 +70,85 @@ impl DrawingVertex {
 
         self.color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
     }
-}
 
-implement_vertex!(DrawingVertex, position, color);
-
-pub struct Vram {
-    data: Box<[u16; 1024 * 512]>,
-}
-
-impl Default for Vram {
-    fn default() -> Self {
-        Self {
-            data: Box::new([0; 1024 * 512]),
-        }
+    #[inline]
+    pub fn tex_coord_from_u32(&mut self, tex_coord: u32) {
+        self.tex_coord = [(tex_coord & 0xFF) as u8, ((tex_coord >> 8) & 0xFF) as u8];
     }
 }
 
+implement_vertex!(DrawingVertex, position, color, tex_coord);
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct DrawingTextureParams {
+    clut_base: [u32; 2],
+    tex_page_base: [u32; 2],
+    // TODO: add support for transparent later
+    // semi_transparecy_mode: u8,
+    tex_page_color_mode: u8,
+}
+
+impl DrawingTextureParams {
+    #[inline]
+    pub fn tex_page_from_u32(&mut self, param: u32) {
+        let param = param >> 16;
+        let x = param & 0xF;
+        let y = (param >> 4) & 1;
+
+        self.tex_page_base = [x * 64, y * 256];
+        //self.semi_transparecy_mode = ((param >> 5) & 3) as u8;
+        self.tex_page_color_mode = ((param >> 7) & 3) as u8;
+        // TODO: support disable later, in the bios, the textures have this bit set
+        //self.texture_disable = (param >> 11) & 1 != 1;
+    }
+
+    #[inline]
+    pub fn clut_from_u32(&mut self, param: u32) {
+        let param = param >> 16;
+        let x = param & 0x3F;
+        let y = (param >> 6) & 0x1FF;
+        self.clut_base = [x * 16, y];
+    }
+}
+
+pub struct Vram {
+    data: Buffer<[u16]>,
+}
+
 impl Vram {
+    #[inline]
+    fn new(gl_context: &GlContext) -> Self {
+        let data = Buffer::empty_unsized(
+            gl_context,
+            BufferType::PixelUnpackBuffer,
+            1024 * 512 * 2,
+            BufferMode::Dynamic,
+        )
+        .unwrap();
+
+        Self { data }
+    }
+
+    #[inline]
     fn write_at_position_from_drawing(&mut self, position: (u32, u32), data: (u8, u8, u8, u8)) {
-        let address = position.1 * 1024 + position.0;
         let data = ((data.3 & 1) as u16) << 15
             | ((data.2 >> 3) as u16) << 10
             | ((data.1 >> 3) as u16) << 5
             | (data.0 >> 3) as u16;
-        self.data[address as usize] = data;
+
+        self.write_at_position(position, data);
     }
 
+    #[inline]
     fn write_at_position(&mut self, position: (u32, u32), data: u16) {
         let address = position.1 * 1024 + position.0;
-        self.data[address as usize] = data;
+        self.data.map_write().set(address as usize, data);
     }
 
-    fn read_at_position(&self, position: (u32, u32)) -> u16 {
+    #[inline]
+    fn read_at_position(&mut self, position: (u32, u32)) -> u16 {
         let address = position.1 * 1024 + position.0;
-        self.data[address as usize]
+        self.data.map_read()[address as usize]
     }
 }
 
@@ -118,6 +169,8 @@ pub struct GpuContext {
 
     gl_context: GlContext,
     drawing_texture: Texture2d,
+    /// Stores the VRAM content to be used for rendering in the shaders
+    texture_buffer: Texture2d,
     /// Ranges in the VRAM which are not resident in the VRAM at the moment but in the
     /// [drawing_texture], so if any byte in this range is read/written to, then
     /// we need to retrieve it from the texture and not the VRAM array
@@ -138,10 +191,19 @@ impl GpuContext {
         )
         .unwrap();
 
+        let texture_buffer = Texture2d::empty_with_format(
+            &gl_context,
+            UncompressedFloatFormat::U16,
+            MipmapsOption::NoMipmap,
+            1024,
+            512,
+        )
+        .unwrap();
+
         Self {
             gpu_stat: Default::default(),
             gpu_read: Default::default(),
-            vram: Default::default(),
+            vram: Vram::new(&gl_context),
 
             drawing_area_top_left: (0, 0),
             drawing_area_bottom_right: (0, 0),
@@ -154,6 +216,7 @@ impl GpuContext {
             display_vertical_range: (0, 0),
             gl_context,
             drawing_texture,
+            texture_buffer,
             ranges_in_rendering: Vec::new(),
         }
     }
@@ -247,12 +310,26 @@ impl GpuContext {
         self.vram.write_at_position(position, data);
     }
 
-    pub fn read_vram(&self, position: (u32, u32)) -> u16 {
+    pub fn read_vram(&mut self, position: (u32, u32)) -> u16 {
         self.check_not_in_rendering(position);
         self.vram.read_at_position(position)
     }
 
-    pub fn draw_polygon(&mut self, vertices: &[DrawingVertex]) {
+    pub fn update_texture_buffer(&mut self) {
+        self.texture_buffer
+            .main_level()
+            .raw_upload_from_pixel_buffer(self.vram.data.as_slice(), 0..1024, 0..512, 0..1);
+    }
+
+    pub fn draw_polygon(
+        &mut self,
+        vertices: &[DrawingVertex],
+        texture_params: &DrawingTextureParams,
+        textured: bool,
+    ) {
+        // TODO: if its textured, make sure the textures are not in rendering
+        //  ranges and are updated in the texture buffer
+
         let (drawing_left, drawing_top) = self.drawing_area_top_left;
         let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
 
@@ -296,7 +373,10 @@ impl GpuContext {
                     #version 140
                     in vec2 position;
                     in vec3 color;
-                    out vec3 vColor;
+                    in uvec2 tex_coord;
+
+                    out vec3 v_color;
+                    out vec2 v_tex_coord;
 
                     uniform ivec2 offset;
 
@@ -307,17 +387,75 @@ impl GpuContext {
                         float posy = (position.y + offset.y) / 480 * (-2) + 1;
 
                         gl_Position = vec4(posx, posy, 0.0, 1.0);
-                        vColor = color;
+                        v_color = color;
+                        v_tex_coord = vec2(tex_coord);
                     }
                 ",
                 fragment: "
                     #version 140
 
-                    in vec3 vColor;
-                    out vec4 f_color;
+                    in vec3 v_color;
+                    in vec2 v_tex_coord;
+
+                    out vec4 out_color;
+
+                    uniform bool is_textured;
+                    uniform sampler2D tex;
+                    uniform uvec2 tex_page_base;
+                    uniform uint tex_page_color_mode;
+                    uniform uvec2 clut_base;
+
+                    vec4 get_color_from_u16(uint color_texel) {
+                        uint r = color_texel & 0x1Fu;
+                        uint g = (color_texel >> 5) & 0x1Fu;
+                        uint b = (color_texel >> 10) & 0x1Fu;
+                        // TODO: use it for semi_transparency
+                        uint a = (color_texel >> 15) & 1u;
+
+                        return vec4(float(r) / 31.0, float(g) / 31.0, float(b) / 31.0, 0.0);
+                    }
 
                     void main() {
-                        f_color = vec4(vColor, 1.0);
+                        // retrieve the interpolated value of `tex_coord`
+                        uvec2 tex_coord = uvec2(round(v_tex_coord));
+
+                        if (is_textured) {
+                            // how many pixels in 16 bit
+                            uint divider;
+                            if (tex_page_color_mode == 0u) {
+                                divider = 4u;
+                            } else if (tex_page_color_mode == 1u) {
+                                divider = 2u;
+                            } else {
+                                divider = 1u;
+                            };
+
+                            // offsetted position
+                            uint x = tex_page_base.x + (tex_coord.x / divider);
+                            uint y = tex_page_base.y + tex_coord.y;
+
+                            uint color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
+
+                            // if we need clut, then compute it
+                            if (tex_page_color_mode == 0u || tex_page_color_mode == 1u) {
+                                uint mask = 0xFFFFu >> (16u - (16u / divider));
+                                uint clut_index_shift = (tex_coord.x % divider) * (16u / divider);
+                                uint clut_index = (color_value >> clut_index_shift) & mask;
+
+                                x = clut_base.x + clut_index;
+                                y = clut_base.y;
+                                color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
+                            }
+
+                            // if its all 0, then its transparent
+                            if (color_value == 0u){
+                                discard;
+                            }
+
+                            out_color = get_color_from_u16(color_value);
+                        } else{
+                            out_color = vec4(v_color, 0.0);
+                        }       
                     }
                 "
             },
@@ -326,6 +464,11 @@ impl GpuContext {
 
         let uniforms = uniform! {
             offset: self.drawing_offset,
+            is_textured: textured,
+            tex: self.texture_buffer.sampled(),
+            tex_page_base: texture_params.tex_page_base,
+            tex_page_color_mode: texture_params.tex_page_color_mode,
+            clut_base: texture_params.clut_base,
         };
 
         let mut texture_target = self.drawing_texture.as_surface();
