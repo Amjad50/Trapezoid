@@ -52,13 +52,13 @@ impl GpuStat {
             // 0  (if set, Add 64 to the 256 original resoltion)
             // 1  (if set, Multiply the current resolution by 2)
             let resolution_multiplier = (self.bits & Self::HORIZONTAL_RESOLUTION1.bits) >> 17;
-            let resoltion = 0x100 | ((resolution_multiplier & 1) << 14);
+            let resoltion = 0x100 | ((resolution_multiplier & 1) << 6);
             resoltion << (resolution_multiplier >> 1)
         }
     }
 
     fn vertical_resolution(&self) -> u32 {
-        240 * self.intersects(Self::VERTICAL_RESOLUTION) as u32
+        240 << self.intersects(Self::VERTICAL_RESOLUTION) as u32
     }
 
     fn is_ntsc_video_mode(&self) -> bool {
