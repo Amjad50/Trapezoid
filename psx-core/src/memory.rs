@@ -11,7 +11,7 @@ use std::path::Path;
 use byteorder::{ByteOrder, LittleEndian};
 
 use crate::cpu::CpuBusProvider;
-use crate::gpu::Gpu;
+use crate::gpu::{GlContext, Gpu};
 use crate::spu::SpuRegisters;
 use crate::timers::Timers;
 
@@ -81,7 +81,6 @@ impl Bios {
 ///
 /// The reason for this design, is to be able to pass this structure `&mut`
 /// to `Dma` without problems of double mut.
-#[derive(Default)]
 struct DmaBus {
     pub main_ram: MainRam,
     pub gpu: Gpu,
@@ -106,7 +105,7 @@ pub struct CpuBus {
 }
 
 impl CpuBus {
-    pub fn new(bios: Bios) -> Self {
+    pub fn new(bios: Bios, gl_context: GlContext) -> Self {
         Self {
             bios,
             mem_ctrl_1: MemoryControl1::default(),
@@ -120,8 +119,15 @@ impl CpuBus {
 
             timers: Timers::default(),
 
-            dma_bus: DmaBus::default(),
+            dma_bus: DmaBus {
+                main_ram: MainRam::default(),
+                gpu: Gpu::new(gl_context),
+            },
         }
+    }
+
+    pub fn gpu(&self) -> &Gpu {
+        &self.dma_bus.gpu
     }
 }
 

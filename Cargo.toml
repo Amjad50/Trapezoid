@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 psx-core = { path = "./psx-core", version = "" }
 env_logger = "0.8.3"
+glium = "0.29.1"
 
 [workspace]
 members = [

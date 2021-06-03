@@ -1,9 +1,12 @@
 mod command;
+mod gpu_context;
 
 use crate::memory::BusLine;
 use std::collections::VecDeque;
 
 use command::{instantiate_gp0_command, Gp0Command};
+pub use gpu_context::GlContext;
+use gpu_context::GpuContext;
 
 bitflags::bitflags! {
     #[derive(Default)]
@@ -70,48 +73,6 @@ impl GpuStat {
     }
 }
 
-pub struct Vram {
-    data: Box<[u16; 1024 * 512]>,
-}
-
-impl Default for Vram {
-    fn default() -> Self {
-        Self {
-            data: Box::new([0; 1024 * 512]),
-        }
-    }
-}
-
-impl Vram {
-    fn write_at_position(&mut self, position: (u32, u32), data: u16) {
-        let address = position.1 * 1024 + position.0;
-        self.data[address as usize] = data;
-    }
-
-    fn read_at_position(&self, position: (u32, u32)) -> u16 {
-        let address = position.1 * 1024 + position.0;
-        self.data[address as usize]
-    }
-}
-
-#[derive(Default)]
-pub struct GpuContext {
-    gpu_stat: GpuStat,
-    gpu_read: Option<u32>,
-    vram: Vram,
-
-    drawing_area_top_left: (u32, u32),
-    drawing_area_bottom_right: (u32, u32),
-    drawing_offset: (i32, i32),
-    texture_window_mask: (u32, u32),
-    texture_window_offset: (u32, u32),
-
-    vram_display_area_start: (u32, u32),
-    display_horizontal_range: (u32, u32),
-    display_vertical_range: (u32, u32),
-}
-
-#[derive(Default)]
 pub struct Gpu {
     gpu_context: GpuContext,
     /// holds commands that needs extra parameter and complex, like sending
@@ -143,9 +104,29 @@ impl std::ops::DerefMut for Gpu {
 }
 
 impl Gpu {
+    pub fn new(gl_context: GlContext) -> Self {
+        Self {
+            gpu_context: GpuContext::new(gl_context),
+            current_command: None,
+            command_fifo: VecDeque::new(),
+            scanline: 0,
+            dot: 0,
+            drawing_odd: false,
+            in_vblank: false,
+        }
+    }
+
     pub fn clock(&mut self) {
         self.drawing_clock();
         self.clock_gp0_command();
+    }
+
+    pub fn in_vblank(&self) -> bool {
+        self.in_vblank
+    }
+
+    pub fn blit_to_front<S: glium::Surface>(&self, s: &S) {
+        self.gpu_context.blit_to_front(s);
     }
 }
 

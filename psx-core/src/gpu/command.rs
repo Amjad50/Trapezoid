@@ -1,3 +1,4 @@
+use super::gpu_context::DrawingVertex;
 use super::GpuContext;
 
 // TODO: using dyn and dynamic dispatch might not be the best case for fast performance
@@ -34,8 +35,7 @@ struct PolygonCommand {
     textured: bool,
     semi_transparent: bool,
     texture_blending: bool,
-    colors: [u32; 4],
-    vertices: [u32; 4],
+    vertices: [DrawingVertex; 4],
     texture_data: [u32; 4],
     current_input_state: u8,
     input_pointer: usize,
@@ -52,8 +52,12 @@ impl Gp0Command for PolygonCommand {
             textured: (data0 >> 26) & 1 == 1,
             semi_transparent: (data0 >> 25) & 1 == 1,
             texture_blending: (data0 >> 24) & 1 == 1,
-            colors: [data0 & 0xFFFFFF, 0, 0, 0],
-            vertices: [0; 4],
+            vertices: [
+                DrawingVertex::new_with_color(data0),
+                DrawingVertex::new_with_color(data0),
+                DrawingVertex::new_with_color(data0),
+                DrawingVertex::new_with_color(data0),
+            ],
             texture_data: [0; 4],
             current_input_state: 1,
             input_pointer: 0,
@@ -63,11 +67,11 @@ impl Gp0Command for PolygonCommand {
     fn add_param(&mut self, param: u32) {
         match self.current_input_state {
             0 => {
-                self.colors[self.input_pointer] = param & 0xFFFFFF;
+                self.vertices[self.input_pointer].color_from_u32(param);
                 self.current_input_state = 1;
             }
             1 => {
-                self.vertices[self.input_pointer] = param;
+                self.vertices[self.input_pointer].position_from_u32(param);
                 if self.textured {
                     self.current_input_state = 2;
                 } else {
@@ -90,10 +94,15 @@ impl Gp0Command for PolygonCommand {
         }
     }
 
-    fn exec_command(&mut self, _ctx: &mut GpuContext) -> bool {
+    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
         if !self.still_need_params() {
-            // TODO: implement
-            log::info!("POLYGON executing {:?}", self);
+            log::info!("POLYGON executing {:#?}", self);
+            if self.textured || self.semi_transparent || self.texture_blending {
+                todo!()
+            }
+
+            ctx.draw_polygon(&self.vertices[..self.input_pointer]);
+
             true
         } else {
             false
@@ -307,7 +316,7 @@ impl Gp0Command for CpuToVramBlitCommand {
             let d2 = (next_data >> 16) as u16;
 
             for data in &[d1, d2] {
-                ctx.vram.write_at_position(self.next_dest, *data);
+                ctx.write_vram(self.next_dest, *data);
 
                 self.next_dest.0 = (self.next_dest.0 + 1) & 0x3FF;
                 *x_counter -= 1;
@@ -393,7 +402,7 @@ impl Gp0Command for VramToCpuBlitCommand {
         let mut data_parts = [0, 0];
 
         for i in 0..2 {
-            data_parts[i] = ctx.vram.read_at_position(self.next_src) as u32;
+            data_parts[i] = ctx.read_vram(self.next_src) as u32;
 
             self.next_src.0 = (self.next_src.0 + 1) & 0x3FF;
             *x_counter -= 1;
