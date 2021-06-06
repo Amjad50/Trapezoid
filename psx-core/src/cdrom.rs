@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 bitflags! {
     #[derive(Default)]
-    struct CdromStatus: u8 {
+    struct FifosStatus: u8 {
         const ADPBUSY                 = 0b00000100;
         /// 1 when empty (triggered before writing 1st byte)
         const PARAMETER_FIFO_EMPTY    = 0b00001000;
@@ -20,26 +20,46 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Default)]
+    struct CdromStatus: u8 {
+        const ERROR        = 0b00000001;
+        const MOTOR_ON     = 0b00000010;
+        const SEEK_ERROR   = 0b00000100;
+        const GETID_ERROR  = 0b00001000;
+        const SHELL_OPEN   = 0b00010000;
+        const READING_DATA = 0b00100000;
+        const SEEKING      = 0b01000000;
+        const PLAYING      = 0b10000000;
+    }
+}
+
 pub struct Cdrom {
     index: u8,
+    fifo_status: FifosStatus,
     status: CdromStatus,
     interrupt_enable: u8,
     interrupt_flag: u8,
     parameter_fifo: VecDeque<u8>,
     response_fifo: VecDeque<u8>,
     command: Option<u8>,
+    /// A way to be able to execute a command through more than one cycle,
+    /// The type and design might change later
+    command_state: Option<u8>,
 }
 
 impl Default for Cdrom {
     fn default() -> Self {
         Self {
             index: 0,
-            status: CdromStatus::PARAMETER_FIFO_EMPTY | CdromStatus::PARAMETER_FIFO_NOT_FULL,
+            fifo_status: FifosStatus::PARAMETER_FIFO_EMPTY | FifosStatus::PARAMETER_FIFO_NOT_FULL,
+            status: CdromStatus::empty(),
             interrupt_enable: 0,
             interrupt_flag: 0,
             parameter_fifo: VecDeque::new(),
             response_fifo: VecDeque::new(),
             command: None,
+            command_state: None,
         }
     }
 }
@@ -50,16 +70,59 @@ impl Cdrom {
     }
 
     fn execute_next_command(&mut self, interrupt_requester: &mut impl InterruptRequester) {
-        if let Some(cmd) = self.command.take() {
-            match cmd {
-                0x19 => {
+        if let Some(cmd) = self.command {
+            match (cmd, self.command_state) {
+                (0x01, None) => {
+                    // GetStat
+                    // TODO: handle errors
+                    assert!(self.status.bits & 0b101 == 0);
+
+                    self.write_to_response_fifo(self.status.bits);
+                    self.request_interrupt_0_7(3);
+                    interrupt_requester.request_cdrom();
+                    // not executing any more
+                    self.fifo_status.remove(FifosStatus::BUSY);
+                    self.command = None;
+                }
+                (0x19, None) => {
+                    // Test
                     let test_code = self.read_next_parameter().unwrap();
                     self.execute_test(test_code);
                     interrupt_requester.request_cdrom();
                     // not executing any more
-                    self.status.remove(CdromStatus::BUSY);
+                    self.fifo_status.remove(FifosStatus::BUSY);
+                    self.command = None;
                 }
-                _ => todo!(),
+                (0x1A, None) => {
+                    // GetID FIRST
+
+                    self.write_to_response_fifo(self.status.bits);
+                    self.request_interrupt_0_7(3);
+                    interrupt_requester.request_cdrom();
+                    // not executing any more
+                    self.fifo_status.remove(FifosStatus::BUSY);
+                    // any data for now, just to proceed to SECOND
+                    self.command_state = Some(0);
+                }
+                (0x1A, Some(_)) => {
+                    // GetID SECOND
+
+                    // wait for acknowledge
+                    if self.interrupt_flag & 7 == 0 {
+                        // TODO: handle correct ID, for now we are sending
+                        //  status as if there is no CD present
+                        for byte in &[0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00] {
+                            self.write_to_response_fifo(*byte);
+                        }
+
+                        self.request_interrupt_0_7(5);
+                        interrupt_requester.request_cdrom();
+
+                        self.command_state = None;
+                        self.command = None;
+                    }
+                }
+                _ => todo!("cmd={:02X},state={:?}", cmd, self.command_state),
             }
         }
     }
@@ -80,7 +143,7 @@ impl Cdrom {
 
 impl Cdrom {
     fn read_index_status(&self) -> u8 {
-        self.index | self.status.bits
+        self.index | self.fifo_status.bits
     }
 
     fn write_interrupt_enable_register(&mut self, data: u8) {
@@ -112,21 +175,23 @@ impl Cdrom {
     fn write_command_register(&mut self, data: u8) {
         log::info!("1.0 writing to command register cmd={:02X}", data);
         // set the status to busy as we are sending/executing a command now
-        self.status.insert(CdromStatus::BUSY);
+        self.fifo_status.insert(FifosStatus::BUSY);
         self.command = Some(data);
     }
 
     fn reset_parameter_fifo(&mut self) {
-        self.status.insert(CdromStatus::PARAMETER_FIFO_EMPTY);
-        self.status.insert(CdromStatus::PARAMETER_FIFO_NOT_FULL);
+        self.fifo_status.insert(FifosStatus::PARAMETER_FIFO_EMPTY);
+        self.fifo_status
+            .insert(FifosStatus::PARAMETER_FIFO_NOT_FULL);
         self.parameter_fifo.clear();
     }
 
     fn write_to_parameter_fifo(&mut self, data: u8) {
         if self.parameter_fifo.len() == 0 {
-            self.status.remove(CdromStatus::PARAMETER_FIFO_EMPTY);
+            self.fifo_status.remove(FifosStatus::PARAMETER_FIFO_EMPTY);
         } else if self.parameter_fifo.len() == 15 {
-            self.status.remove(CdromStatus::PARAMETER_FIFO_NOT_FULL);
+            self.fifo_status
+                .remove(FifosStatus::PARAMETER_FIFO_NOT_FULL);
         }
         log::info!("2.0 writing to parameter fifo={:02X}", data);
 
@@ -136,9 +201,10 @@ impl Cdrom {
     fn read_next_parameter(&mut self) -> Option<u8> {
         let out = self.parameter_fifo.pop_front();
         if self.parameter_fifo.len() == 0 {
-            self.status.insert(CdromStatus::PARAMETER_FIFO_EMPTY);
+            self.fifo_status.insert(FifosStatus::PARAMETER_FIFO_EMPTY);
         } else if self.parameter_fifo.len() == 15 {
-            self.status.insert(CdromStatus::PARAMETER_FIFO_NOT_FULL);
+            self.fifo_status
+                .insert(FifosStatus::PARAMETER_FIFO_NOT_FULL);
         }
 
         out
@@ -146,7 +212,8 @@ impl Cdrom {
 
     fn write_to_response_fifo(&mut self, data: u8) {
         if self.response_fifo.is_empty() {
-            self.status.insert(CdromStatus::RESPONSE_FIFO_NOT_EMPTY);
+            self.fifo_status
+                .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
         }
         log::info!("writing to response fifo={:02X}", data);
 
@@ -157,7 +224,8 @@ impl Cdrom {
         let out = self.response_fifo.pop_front();
 
         if self.response_fifo.is_empty() {
-            self.status.remove(CdromStatus::RESPONSE_FIFO_NOT_EMPTY);
+            self.fifo_status
+                .remove(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
         }
 
         // TODO: handle reading while being empty
