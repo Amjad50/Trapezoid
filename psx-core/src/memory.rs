@@ -1,6 +1,6 @@
 mod dma;
 mod expansion_regions;
-mod interrupts;
+pub(crate) mod interrupts;
 mod memory_control;
 mod ram;
 
@@ -138,8 +138,8 @@ impl BusLine for CpuBus {
         //  for every instruction)
         self.dma.clock_dma(&mut self.dma_bus, &mut self.interrupts);
         // almost 2 GPU clocks per 1 CPU
-        self.dma_bus.gpu.clock();
-        self.dma_bus.gpu.clock();
+        self.dma_bus.gpu.clock(&mut self.interrupts);
+        self.dma_bus.gpu.clock(&mut self.interrupts);
 
         match addr {
             // TODO: implement I-cache isolation properly

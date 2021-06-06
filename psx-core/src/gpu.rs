@@ -1,7 +1,7 @@
 mod command;
 mod gpu_context;
 
-use crate::memory::BusLine;
+use crate::memory::{interrupts::InterruptRequester, BusLine};
 use std::collections::VecDeque;
 
 use command::{instantiate_gp0_command, Gp0Command};
@@ -116,8 +116,8 @@ impl Gpu {
         }
     }
 
-    pub fn clock(&mut self) {
-        self.drawing_clock();
+    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester) {
+        self.drawing_clock(interrupt_requester);
         self.clock_gp0_command();
     }
 
@@ -150,7 +150,7 @@ impl Gpu {
         out
     }
 
-    fn drawing_clock(&mut self) {
+    fn drawing_clock(&mut self, interrupt_requester: &mut impl InterruptRequester) {
         let max_dots = if self.gpu_stat.is_ntsc_video_mode() {
             3413
         } else {
@@ -164,12 +164,6 @@ impl Gpu {
         let vertical_resolution = self.gpu_stat.vertical_resolution();
         let is_interlace = self.gpu_stat.intersects(GpuStat::VERTICAL_INTERLACE);
 
-        match self.scanline {
-            0 => self.in_vblank = false,
-            240 => self.in_vblank = true,
-            _ => {}
-        }
-
         self.dot += 1;
         if self.dot >= max_dots {
             self.dot = 0;
@@ -181,10 +175,16 @@ impl Gpu {
 
             if self.scanline >= max_scanlines {
                 self.scanline = 0;
+                self.in_vblank = false;
 
                 if is_interlace && vertical_resolution == 480 {
                     self.drawing_odd = !self.drawing_odd;
                 }
+            }
+
+            if self.scanline == 240 {
+                interrupt_requester.request_vblank();
+                self.in_vblank = true;
             }
         }
     }

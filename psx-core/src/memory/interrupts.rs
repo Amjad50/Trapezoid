@@ -19,6 +19,7 @@ bitflags::bitflags! {
 
 pub trait InterruptRequester {
     fn request_dma(&mut self);
+    fn request_vblank(&mut self);
 }
 
 #[derive(Default)]
@@ -99,5 +100,10 @@ impl InterruptRequester for Interrupts {
     fn request_dma(&mut self) {
         log::info!("requesting DMA interrupt");
         self.stat.insert(InterruptFlags::DMA & self.mask);
+    }
+
+    fn request_vblank(&mut self) {
+        log::info!("requesting VBLANK interrupt");
+        self.stat.insert(InterruptFlags::VBLANK & self.mask);
     }
 }
