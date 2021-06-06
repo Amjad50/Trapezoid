@@ -1,3 +1,4 @@
+mod cdrom;
 mod coprocessor;
 mod cpu;
 mod gpu;

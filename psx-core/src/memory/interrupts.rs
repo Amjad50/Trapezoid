@@ -20,6 +20,7 @@ bitflags::bitflags! {
 pub trait InterruptRequester {
     fn request_dma(&mut self);
     fn request_vblank(&mut self);
+    fn request_cdrom(&mut self);
 }
 
 #[derive(Default)]
@@ -105,5 +106,10 @@ impl InterruptRequester for Interrupts {
     fn request_vblank(&mut self) {
         log::info!("requesting VBLANK interrupt");
         self.stat.insert(InterruptFlags::VBLANK & self.mask);
+    }
+
+    fn request_cdrom(&mut self) {
+        log::info!("requesting CDROM interrupt");
+        self.stat.insert(InterruptFlags::CDROM & self.mask);
     }
 }

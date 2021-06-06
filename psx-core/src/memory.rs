@@ -10,6 +10,7 @@ use std::path::Path;
 
 use byteorder::{ByteOrder, LittleEndian};
 
+use crate::cdrom::Cdrom;
 use crate::cpu::CpuBusProvider;
 use crate::gpu::{GlContext, Gpu};
 use crate::spu::SpuRegisters;
@@ -92,6 +93,7 @@ pub struct CpuBus {
     mem_ctrl_2: MemoryControl2,
     cache_control: CacheControl,
     interrupts: Interrupts,
+    cdrom: Cdrom,
 
     spu_registers: SpuRegisters,
 
@@ -112,6 +114,7 @@ impl CpuBus {
             mem_ctrl_2: MemoryControl2::default(),
             cache_control: CacheControl::default(),
             interrupts: Interrupts::default(),
+            cdrom: Cdrom::default(),
             spu_registers: SpuRegisters::default(),
             expansion_region_1: ExpansionRegion1::default(),
             expansion_region_2: ExpansionRegion2::default(),
@@ -140,6 +143,8 @@ impl BusLine for CpuBus {
         // almost 2 GPU clocks per 1 CPU
         self.dma_bus.gpu.clock(&mut self.interrupts);
         self.dma_bus.gpu.clock(&mut self.interrupts);
+        // cdrom
+        self.cdrom.clock(&mut self.interrupts);
 
         match addr {
             // TODO: implement I-cache isolation properly
@@ -224,6 +229,7 @@ impl BusLine for CpuBus {
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.read_u8(addr & 0xFFFFFF),
 
             0x1F000000..=0x1F080000 => self.expansion_region_1.read_u8(addr & 0xFFFFF),
+            0x1F801800..=0x1F801803 => self.cdrom.read_u8(addr & 3),
             0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
             _ => {
@@ -239,6 +245,7 @@ impl BusLine for CpuBus {
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.write_u8(addr & 0xFFFFFF, data),
 
             0x1F000000..=0x1F080000 => self.expansion_region_1.write_u8(addr & 0xFFFFF, data),
+            0x1F801800..=0x1F801803 => self.cdrom.write_u8(addr & 3, data),
             0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),
             _ => {
                 todo!("u8 write to {:08X}", addr)
