@@ -11,6 +11,7 @@ use std::path::Path;
 use byteorder::{ByteOrder, LittleEndian};
 
 use crate::cdrom::Cdrom;
+use crate::controller_mem_card::ControllerAndMemoryCard;
 use crate::cpu::CpuBusProvider;
 use crate::gpu::{GlContext, Gpu};
 use crate::spu::SpuRegisters;
@@ -94,6 +95,7 @@ pub struct CpuBus {
     cache_control: CacheControl,
     interrupts: Interrupts,
     cdrom: Cdrom,
+    controller_mem_card: ControllerAndMemoryCard,
 
     spu_registers: SpuRegisters,
 
@@ -115,6 +117,8 @@ impl CpuBus {
             cache_control: CacheControl::default(),
             interrupts: Interrupts::default(),
             cdrom: Cdrom::default(),
+            controller_mem_card: ControllerAndMemoryCard::default(),
+
             spu_registers: SpuRegisters::default(),
             expansion_region_1: ExpansionRegion1::default(),
             expansion_region_2: ExpansionRegion2::default(),
@@ -145,6 +149,8 @@ impl BusLine for CpuBus {
         self.dma_bus.gpu.clock(&mut self.interrupts);
         // cdrom
         self.cdrom.clock(&mut self.interrupts);
+        // controller and mem card
+        self.controller_mem_card.clock(&mut self.interrupts);
 
         match addr {
             // TODO: implement I-cache isolation properly
@@ -196,12 +202,13 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.dma_bus.main_ram.read_u16(addr & 0xFFFFFF),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.read_u16(addr & 0xFFFFFF),
 
+            0x1F801044..=0x1F80104F => self.controller_mem_card.read_u16(addr & 0xF),
             0x1F801070..=0x1F801077 => self.interrupts.read_u16(addr & 0xF),
             0x1F801100..=0x1F80112F => self.timers.read_u16(addr & 0xFF),
             0x1F801C00..=0x1F802000 => self.spu_registers.read_u16((addr & 0xFFF) - 0xC00),
             0xBFC00000..=0xBFC80000 => self.bios.read_u16(addr),
             _ => {
-                todo!("u16 write to {:08X}", addr)
+                todo!("u16 read from {:08X}", addr)
             }
         }
     }
@@ -214,6 +221,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.dma_bus.main_ram.write_u16(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.write_u16(addr & 0xFFFFFF, data),
 
+            0x1F801048..=0x1F80104F => self.controller_mem_card.write_u16(addr & 0xF, data),
             0x1F801070..=0x1F801077 => self.interrupts.write_u16(addr & 0xF, data),
             0x1F801100..=0x1F80112F => self.timers.write_u16(addr & 0xFF, data),
             0x1F801C00..=0x1F802000 => self.spu_registers.write_u16((addr & 0xFFF) - 0xC00, data),
@@ -228,12 +236,13 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.dma_bus.main_ram.read_u8(addr & 0xFFFFFF),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.read_u8(addr & 0xFFFFFF),
 
+            0x1F801040 => self.controller_mem_card.read_u8(addr & 0xF),
             0x1F000000..=0x1F080000 => self.expansion_region_1.read_u8(addr & 0xFFFFF),
             0x1F801800..=0x1F801803 => self.cdrom.read_u8(addr & 3),
             0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
             _ => {
-                todo!("u8 write to {:08X}", addr)
+                todo!("u8 read from {:08X}", addr)
             }
         }
     }
@@ -244,6 +253,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.dma_bus.main_ram.write_u8(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.write_u8(addr & 0xFFFFFF, data),
 
+            0x1F801040 => self.controller_mem_card.write_u8(addr & 0xF, data),
             0x1F000000..=0x1F080000 => self.expansion_region_1.write_u8(addr & 0xFFFFF, data),
             0x1F801800..=0x1F801803 => self.cdrom.write_u8(addr & 3, data),
             0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),

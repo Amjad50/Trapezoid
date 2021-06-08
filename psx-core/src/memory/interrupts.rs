@@ -21,6 +21,7 @@ pub trait InterruptRequester {
     fn request_dma(&mut self);
     fn request_vblank(&mut self);
     fn request_cdrom(&mut self);
+    fn request_controller_mem_card(&mut self);
 }
 
 #[derive(Default)]
@@ -111,5 +112,11 @@ impl InterruptRequester for Interrupts {
     fn request_cdrom(&mut self) {
         log::info!("requesting CDROM interrupt");
         self.stat.insert(InterruptFlags::CDROM & self.mask);
+    }
+
+    fn request_controller_mem_card(&mut self) {
+        log::info!("requesting CONTROLLER_AND_MEMCARD interrupt");
+        self.stat
+            .insert(InterruptFlags::CONTROLLER_AND_MEMCARD & self.mask);
     }
 }

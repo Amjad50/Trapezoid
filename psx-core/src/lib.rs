@@ -1,4 +1,5 @@
 mod cdrom;
+mod controller_mem_card;
 mod coprocessor;
 mod cpu;
 mod gpu;
