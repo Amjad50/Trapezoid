@@ -2,7 +2,7 @@ mod instruction;
 mod instructions_table;
 mod register;
 
-use crate::coprocessor::SystemControlCoprocessor;
+use crate::coprocessor::{Gte, SystemControlCoprocessor};
 use crate::memory::BusLine;
 
 use instruction::{Instruction, Opcode};
@@ -15,6 +15,7 @@ pub trait CpuBusProvider: BusLine {
 pub struct Cpu {
     regs: Registers,
     cop0: SystemControlCoprocessor,
+    cop2: Gte,
 
     jump_dest_next: Option<u32>,
 }
@@ -25,6 +26,7 @@ impl Cpu {
             // reset value
             regs: Registers::new(),
             cop0: SystemControlCoprocessor::default(),
+            cop2: Gte::default(),
             jump_dest_next: None,
         }
     }
@@ -503,28 +505,40 @@ impl Cpu {
             //Opcode::Break => {}
             //Opcode::Cop(_) => {}
             Opcode::Mfc(n) => {
-                assert_eq!(n, 0);
-                let result = self.cop0.read_data(instruction.rd_raw);
+                let result = match n {
+                    0 => self.cop0.read_data(instruction.rd_raw),
+                    2 => self.cop2.read_data(instruction.rd_raw),
+                    _ => unreachable!(),
+                };
 
                 self.regs.write_register(instruction.rt, result);
             }
             Opcode::Cfc(n) => {
-                assert_eq!(n, 0);
-                let result = self.cop0.read_ctrl(instruction.rd_raw);
+                let result = match n {
+                    0 => self.cop0.read_ctrl(instruction.rd_raw),
+                    2 => self.cop2.read_ctrl(instruction.rd_raw),
+                    _ => unreachable!(),
+                };
 
                 self.regs.write_register(instruction.rt, result);
             }
             Opcode::Mtc(n) => {
-                assert_eq!(n, 0);
                 let rt = self.regs.read_register(instruction.rt);
 
-                self.cop0.write_data(instruction.rd_raw, rt);
+                match n {
+                    0 => self.cop0.write_data(instruction.rd_raw, rt),
+                    2 => self.cop2.write_data(instruction.rd_raw, rt),
+                    _ => unreachable!(),
+                }
             }
             Opcode::Ctc(n) => {
-                assert_eq!(n, 0);
                 let rt = self.regs.read_register(instruction.rt);
 
-                self.cop0.write_ctrl(instruction.rd_raw, rt);
+                match n {
+                    0 => self.cop0.write_ctrl(instruction.rd_raw, rt),
+                    2 => self.cop2.write_ctrl(instruction.rd_raw, rt),
+                    _ => unreachable!(),
+                }
             }
             //Opcode::Bcf(_) => {}
             //Opcode::Bct(_) => {}

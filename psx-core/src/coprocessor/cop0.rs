@@ -55,8 +55,7 @@ impl SystemControlCoprocessor {
     pub fn read_data(&self, num: u8) -> u32 {
         assert!(num <= 0x1F);
 
-        log::info!("COP0 data_read {}", num);
-        match num {
+        let out = match num {
             // FIXME: reading any of these causes reserved instruction exception
             //0..=2 | 4 | 10 => 0, // N/A
             //3 => self.bpc,
@@ -76,15 +75,17 @@ impl SystemControlCoprocessor {
             // the return value is usually 00000020h, or when reading much
             // later it returns 00000040h, or even 00000100h.
             16..=31 => 0xFF,
-            0..=15 => todo!("cop0 read data {}", num),
+            0..=15 => todo!("cop0 data read {}", num),
             _ => unreachable!(),
-        }
+        };
+        log::info!("cop0 data read {}, data={:08X}", num, out);
+        out
     }
 
     pub fn write_data(&mut self, num: u8, data: u32) {
         assert!(num <= 0x1F);
 
-        log::info!("COP0 data_write {}, data={:08X}", num, data);
+        log::info!("cop0 data write {}, data={:08X}", num, data);
         match num {
             // FIXME: does writing produce reserved instruction exception?
             //0..=2 | 4 | 10 => {}  // N/A
@@ -103,7 +104,7 @@ impl SystemControlCoprocessor {
             //14 => {}
             //15 -> {}
             16..=31 => {} // garbage
-            0..=15 => todo!("cop0 write data {}, vaule {:08X}", num, data),
+            0..=15 => todo!("cop0 data write {}, vaule {:08X}", num, data),
             _ => unreachable!(),
         }
     }
