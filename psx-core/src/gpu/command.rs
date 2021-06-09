@@ -325,7 +325,7 @@ impl Gp0Command for CpuToVramBlitCommand {
             let d2 = (next_data >> 16) as u16;
 
             for data in &[d1, d2] {
-                ctx.write_vram(self.next_dest, *data);
+                ctx.write_vram_checked(self.next_dest, *data);
 
                 self.next_dest.0 = (self.next_dest.0 + 1) & 0x3FF;
                 *x_counter -= 1;
@@ -360,10 +360,10 @@ impl Gp0Command for CpuToVramBlitCommand {
 
 struct VramToCpuBlitCommand {
     input_state: u8,
-    start_src: (u32, u32),
-    next_src: (u32, u32),
-    start_size: (u32, u32),
-    remaining_size: (u32, u32),
+    src: (u32, u32),
+    size: (u32, u32),
+    block: Vec<u16>,
+    block_counter: usize,
 }
 
 impl Gp0Command for VramToCpuBlitCommand {
@@ -373,10 +373,10 @@ impl Gp0Command for VramToCpuBlitCommand {
     {
         Self {
             input_state: 0,
-            start_size: (0, 0),
-            remaining_size: (0, 0),
-            start_src: (0, 0),
-            next_src: (0, 0),
+            size: (0, 0),
+            src: (0, 0),
+            block: Vec::new(),
+            block_counter: 0,
         }
     }
 
@@ -385,17 +385,15 @@ impl Gp0Command for VramToCpuBlitCommand {
             0 => {
                 let start_x = param & 0x3FF;
                 let start_y = (param >> 16) & 0x1FF;
-                self.start_src = (start_x, start_y);
-                self.next_src = (start_x, start_y);
-                log::info!("VRAM to CPU: input src {:?}", self.start_src);
+                self.src = (start_x, start_y);
+                log::info!("VRAM to CPU: input src {:?}", self.src);
                 self.input_state = 1;
             }
             1 => {
                 let size_x = ((param & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1;
                 let size_y = ((param >> 16).wrapping_sub(1) & 0x1FF) + 1;
-                self.start_size = (size_x, size_y);
-                self.remaining_size = (size_x, size_y);
-                log::info!("VRAM to CPU: size {:?}", self.start_size);
+                self.size = (size_x, size_y);
+                log::info!("VRAM to CPU: size {:?}", self.size);
                 self.input_state = 2;
             }
             _ => unreachable!(),
@@ -406,35 +404,28 @@ impl Gp0Command for VramToCpuBlitCommand {
         if self.input_state != 2 || ctx.gpu_read.is_some() {
             return false;
         }
+        if self.block.is_empty() {
+            let x_range = (self.src.0)..(self.src.0 + self.size.0);
+            let y_range = (self.src.1)..(self.src.1 + self.size.1);
 
-        let (x_counter, y_counter) = &mut self.remaining_size;
-
-        // this is to save the src to print it later only
-        let src_for_dbg = self.next_src;
-        let mut data_parts = [0, 0];
-
-        for i in 0..2 {
-            data_parts[i] = ctx.read_vram(self.next_src) as u32;
-
-            self.next_src.0 = (self.next_src.0 + 1) & 0x3FF;
-            *x_counter -= 1;
-
-            if *x_counter == 0 {
-                self.next_src.1 = (self.next_src.1 + 1) & 0x1FF;
-
-                *y_counter -= 1;
-                *x_counter = self.start_size.0;
-                self.next_src.0 = self.start_src.0;
-            }
+            self.block = ctx.read_vram_block((x_range, y_range));
         }
 
+        // used for debugging only
+        let vram_pos = (
+            (self.block_counter as u32 % self.size.0) + self.src.0,
+            (self.block_counter as u32 / self.size.0) + self.src.1,
+        );
+        let data_parts = &self.block[self.block_counter..(self.block_counter + 2)];
+        self.block_counter += 2;
+
         // TODO: check order
-        let data = ((data_parts[1] as u32) << 16) | data_parts[0];
-        log::info!("IN TRANSFERE, src={:?}, data={:08X}", src_for_dbg, data);
+        let data = ((data_parts[1] as u32) << 16) | data_parts[0] as u32;
+        log::info!("IN TRANSFERE, src={:?}, data={:08X}", vram_pos, data);
 
         ctx.gpu_read = Some(data);
 
-        if *y_counter == 0 {
+        if self.block_counter == self.block.len() {
             // finish transfer
             log::info!("DONE TRANSFERE");
             true

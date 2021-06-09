@@ -16,6 +16,21 @@ use std::convert::From;
 use std::ops::Range;
 use std::rc::Rc;
 
+#[inline]
+// helper to convert opengl colors into u16
+fn gl_pixel_to_u16(pixel: &(u8, u8, u8, u8)) -> u16 {
+    ((pixel.3 & 1) as u16) << 15
+        | ((pixel.2 >> 3) as u16) << 10
+        | ((pixel.1 >> 3) as u16) << 5
+        | (pixel.0 >> 3) as u16
+}
+
+#[inline]
+/// helper in getting the correct value for bottom for gl drawing/coordinate stuff
+fn to_gl_bottom(top: u32, height: u32) -> u32 {
+    512 - height - top
+}
+
 pub struct GlContext {
     context: Rc<glium::backend::Context>,
 }
@@ -130,16 +145,6 @@ impl Vram {
     }
 
     #[inline]
-    fn write_at_position_from_drawing(&mut self, position: (u32, u32), data: (u8, u8, u8, u8)) {
-        let data = ((data.3 & 1) as u16) << 15
-            | ((data.2 >> 3) as u16) << 10
-            | ((data.1 >> 3) as u16) << 5
-            | (data.0 >> 3) as u16;
-
-        self.write_at_position(position, data);
-    }
-
-    #[inline]
     fn write_at_position(&mut self, position: (u32, u32), data: u16) {
         let address = position.1 * 1024 + position.0;
         self.data.map_write().set(address as usize, data);
@@ -149,6 +154,28 @@ impl Vram {
     fn read_at_position(&mut self, position: (u32, u32)) -> u16 {
         let address = position.1 * 1024 + position.0;
         self.data.map_read()[address as usize]
+    }
+
+    #[inline]
+    fn read_block(&mut self, block_range: (Range<u32>, Range<u32>)) -> Vec<u16> {
+        let (x_range, y_range) = block_range;
+
+        let row_size = x_range.len();
+        let whole_size = row_size * y_range.len();
+        let mut block = Vec::with_capacity(whole_size);
+
+        let mapping = self.data.map_read();
+
+        for y in y_range {
+            let row_start_addr = y * 1024 + x_range.start;
+            block.extend_from_slice(
+                &mapping[(row_start_addr as usize)..(row_start_addr as usize + row_size)],
+            );
+        }
+
+        assert_eq!(block.len(), whole_size);
+
+        block
     }
 }
 
@@ -223,14 +250,46 @@ impl GpuContext {
 }
 
 impl GpuContext {
-    fn check_not_in_rendering(&self, position: (u32, u32)) {
+    /// check if a whole block in rendering
+    fn is_block_in_rendering(&self, block_range: &(Range<u32>, Range<u32>)) -> bool {
+        let positions = [
+            (block_range.0.start, block_range.1.start),
+            (block_range.0.end - 1, block_range.1.end - 1),
+        ];
+
         for range in &self.ranges_in_rendering {
-            if range.0.contains(&position.0) && range.1.contains(&position.1) {
-                println!("ranges= {:?}", self.ranges_in_rendering);
-                println!("range found= {:?}, position={:?}", range, position);
-                todo!();
+            let contain_start =
+                range.0.contains(&positions[0].0) && range.1.contains(&positions[0].1);
+            let contain_end =
+                range.0.contains(&positions[1].0) && range.1.contains(&positions[1].1);
+
+            // we use or and then assert, to make sure both ends are in the rendering.
+            //  if only one of them are in the rendering, then this is a problem.
+            //
+            //  TODO: fix block half present in rendering.
+            if contain_start || contain_end {
+                assert!(contain_start && contain_end);
+
+                println!(
+                    "range found= {:?} containing block_range={:?}",
+                    range, block_range
+                );
+                return true;
             }
         }
+
+        false
+    }
+
+    fn is_position_in_rendering(&self, position: (u32, u32)) -> bool {
+        for range in &self.ranges_in_rendering {
+            if range.0.contains(&position.0) && range.1.contains(&position.1) {
+                println!("range found={:?} containing position={:?}", range, position);
+                return true;
+            }
+        }
+
+        false
     }
 
     fn add_drawing_range(&mut self, new_range: (Range<u32>, Range<u32>)) {
@@ -273,7 +332,7 @@ impl GpuContext {
                 self.drawing_texture.as_surface().blit_color(
                     &Rect {
                         left: range.0.start,
-                        bottom: 512 - height + range.1.start,
+                        bottom: to_gl_bottom(range.1.start, height),
                         width,
                         height,
                     },
@@ -304,14 +363,72 @@ impl GpuContext {
             println!("ranges now {:?}", self.ranges_in_rendering);
         }
     }
+}
 
-    pub fn write_vram(&mut self, position: (u32, u32), data: u16) {
-        self.check_not_in_rendering(position);
+impl GpuContext {
+    pub fn read_vram_block(&mut self, block_range: (Range<u32>, Range<u32>)) -> Vec<u16> {
+        // cannot read outside range
+        assert!(block_range.0.end <= 1024);
+        assert!(block_range.1.end <= 512);
+
+        if self.is_block_in_rendering(&block_range) {
+            let (x_range, y_range) = block_range;
+            let x_size = x_range.len() as u32;
+            let y_size = y_range.len() as u32;
+
+            let tex = Texture2d::empty_with_mipmaps(
+                &self.gl_context,
+                MipmapsOption::NoMipmap,
+                x_size,
+                y_size,
+            )
+            .unwrap();
+            self.drawing_texture.as_surface().blit_color(
+                &Rect {
+                    left: x_range.start,
+                    bottom: to_gl_bottom(y_range.start, y_size),
+                    width: x_size,
+                    height: y_size,
+                },
+                &tex.as_surface(),
+                &BlitTarget {
+                    left: 0,
+                    bottom: 0,
+                    width: x_size as i32,
+                    height: y_size as i32,
+                },
+                MagnifySamplerFilter::Nearest,
+            );
+
+            let pixel_buffer: Vec<_> = tex.read();
+
+            let block = pixel_buffer
+                .iter()
+                // reverse, as its from bottom to top
+                .rev()
+                .flatten()
+                .map(|pixel| gl_pixel_to_u16(pixel))
+                .collect::<Vec<_>>();
+
+            block
+        } else {
+            self.vram.read_block(block_range)
+        }
+    }
+
+    pub fn write_vram_checked(&mut self, position: (u32, u32), data: u16) {
+        if self.is_position_in_rendering(position) {
+            todo!();
+        }
+
         self.vram.write_at_position(position, data);
     }
 
-    pub fn read_vram(&mut self, position: (u32, u32)) -> u16 {
-        self.check_not_in_rendering(position);
+    pub fn read_vram_checked(&mut self, position: (u32, u32)) -> u16 {
+        if self.is_position_in_rendering(position) {
+            todo!();
+        }
+
         self.vram.read_at_position(position)
     }
 
@@ -344,7 +461,7 @@ impl GpuContext {
         let top = drawing_top;
         let height = drawing_bottom - drawing_top + 1;
         let width = drawing_right - drawing_left + 1;
-        let bottom = 512 - height + top;
+        let bottom = to_gl_bottom(top, height);
 
         let draw_params = glium::DrawParameters {
             viewport: Some(glium::Rect {
@@ -489,7 +606,7 @@ impl GpuContext {
         let (left, top) = self.vram_display_area_start;
         let width = self.gpu_stat.horizontal_resolution();
         let height = self.gpu_stat.vertical_resolution();
-        let bottom = 512 - height - top;
+        let bottom = to_gl_bottom(top, height);
 
         let (target_w, target_h) = s.get_dimensions();
 
