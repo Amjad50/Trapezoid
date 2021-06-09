@@ -190,7 +190,12 @@ impl Dma {
                         next_address(&mut remaining_length, &mut address);
                     }
                 } else {
-                    todo!()
+                    while remaining_length > 0 {
+                        let data = dma_bus.gpu.read_u32(0);
+                        dma_bus.main_ram.write_u32(address, data);
+                        // step
+                        next_address(&mut remaining_length, &mut address);
+                    }
                 }
 
                 let blocks = blocks - 1;

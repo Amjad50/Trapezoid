@@ -146,6 +146,8 @@ impl Gpu {
 
     fn gpu_read(&mut self) -> u32 {
         let out = self.gpu_read.take().unwrap_or(0);
+        // clock the command, so that it works with DMA reads
+        self.clock_gp0_command();
         log::info!("GPUREAD = {:08X}", out);
         out
     }
