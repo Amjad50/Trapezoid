@@ -430,6 +430,40 @@ impl GpuContext {
         self.vram.read_at_position(position)
     }
 
+    pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
+        let x_range = (top_left.0)..(top_left.0 + size.0);
+        let y_range = (top_left.1)..(top_left.1 + size.1);
+        let block_range = (x_range, y_range);
+
+        if self.is_block_in_rendering(&block_range) {
+            self.drawing_texture.as_surface().clear(
+                Some(&Rect {
+                    left: top_left.0,
+                    bottom: to_gl_bottom(top_left.1, size.1),
+                    width: size.0,
+                    height: size.1,
+                }),
+                Some((
+                    color.0 as f32 / 255.0,
+                    color.1 as f32 / 255.0,
+                    color.2 as f32 / 255.0,
+                    0.0,
+                )),
+                false,
+                None,
+                None,
+            );
+        } else {
+            let color = gl_pixel_to_u16(&(color.0, color.1, color.2, 0));
+            for x in block_range.0 {
+                for y in block_range.1.clone() {
+                    self.vram.write_at_position((x, y), color);
+                }
+            }
+            self.update_texture_buffer();
+        }
+    }
+
     pub fn update_texture_buffer(&mut self) {
         self.texture_buffer
             .main_level()

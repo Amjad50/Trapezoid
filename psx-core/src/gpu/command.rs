@@ -7,7 +7,10 @@ pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
     let cmd = data >> 29;
 
     match cmd {
-        0 => Box::new(MiscCommand::new(data)),
+        0 => match data >> 24 {
+            0x02 => Box::new(FillVramCommand::new(data)),
+            _ => Box::new(MiscCommand::new(data)),
+        },
         1 => Box::new(PolygonCommand::new(data)),
         2 => todo!(),
         3 => todo!(),
@@ -432,6 +435,72 @@ impl Gp0Command for VramToCpuBlitCommand {
         } else {
             false
         }
+    }
+
+    fn still_need_params(&mut self) -> bool {
+        // still inputting header (state not 3) or we still have some rows
+        self.input_state != 2
+    }
+}
+
+struct FillVramCommand {
+    input_state: u8,
+    color: (u8, u8, u8),
+    top_left: (u32, u32),
+    size: (u32, u32),
+}
+
+impl Gp0Command for FillVramCommand {
+    fn new(data0: u32) -> Self
+    where
+        Self: Sized,
+    {
+        let r = (data0 & 0xFF) as u8;
+        let g = ((data0 >> 8) & 0xFF) as u8;
+        let b = ((data0 >> 16) & 0xFF) as u8;
+
+        Self {
+            input_state: 0,
+            top_left: (0, 0),
+            size: (0, 0),
+            color: (r, g, b),
+        }
+    }
+
+    fn add_param(&mut self, param: u32) {
+        match self.input_state {
+            0 => {
+                let start_x = param & 0x3F0;
+                let start_y = (param >> 16) & 0x1FF;
+                self.top_left = (start_x, start_y);
+
+                log::info!(
+                    "Fill Vram: top_left {:?}, color {:?}",
+                    self.top_left,
+                    self.color
+                );
+                self.input_state = 1;
+            }
+            1 => {
+                let size_x = ((param & 0x3FF) + 0xF) & !0xF;
+                let size_y = (param >> 16) & 0x1FF;
+                self.size = (size_x, size_y);
+                log::info!("Fill Vram: size {:?}", self.size);
+                self.input_state = 2;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
+        if self.input_state != 2 {
+            return false;
+        }
+
+        ctx.fill_color(self.top_left, self.size, self.color);
+        log::info!("Fill Vram: done");
+
+        true
     }
 
     fn still_need_params(&mut self) -> bool {
