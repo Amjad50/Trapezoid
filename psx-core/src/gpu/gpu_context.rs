@@ -346,14 +346,12 @@ impl GpuContext {
                     MagnifySamplerFilter::Nearest,
                 );
 
-                let mut pixel_buffer = tex.read_to_pixel_buffer();
-                let read_map = pixel_buffer.map_read();
-                let mut i = 0;
+                let pixel_buffer: Vec<_> = tex.read();
+                let mut pixels = pixel_buffer.iter().rev().flatten();
                 for y in range.1.into_iter() {
                     for x in range.0.clone() {
-                        let data = read_map[i];
-                        self.vram.write_at_position_from_drawing((x, y), data);
-                        i += 1;
+                        let pixel = pixels.next().unwrap();
+                        self.vram.write_at_position((x, y), gl_pixel_to_u16(&pixel));
                     }
                 }
             }
