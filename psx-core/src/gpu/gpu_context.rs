@@ -379,12 +379,12 @@ impl GpuContext {
                     out vec2 v_tex_coord;
 
                     uniform ivec2 offset;
+                    uniform uvec2 drawing_top_left;
+                    uniform uvec2 drawing_size;
 
                     void main() {
-                        /* Transform from 0-640 to 0-1 range. */
-                        float posx = (position.x + offset.x) / 640 * 2 - 1;
-                        /* Transform from 0-480 to 0-1 range. */
-                        float posy = (position.y + offset.y) / 480 * (-2) + 1;
+                        float posx = (position.x + offset.x - drawing_top_left.x) / drawing_size.x * 2 - 1;
+                        float posy = (position.y + offset.y - drawing_top_left.x) / drawing_size.y * (-2) + 1;
 
                         gl_Position = vec4(posx, posy, 0.0, 1.0);
                         v_color = color;
@@ -469,6 +469,8 @@ impl GpuContext {
             tex_page_base: texture_params.tex_page_base,
             tex_page_color_mode: texture_params.tex_page_color_mode,
             clut_base: texture_params.clut_base,
+            drawing_top_left: [left, top],
+            drawing_size: [width, height],
         };
 
         let mut texture_target = self.drawing_texture.as_surface();
