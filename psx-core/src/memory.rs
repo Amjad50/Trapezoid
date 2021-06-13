@@ -151,6 +151,10 @@ impl BusLine for CpuBus {
         self.cdrom.clock(&mut self.interrupts);
         // controller and mem card
         self.controller_mem_card.clock(&mut self.interrupts);
+        // timers
+        self.timers.clock_from_system();
+        // interrupts for the timers
+        self.timers.handle_interrupts(&mut self.interrupts);
 
         match addr {
             // TODO: implement I-cache isolation properly

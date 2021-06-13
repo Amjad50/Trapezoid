@@ -18,9 +18,12 @@ bitflags::bitflags! {
 }
 
 pub trait InterruptRequester {
-    fn request_dma(&mut self);
     fn request_vblank(&mut self);
     fn request_cdrom(&mut self);
+    fn request_dma(&mut self);
+    fn request_timer0(&mut self);
+    fn request_timer1(&mut self);
+    fn request_timer2(&mut self);
     fn request_controller_mem_card(&mut self);
 }
 
@@ -99,24 +102,37 @@ impl BusLine for Interrupts {
 }
 
 impl InterruptRequester for Interrupts {
-    fn request_dma(&mut self) {
-        log::info!("requesting DMA interrupt");
-        self.stat.insert(InterruptFlags::DMA & self.mask);
-    }
-
     fn request_vblank(&mut self) {
         log::info!("requesting VBLANK interrupt");
-        self.stat.insert(InterruptFlags::VBLANK & self.mask);
+        self.stat.insert(InterruptFlags::VBLANK);
     }
 
     fn request_cdrom(&mut self) {
         log::info!("requesting CDROM interrupt");
-        self.stat.insert(InterruptFlags::CDROM & self.mask);
+        self.stat.insert(InterruptFlags::CDROM);
+    }
+
+    fn request_dma(&mut self) {
+        log::info!("requesting DMA interrupt");
+        self.stat.insert(InterruptFlags::DMA);
+    }
+
+    fn request_timer0(&mut self) {
+        log::info!("requesting TIMER0 interrupt");
+        self.stat.insert(InterruptFlags::TIMER0)
+    }
+    fn request_timer1(&mut self) {
+        log::info!("requesting TIMER1 interrupt");
+        self.stat.insert(InterruptFlags::TIMER1)
+    }
+
+    fn request_timer2(&mut self) {
+        log::info!("requesting TIMER2 interrupt");
+        self.stat.insert(InterruptFlags::TIMER2)
     }
 
     fn request_controller_mem_card(&mut self) {
         log::info!("requesting CONTROLLER_AND_MEMCARD interrupt");
-        self.stat
-            .insert(InterruptFlags::CONTROLLER_AND_MEMCARD & self.mask);
+        self.stat.insert(InterruptFlags::CONTROLLER_AND_MEMCARD);
     }
 }
