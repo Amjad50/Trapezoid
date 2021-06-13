@@ -60,7 +60,10 @@ impl Cpu {
         log::info!("executing exception: cause code: {:02X}", cause_code);
 
         let old_cause = self.cop0.read_cause();
-        let new_cause = (old_cause & 0xFFFFFF00) | ((cause_code & 0x1F) as u32) << 2;
+        // remove the next jump
+        let bd = self.jump_dest_next.take().is_some();
+        let new_cause =
+            (old_cause & 0x7FFFFF00) | ((bd as u32) << 31) | ((cause_code & 0x1F) as u32) << 2;
         self.cop0.write_cause(new_cause);
 
         // move the current exception enable to the next position
@@ -78,7 +81,14 @@ impl Cpu {
 
         // TODO: check the written value to EPC
         let target_pc = match cause_code {
-            0x00 => self.regs.pc,
+            0x00 => {
+                if bd {
+                    // execute branch again
+                    self.regs.pc - 4
+                } else {
+                    self.regs.pc
+                }
+            }
             0x08 => self.regs.pc - 4,
             _ => todo!(),
         };
