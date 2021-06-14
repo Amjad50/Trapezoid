@@ -16,8 +16,8 @@ use std::convert::From;
 use std::ops::Range;
 use std::rc::Rc;
 
+/// helper to convert opengl colors into u16
 #[inline]
-// helper to convert opengl colors into u16
 fn gl_pixel_to_u16(pixel: &(u8, u8, u8, u8)) -> u16 {
     ((pixel.3 & 1) as u16) << 15
         | ((pixel.2 >> 3) as u16) << 10
@@ -25,10 +25,21 @@ fn gl_pixel_to_u16(pixel: &(u8, u8, u8, u8)) -> u16 {
         | (pixel.0 >> 3) as u16
 }
 
-#[inline]
 /// helper in getting the correct value for bottom for gl drawing/coordinate stuff
+#[inline]
 fn to_gl_bottom(top: u32, height: u32) -> u32 {
     512 - height - top
+}
+
+#[inline]
+pub fn vertex_position_from_u32(position: u32) -> [f32; 2] {
+    let x = position & 0x7ff;
+    let sign_extend = 0xfffff800 * ((x >> 10) & 1);
+    let x = (x | sign_extend) as i32;
+    let y = (position >> 16) & 0x7ff;
+    let sign_extend = 0xfffff800 * ((y >> 10) & 1);
+    let y = (y | sign_extend) as i32;
+    [x as f32, y as f32]
 }
 
 pub struct GlContext {
@@ -59,6 +70,26 @@ pub struct DrawingVertex {
 
 impl DrawingVertex {
     #[inline]
+    pub fn position(&self) -> [f32; 2] {
+        self.position
+    }
+
+    #[inline]
+    pub fn set_position(&mut self, position: [f32; 2]) {
+        self.position = position;
+    }
+
+    #[inline]
+    pub fn tex_coord(&mut self) -> [u8; 2] {
+        self.tex_coord
+    }
+
+    #[inline]
+    pub fn set_tex_coord(&mut self, tex_coord: [u8; 2]) {
+        self.tex_coord = tex_coord;
+    }
+
+    #[inline]
     pub fn new_with_color(color: u32) -> Self {
         let mut s = Self::default();
         s.color_from_u32(color);
@@ -67,14 +98,7 @@ impl DrawingVertex {
 
     #[inline]
     pub fn position_from_u32(&mut self, position: u32) {
-        let x = position & 0x7ff;
-        let sign_extend = 0xfffff800 * ((x >> 10) & 1);
-        let x = (x | sign_extend) as i32;
-        let y = (position >> 16) & 0x7ff;
-        let sign_extend = 0xfffff800 * ((y >> 10) & 1);
-        let y = (y | sign_extend) as i32;
-
-        self.position = [x as f32, y as f32];
+        self.position = vertex_position_from_u32(position);
     }
 
     #[inline]
@@ -104,9 +128,11 @@ pub struct DrawingTextureParams {
 }
 
 impl DrawingTextureParams {
+    /// Process tex page params, from the lower 16 bits, this is only used
+    /// for when drawing rectangle, as the tex_page is take fron the gpu_stat
+    /// and not from a parameter
     #[inline]
-    pub fn tex_page_from_u32(&mut self, param: u32) {
-        let param = param >> 16;
+    pub fn tex_page_from_gpustat(&mut self, param: u32) {
         let x = param & 0xF;
         let y = (param >> 4) & 1;
 
@@ -115,6 +141,14 @@ impl DrawingTextureParams {
         self.tex_page_color_mode = ((param >> 7) & 3) as u8;
         // TODO: support disable later, in the bios, the textures have this bit set
         //self.texture_disable = (param >> 11) & 1 != 1;
+    }
+
+    /// Process tex page params, from the higher 16 bits, which is found
+    /// in tex page parameter in drawing stuff
+    #[inline]
+    pub fn tex_page_from_u32(&mut self, param: u32) {
+        let param = param >> 16;
+        self.tex_page_from_gpustat(param);
     }
 
     #[inline]

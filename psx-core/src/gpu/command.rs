@@ -1,4 +1,4 @@
-use super::gpu_context::{DrawingTextureParams, DrawingVertex};
+use super::gpu_context::{vertex_position_from_u32, DrawingTextureParams, DrawingVertex};
 use super::GpuContext;
 
 // TODO: using dyn and dynamic dispatch might not be the best case for fast performance
@@ -13,7 +13,7 @@ pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
         },
         1 => Box::new(PolygonCommand::new(data)),
         2 => todo!(),
-        3 => todo!(),
+        3 => Box::new(RectangleCommand::new(data)),
         4 => todo!(),
         5 => Box::new(CpuToVramBlitCommand::new(data)),
         6 => Box::new(VramToCpuBlitCommand::new(data)),
@@ -124,6 +124,134 @@ impl Gp0Command for PolygonCommand {
     fn still_need_params(&mut self) -> bool {
         !((self.input_pointer == 4 && self.is_4_vertices)
             || (self.input_pointer == 3 && !self.is_4_vertices))
+    }
+}
+#[derive(Debug)]
+struct RectangleCommand {
+    textured: bool,
+    semi_transparent: bool,
+    size_mode: u8,
+    size: [f32; 2],
+    vertices: [DrawingVertex; 4],
+    texture_params: DrawingTextureParams,
+    current_input_state: u8,
+}
+
+impl Gp0Command for RectangleCommand {
+    fn new(data0: u32) -> Self
+    where
+        Self: Sized,
+    {
+        Self {
+            size_mode: ((data0 >> 27) & 3) as u8,
+            size: [0.0; 2],
+            textured: (data0 >> 26) & 1 == 1,
+            semi_transparent: (data0 >> 25) & 1 == 1,
+            vertices: [
+                DrawingVertex::new_with_color(data0),
+                DrawingVertex::new_with_color(data0),
+                DrawingVertex::new_with_color(data0),
+                DrawingVertex::new_with_color(data0),
+            ],
+            texture_params: DrawingTextureParams::default(),
+            current_input_state: 0,
+        }
+    }
+
+    fn add_param(&mut self, param: u32) {
+        match self.current_input_state {
+            0 => {
+                // vertex1 input
+                self.vertices[0].position_from_u32(param);
+                if self.textured {
+                    self.current_input_state = 1;
+                } else {
+                    // variable size
+                    if self.size_mode == 0 {
+                        self.current_input_state = 2;
+                    } else {
+                        self.current_input_state = 3;
+                    }
+                }
+            }
+            1 => {
+                // texture data input
+                self.texture_params.clut_from_u32(param);
+                self.vertices[0].tex_coord_from_u32(param);
+
+                // variable size
+                if self.size_mode == 0 {
+                    self.current_input_state = 2;
+                } else {
+                    self.current_input_state = 3;
+                }
+            }
+            2 => {
+                // variable size input
+                self.size = vertex_position_from_u32(param);
+                self.current_input_state = 3;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
+        // TODO: Add texture repeat of U,V exceed 255
+        if !self.still_need_params() {
+            // compute the location of other vertices
+            let top_left = self.vertices[0].position();
+            let top_left_tex = self.vertices[0].tex_coord();
+            let size = match self.size_mode {
+                0 => &self.size,
+                1 => &[1.0; 2],
+                2 => &[8.0; 2],
+                3 => &[16.0; 2],
+                _ => unreachable!(),
+            };
+            let size_coord = [size[0] as i32, size[1] as i32];
+
+            // top right
+            // NOTE: for some reason, -1 when computing tex coords is needed
+            //  check if its true or not.
+            self.vertices[1].set_position([top_left[0] + size[0], top_left[1]]);
+            self.vertices[1].set_tex_coord([
+                (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u8,
+                top_left_tex[1],
+            ]);
+            // bottom left
+            self.vertices[2].set_position([top_left[0], top_left[1] + size[1]]);
+            self.vertices[2].set_tex_coord([
+                top_left_tex[0],
+                (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u8,
+            ]);
+            // bottom right
+            self.vertices[3].set_position([top_left[0] + size[0], top_left[1] + size[1]]);
+            self.vertices[3].set_tex_coord([
+                (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u8,
+                (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u8,
+            ]);
+
+            log::info!("RECTANGLE executing {:#?}", self);
+            if self.semi_transparent {
+                todo!()
+            }
+
+            if self.textured {
+                // it will just take what is needed from the stat, which include the tex page
+                // to use and color mode
+                self.texture_params.tex_page_from_gpustat(ctx.gpu_stat.bits);
+            }
+
+            ctx.draw_polygon(&self.vertices, &self.texture_params, self.textured);
+
+            true
+        } else {
+            false
+        }
+    }
+
+    fn still_need_params(&mut self) -> bool {
+        self.current_input_state != 3
     }
 }
 
