@@ -509,6 +509,7 @@ impl GpuContext {
         vertices: &[DrawingVertex],
         texture_params: &DrawingTextureParams,
         textured: bool,
+        texture_blending: bool,
     ) {
         // TODO: if its textured, make sure the textures are not in rendering
         //  ranges and are updated in the texture buffer
@@ -583,6 +584,7 @@ impl GpuContext {
                     out vec4 out_color;
 
                     uniform bool is_textured;
+                    uniform bool is_texture_blended;
                     uniform sampler2D tex;
                     uniform uvec2 tex_page_base;
                     uniform uint tex_page_color_mode;
@@ -636,6 +638,12 @@ impl GpuContext {
                             }
 
                             out_color = get_color_from_u16(color_value);
+
+                            if (is_texture_blended) {
+                                vec3 color = vec3(out_color);
+                                color *=  v_color * 2;
+                                out_color = vec4(color, out_color.a);
+                            }
                         } else{
                             out_color = vec4(v_color, 0.0);
                         }       
@@ -648,6 +656,7 @@ impl GpuContext {
         let uniforms = uniform! {
             offset: self.drawing_offset,
             is_textured: textured,
+            is_texture_blended: texture_blending,
             tex: self.texture_buffer.sampled(),
             tex_page_base: texture_params.tex_page_base,
             tex_page_color_mode: texture_params.tex_page_color_mode,
