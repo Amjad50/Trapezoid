@@ -430,21 +430,47 @@ impl Cpu {
                 let rs = self.regs.read_register(instruction.rs) as i32 as i64;
                 let rt = self.regs.read_register(instruction.rt) as i32 as i64;
 
-                let div = (rs / rt) as u32;
-                let remainder = (rs % rt) as u32;
+                // in case of overflow (the following condition), it should return
+                // the output we manually put in `hi` and `lo`, but we can
+                // acheive the same thing using the normal division below
+                // TODO: maybe add test for this?
+                // if rt == -1 && rs == -0x80000000 {
+                //    self.regs.hi = 0;
+                //    self.regs.lo = (-0x80000000 as i64 & 0xFFFFFFFF) as u32;
+                // }
+                //
+                // division by zero
+                if rt == 0 {
+                    if rs > 0 {
+                        self.regs.hi = rs as u32;
+                        self.regs.lo = 0xFFFFFFFF; // -1
+                    } else {
+                        self.regs.hi = rs as u32;
+                        self.regs.lo = 1;
+                    }
+                } else {
+                    let div = (rs / rt) as u32;
+                    let remainder = (rs % rt) as u32;
 
-                self.regs.hi = remainder;
-                self.regs.lo = div;
+                    self.regs.hi = remainder;
+                    self.regs.lo = div;
+                }
             }
             Opcode::Divu => {
                 let rs = self.regs.read_register(instruction.rs) as u64;
                 let rt = self.regs.read_register(instruction.rt) as u64;
 
-                let div = (rs / rt) as u32;
-                let remainder = (rs % rt) as u32;
+                // division by zero
+                if rt == 0 {
+                    self.regs.hi = rs as u32;
+                    self.regs.lo = 0xFFFFFFFF;
+                } else {
+                    let div = (rs / rt) as u32;
+                    let remainder = (rs % rt) as u32;
 
-                self.regs.hi = remainder;
-                self.regs.lo = div;
+                    self.regs.hi = remainder;
+                    self.regs.lo = div;
+                }
             }
             Opcode::Mfhi => {
                 self.regs.write_register(instruction.rd, self.regs.hi);
