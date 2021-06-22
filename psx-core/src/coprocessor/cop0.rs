@@ -1,3 +1,6 @@
+/// CXD8606CQ CPU ID
+const PRID: u32 = 0x2;
+
 #[derive(Default)]
 pub struct SystemControlCoprocessor {
     bpc: u32,
@@ -10,7 +13,6 @@ pub struct SystemControlCoprocessor {
     sr: u32,
     cause: u32,
     epc: u32,
-    prid: u32,
 }
 
 impl SystemControlCoprocessor {
@@ -68,7 +70,7 @@ impl SystemControlCoprocessor {
             12 => self.sr,
             13 => self.cause,
             14 => self.epc,
-            //15 => self.prid,
+            15 => PRID,
             // When reading one of the garbage registers shortly after reading
             // a valid cop0 register, the garbage value is usually the same
             // as that of the valid register. When doing the read later on,
