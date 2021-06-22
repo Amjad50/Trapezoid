@@ -21,7 +21,7 @@ use dma::Dma;
 use expansion_regions::{ExpansionRegion1, ExpansionRegion2};
 use interrupts::Interrupts;
 use memory_control::{CacheControl, MemoryControl1, MemoryControl2};
-use ram::MainRam;
+use ram::{MainRam, Scratchpad};
 
 pub trait BusLine {
     fn read_u32(&mut self, addr: u32) -> u32;
@@ -106,6 +106,8 @@ pub struct CpuBus {
 
     dma: Dma,
     dma_bus: DmaBus,
+
+    scratchpad: Scratchpad,
 }
 
 impl CpuBus {
@@ -134,6 +136,8 @@ impl CpuBus {
                 main_ram: MainRam::default(),
                 gpu: Gpu::new(gl_context),
             },
+
+            scratchpad: Scratchpad::default(),
         };
 
         // TODO: handle errors in loading
@@ -291,6 +295,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.dma_bus.main_ram.read_u32(addr & 0xFFFFFF),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.read_u32(addr & 0xFFFFFF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u32(addr),
+            0x1F800000..=0x1F8003FF => self.scratchpad.read_u32(addr & 0x3FF),
             0x1F801000..=0x1F801020 => self.mem_ctrl_1.read_u32(addr),
             0x1F801060 => self.mem_ctrl_2.read_u32(addr),
             0x1F801070..=0x1F801077 => self.interrupts.read_u32(addr & 0xF),
@@ -312,6 +317,7 @@ impl BusLine for CpuBus {
             0x00000000..=0x00200000 => self.dma_bus.main_ram.write_u32(addr, data),
             0x80000000..=0x80200000 => self.dma_bus.main_ram.write_u32(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.write_u32(addr & 0xFFFFFF, data),
+            0x1F800000..=0x1F8003FF => self.scratchpad.write_u32(addr & 0x3FF, data),
             0x1F801000..=0x1F801020 => self.mem_ctrl_1.write_u32(addr, data),
             0x1F801060 => self.mem_ctrl_2.write_u32(addr, data),
             0x1F801070..=0x1F801077 => self.interrupts.write_u32(addr & 0xF, data),
@@ -334,6 +340,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.dma_bus.main_ram.read_u16(addr & 0xFFFFFF),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.read_u16(addr & 0xFFFFFF),
 
+            0x1F800000..=0x1F8003FF => self.scratchpad.read_u16(addr & 0x3FF),
             0x1F801044..=0x1F80104F => self.controller_mem_card.read_u16(addr & 0xF),
             0x1F801070..=0x1F801077 => self.interrupts.read_u16(addr & 0xF),
             0x1F801100..=0x1F80112F => self.timers.read_u16(addr & 0xFF),
@@ -353,6 +360,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.dma_bus.main_ram.write_u16(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.write_u16(addr & 0xFFFFFF, data),
 
+            0x1F800000..=0x1F8003FF => self.scratchpad.write_u16(addr & 0x3FF, data),
             0x1F801048..=0x1F80104F => self.controller_mem_card.write_u16(addr & 0xF, data),
             0x1F801070..=0x1F801077 => self.interrupts.write_u16(addr & 0xF, data),
             0x1F801100..=0x1F80112F => self.timers.write_u16(addr & 0xFF, data),
@@ -368,6 +376,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.dma_bus.main_ram.read_u8(addr & 0xFFFFFF),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.read_u8(addr & 0xFFFFFF),
 
+            0x1F800000..=0x1F8003FF => self.scratchpad.read_u8(addr & 0x3FF),
             0x1F801040 => self.controller_mem_card.read_u8(addr & 0xF),
             0x1F000000..=0x1F080000 => self.expansion_region_1.read_u8(addr & 0xFFFFF),
             0x1F801800..=0x1F801803 => self.cdrom.read_u8(addr & 3),
@@ -385,6 +394,7 @@ impl BusLine for CpuBus {
             0x80000000..=0x80200000 => self.dma_bus.main_ram.write_u8(addr & 0xFFFFFF, data),
             0xA0000000..=0xA0200000 => self.dma_bus.main_ram.write_u8(addr & 0xFFFFFF, data),
 
+            0x1F800000..=0x1F8003FF => self.scratchpad.write_u8(addr & 0x3FF, data),
             0x1F801040 => self.controller_mem_card.write_u8(addr & 0xF, data),
             0x1F000000..=0x1F080000 => self.expansion_region_1.write_u8(addr & 0xFFFFF, data),
             0x1F801800..=0x1F801803 => self.cdrom.write_u8(addr & 3, data),
