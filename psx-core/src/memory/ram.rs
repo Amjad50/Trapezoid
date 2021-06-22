@@ -14,6 +14,16 @@ impl Default for MainRam {
     }
 }
 
+impl MainRam {
+    pub fn put_at_address(&mut self, block_data: &[u8], addr: u32) {
+        let addr = addr as usize;
+        let block_len = block_data.len();
+        assert!((block_len + addr) < self.data.len());
+
+        self.data[addr..(addr + block_len)].copy_from_slice(block_data);
+    }
+}
+
 impl BusLine for MainRam {
     fn read_u32(&mut self, addr: u32) -> u32 {
         let index = addr as usize;

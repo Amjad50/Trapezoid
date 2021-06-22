@@ -20,15 +20,16 @@ pub struct Psx {
 
 impl Psx {
     // TODO: produce a valid `Error` struct
-    pub fn new<P: AsRef<Path>, F: glium::backend::Facade>(
-        bios_file_path: P,
+    pub fn new<BiosPath: AsRef<Path>, DiskPath: AsRef<Path>, F: glium::backend::Facade>(
+        bios_file_path: BiosPath,
+        disk_file: Option<DiskPath>,
         gl_facade: &F,
     ) -> Result<Self, ()> {
         let bios = Bios::from_file(bios_file_path)?;
 
         Ok(Self {
             cpu: Cpu::new(),
-            bus: CpuBus::new(bios, GlContext::new(gl_facade)),
+            bus: CpuBus::new(bios, disk_file, GlContext::new(gl_facade)),
         })
     }
 

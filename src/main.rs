@@ -56,13 +56,16 @@ fn main() {
     let mut is_windowed = false;
 
     if args.len() < 2 {
-        println!("USAGE: {} <bios>", args[0]);
+        println!("USAGE: {} <bios> <exe/disk-file>", args[0]);
         exit(1);
     }
 
+    // must be last, TODO: add arg parser
     if args.len() > 2 {
-        is_windowed = args[2] == "-w";
+        is_windowed = args.last().unwrap() == "-w";
     }
+
+    let disk_file = args.get(2);
 
     let event_loop = glutin::event_loop::EventLoop::new();
     let display = if is_windowed {
@@ -71,7 +74,7 @@ fn main() {
         GlDisplay::headless(&event_loop, 800, 600)
     };
 
-    let mut psx = Psx::new(&args[1], &display).unwrap();
+    let mut psx = Psx::new(&args[1], disk_file, &display).unwrap();
 
     loop {
         if psx.clock() {

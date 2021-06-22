@@ -5,10 +5,10 @@ mod memory_control;
 mod ram;
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use byteorder::{ByteOrder, LittleEndian};
+use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 
 use crate::cdrom::Cdrom;
 use crate::controller_mem_card::ControllerAndMemoryCard;
@@ -109,8 +109,12 @@ pub struct CpuBus {
 }
 
 impl CpuBus {
-    pub fn new(bios: Bios, gl_context: GlContext) -> Self {
-        Self {
+    pub fn new<DiskPath: AsRef<Path>>(
+        bios: Bios,
+        disk_file: Option<DiskPath>,
+        gl_context: GlContext,
+    ) -> Self {
+        let mut s = Self {
             bios,
             mem_ctrl_1: MemoryControl1::default(),
             mem_ctrl_2: MemoryControl2::default(),
@@ -130,11 +134,135 @@ impl CpuBus {
                 main_ram: MainRam::default(),
                 gpu: Gpu::new(gl_context),
             },
+        };
+
+        // TODO: handle errors in loading
+        if let Some(disk_file) = disk_file {
+            let path = disk_file.as_ref().to_owned();
+            // if this is an exe file
+            if path
+                .extension()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_ascii_lowercase()
+                == "exe"
+            {
+                s.load_exe_file(disk_file);
+            } else {
+                todo!("Only exe is supported now");
+            }
         }
+
+        s
     }
 
     pub fn gpu(&self) -> &Gpu {
         &self.dma_bus.gpu
+    }
+}
+
+impl CpuBus {
+    // TODO: handle errors
+    fn load_exe_file<P: AsRef<Path>>(&mut self, exe_file_path: P) {
+        let mut file = File::open(exe_file_path).unwrap();
+        let mut magic = [0; 8];
+        let initial_pc;
+        let initial_gp;
+        let destination;
+        let file_size;
+        let _data_section_start;
+        let _data_section_size;
+        let _bss_section_start;
+        let _bss_section_size;
+        let mut initial_sp_fp;
+        let mut data = Vec::new();
+
+        file.read(&mut magic).unwrap();
+        assert!(&magic == b"PS-X EXE");
+        // bytes from 0x8 to 0xF
+        assert!(file.read_u64::<LittleEndian>().unwrap() == 0);
+
+        initial_pc = file.read_u32::<LittleEndian>().unwrap();
+        initial_gp = file.read_u32::<LittleEndian>().unwrap();
+        destination = file.read_u32::<LittleEndian>().unwrap();
+        file_size = file.read_u32::<LittleEndian>().unwrap();
+        _data_section_start = file.read_u32::<LittleEndian>().unwrap();
+        _data_section_size = file.read_u32::<LittleEndian>().unwrap();
+        _bss_section_start = file.read_u32::<LittleEndian>().unwrap();
+        _bss_section_size = file.read_u32::<LittleEndian>().unwrap();
+        initial_sp_fp = file.read_u32::<LittleEndian>().unwrap();
+        initial_sp_fp += file.read_u32::<LittleEndian>().unwrap();
+        // ascii marker and zero filled data
+        file.seek(SeekFrom::Start(0x800)).unwrap();
+
+        file.read_to_end(&mut data).unwrap();
+
+        assert!(data.len() == file_size as usize);
+
+        // put the data at the correct location in ram
+        self.dma_bus
+            .main_ram
+            .put_at_address(&data, destination & 0x1FFFFF);
+
+        // patch the bios's `LoadRunShell` to run the exe instead
+        // This patch method was taken from https://github.com/BluestormDNA/ProjectPSX
+        LittleEndian::write_u32(
+            &mut self.bios.data[0x6FF0 + 0..0x6FF0 + 0 + 4],
+            0x3C080000 | initial_pc >> 16,
+        );
+        LittleEndian::write_u32(
+            &mut self.bios.data[0x6FF0 + 4..0x6FF0 + 4 + 4],
+            0x35080000 | initial_pc & 0xFFFF,
+        );
+
+        LittleEndian::write_u32(
+            &mut self.bios.data[0x6FF0 + 8..0x6FF0 + 8 + 4],
+            0x3C1C0000 | initial_gp >> 16,
+        );
+        LittleEndian::write_u32(
+            &mut self.bios.data[0x6FF0 + 12..0x6FF0 + 12 + 4],
+            0x379C0000 | initial_gp & 0xFFFF,
+        );
+
+        // if sp/fp is zero, then it does not change
+        if initial_sp_fp != 0 {
+            LittleEndian::write_u32(
+                &mut self.bios.data[0x6FF0 + 16..0x6FF0 + 16 + 4],
+                0x3C1D0000 | initial_sp_fp >> 16,
+            );
+            LittleEndian::write_u32(
+                &mut self.bios.data[0x6FF0 + 20..0x6FF0 + 20 + 4],
+                0x37BD0000 | initial_sp_fp & 0xFFFF,
+            );
+
+            LittleEndian::write_u32(
+                &mut self.bios.data[0x6FF0 + 24..0x6FF0 + 24 + 4],
+                0x3C1E0000 | initial_sp_fp >> 16,
+            );
+            LittleEndian::write_u32(
+                &mut self.bios.data[0x6FF0 + 28..0x6FF0 + 28 + 4],
+                0x37DE0000 | initial_sp_fp & 0xFFFF,
+            );
+
+            LittleEndian::write_u32(
+                &mut self.bios.data[0x6FF0 + 32..0x6FF0 + 32 + 4],
+                0x01000008,
+            );
+            LittleEndian::write_u32(
+                &mut self.bios.data[0x6FF0 + 36..0x6FF0 + 36 + 4],
+                0x00000000,
+            );
+        } else {
+            LittleEndian::write_u32(
+                &mut self.bios.data[0x6FF0 + 16..0x6FF0 + 16 + 4],
+                0x01000008,
+            );
+            LittleEndian::write_u32(
+                &mut self.bios.data[0x6FF0 + 20..0x6FF0 + 20 + 4],
+                0x00000000,
+            );
+        }
     }
 }
 
