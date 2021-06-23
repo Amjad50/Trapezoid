@@ -249,7 +249,7 @@ impl Cpu {
                     result |= self.bus_read_u8(bus, part_addr) as u32;
                 }
                 // move it to the upper part
-                let shift = (3 - offset) * 8;
+                let shift = offset * 8;
 
                 let mask = !(0xFFFFFFFF >> shift);
                 let original_rt = self.regs.read_register(instruction.rt);
