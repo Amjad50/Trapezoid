@@ -25,6 +25,16 @@ fn gl_pixel_to_u16(pixel: &(u8, u8, u8, u8)) -> u16 {
         | (pixel.0 >> 3) as u16
 }
 
+#[inline]
+fn u16_to_gl_pixel(pixel: u16) -> (f32, f32, f32, f32) {
+    (
+        (pixel & 0x1F) as f32 / 31.0,
+        ((pixel >> 5) & 0x1F) as f32 / 31.0,
+        ((pixel >> 10) & 0x1F) as f32 / 31.0,
+        ((pixel >> 15) & 0x1) as f32,
+    )
+}
+
 /// helper in getting the correct value for bottom for gl drawing/coordinate stuff
 #[inline]
 fn to_gl_bottom(top: u32, height: u32) -> u32 {
@@ -191,6 +201,26 @@ impl Vram {
     }
 
     #[inline]
+    fn write_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
+        let (x_range, y_range) = block_range;
+        let whole_size = x_range.len() * y_range.len();
+        assert_eq!(block.len(), whole_size);
+
+        let mut mapping = self.data.map_write();
+        let mut block_iter = block.into_iter();
+
+        for y in y_range {
+            let mut current_pixel_pos = (y * 1024 + x_range.start) as usize;
+            for _ in 0..x_range.len() {
+                mapping.set(current_pixel_pos, *block_iter.next().unwrap());
+                current_pixel_pos += 1;
+            }
+        }
+
+        assert!(block_iter.next().is_none());
+    }
+
+    #[inline]
     fn read_block(&mut self, block_range: (Range<u32>, Range<u32>)) -> Vec<u16> {
         let (x_range, y_range) = block_range;
 
@@ -315,18 +345,7 @@ impl GpuContext {
         false
     }
 
-    fn is_position_in_rendering(&self, position: (u32, u32)) -> bool {
-        for range in &self.ranges_in_rendering {
-            if range.0.contains(&position.0) && range.1.contains(&position.1) {
-                println!("range found={:?} containing position={:?}", range, position);
-                return true;
-            }
-        }
-
-        false
-    }
-
-    fn add_drawing_range(&mut self, new_range: (Range<u32>, Range<u32>)) {
+    fn add_to_rendering_range(&mut self, new_range: (Range<u32>, Range<u32>)) {
         fn range_overlap(r1: &(Range<u32>, Range<u32>), r2: &(Range<u32>, Range<u32>)) -> bool {
             // they are left/right to each other
             if r1.0.start >= r2.0.end || r2.0.start >= r1.0.end {
@@ -398,6 +417,72 @@ impl GpuContext {
 }
 
 impl GpuContext {
+    pub fn write_vram_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
+        // cannot write outside range
+        assert!(block_range.0.end <= 1024);
+        assert!(block_range.1.end <= 512);
+
+        let whole_size = block_range.0.len() * block_range.1.len();
+        assert_eq!(block.len(), whole_size);
+
+        let (drawing_left, drawing_top) = self.drawing_area_top_left;
+        let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
+        let drawing_range = (
+            drawing_left..(drawing_right + 1),
+            drawing_top..(drawing_bottom + 1),
+        );
+
+        // add the current drawing area to rendering range
+        //
+        // if we are copying a block into a rendering range, then just blit
+        // directly into it
+        self.add_to_rendering_range(drawing_range);
+
+        if self.is_block_in_rendering(&block_range) {
+            let (x_range, y_range) = block_range;
+            let width = x_range.len() as u32;
+            let height = y_range.len() as u32;
+
+            // TODO: converting pixels manually is not efficient, so try to use
+            //  U5U5U5U1 but reversed (maybe PR to glium?)
+            let tex = Texture2d::with_mipmaps(
+                &self.gl_context,
+                RawImage2d::from_raw_rgba_reversed(
+                    &block
+                        .iter()
+                        .cloned()
+                        .map(u16_to_gl_pixel)
+                        .map(|x| vec![x.0, x.1, x.2, x.3])
+                        .flatten()
+                        .collect::<Vec<_>>(),
+                    (width, height),
+                ),
+                MipmapsOption::NoMipmap,
+            )
+            .unwrap();
+
+            // using blit is faster then using `raw_upload_from_pixel_buffer`
+            tex.as_surface().blit_color(
+                &Rect {
+                    left: 0,
+                    bottom: 0,
+                    width,
+                    height,
+                },
+                &self.drawing_texture.as_surface(),
+                &BlitTarget {
+                    left: x_range.start,
+                    bottom: to_gl_bottom(y_range.start, height),
+                    width: width as i32,
+                    height: height as i32,
+                },
+                MagnifySamplerFilter::Nearest,
+            );
+        } else {
+            self.vram.write_block(block_range, block);
+        }
+    }
+
     pub fn read_vram_block(&mut self, block_range: (Range<u32>, Range<u32>)) -> Vec<u16> {
         // cannot read outside range
         assert!(block_range.0.end <= 1024);
@@ -446,22 +531,6 @@ impl GpuContext {
         } else {
             self.vram.read_block(block_range)
         }
-    }
-
-    pub fn write_vram_checked(&mut self, position: (u32, u32), data: u16) {
-        if self.is_position_in_rendering(position) {
-            todo!();
-        }
-
-        self.vram.write_at_position(position, data);
-    }
-
-    pub fn read_vram_checked(&mut self, position: (u32, u32)) -> u16 {
-        if self.is_position_in_rendering(position) {
-            todo!();
-        }
-
-        self.vram.read_at_position(position)
     }
 
     pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
@@ -522,7 +591,7 @@ impl GpuContext {
             drawing_top..(drawing_bottom + 1),
         );
 
-        self.add_drawing_range(drawing_range);
+        self.add_to_rendering_range(drawing_range);
 
         let left = drawing_left;
         let top = drawing_top;

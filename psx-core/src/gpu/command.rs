@@ -399,11 +399,14 @@ impl Gp0Command for MiscCommand {
 
 struct CpuToVramBlitCommand {
     input_state: u8,
-    start_dest: (u32, u32),
-    next_dest: (u32, u32),
-    start_size: (u32, u32),
-    remaining_size: (u32, u32),
+    dest: (u32, u32),
+    size: (u32, u32),
+
+    block: Vec<u16>,
+    block_counter: usize,
     next_data: Option<u32>,
+
+    done: bool,
 }
 
 impl Gp0Command for CpuToVramBlitCommand {
@@ -413,11 +416,14 @@ impl Gp0Command for CpuToVramBlitCommand {
     {
         Self {
             input_state: 0,
-            start_size: (0, 0),
-            remaining_size: (0, 0),
+            size: (0, 0),
+            dest: (0, 0),
+
+            block: Vec::new(),
+            block_counter: 0,
             next_data: None,
-            start_dest: (0, 0),
-            next_dest: (0, 0),
+
+            done: false,
         }
     }
 
@@ -426,17 +432,16 @@ impl Gp0Command for CpuToVramBlitCommand {
             0 => {
                 let start_x = param & 0x3FF;
                 let start_y = (param >> 16) & 0x1FF;
-                self.start_dest = (start_x, start_y);
-                self.next_dest = (start_x, start_y);
-                log::info!("CPU to VRAM: input dest {:?}", self.start_dest);
+                self.dest = (start_x, start_y);
+                log::info!("CPU to VRAM: input dest {:?}", self.dest);
                 self.input_state = 1;
             }
             1 => {
                 let size_x = ((param & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1;
                 let size_y = ((param >> 16).wrapping_sub(1) & 0x1FF) + 1;
-                self.start_size = (size_x, size_y);
-                self.remaining_size = (size_x, size_y);
-                log::info!("CPU to VRAM: size {:?}", self.start_size);
+                self.size = (size_x, size_y);
+                self.block.resize((size_x * size_y) as usize, 0);
+                log::info!("CPU to VRAM: size {:?}", self.size);
                 self.input_state = 2;
             }
             2 => self.next_data = Some(param),
@@ -446,38 +451,32 @@ impl Gp0Command for CpuToVramBlitCommand {
 
     fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
         if let Some(next_data) = self.next_data.take() {
-            let (x_counter, y_counter) = &mut self.remaining_size;
-
-            log::info!(
-                "IN TRANSFERE, dest={:?}, data={:08X}",
-                self.next_dest,
-                next_data
+            // for debugging
+            let vram_pos = (
+                (self.block_counter as u32 % self.size.0) + self.dest.0,
+                (self.block_counter as u32 / self.size.0) + self.dest.1,
             );
+
+            log::info!("IN TRANSFERE, dest={:?}, data={:08X}", vram_pos, next_data);
+
             let d1 = next_data as u16;
             let d2 = (next_data >> 16) as u16;
 
-            for data in &[d1, d2] {
-                ctx.write_vram_checked(self.next_dest, *data);
+            self.block[self.block_counter] = d1;
+            self.block[self.block_counter + 1] = d2;
+            self.block_counter += 2;
 
-                self.next_dest.0 = (self.next_dest.0 + 1) & 0x3FF;
-                *x_counter -= 1;
+            if self.block_counter >= self.block.len() {
+                log::info!("DONE TRANSFERE");
 
-                if *x_counter == 0 {
-                    self.next_dest.1 = (self.next_dest.1 + 1) & 0x1FF;
+                let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
+                let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
 
-                    *y_counter -= 1;
-                    *x_counter = self.start_size.0;
-                    self.next_dest.0 = self.start_dest.0;
-
-                    if *y_counter == 0 {
-                        // finish transfer
-                        log::info!("DONE TRANSFERE");
-                        // update the texture buffer from the vram when we finish
-                        // writing to vram
-                        ctx.update_texture_buffer();
-                        return true;
-                    }
-                }
+                ctx.write_vram_block((x_range, y_range), self.block.as_ref());
+                // update the texture buffer from the vram when we finish
+                // writing to vram
+                ctx.update_texture_buffer();
+                return true;
             }
         }
 
@@ -485,8 +484,7 @@ impl Gp0Command for CpuToVramBlitCommand {
     }
 
     fn still_need_params(&mut self) -> bool {
-        // still inputtning header (state not 3) or we still have some rows
-        self.input_state != 2 || self.remaining_size.1 > 0
+        !self.done
     }
 }
 
@@ -557,7 +555,7 @@ impl Gp0Command for VramToCpuBlitCommand {
 
         ctx.gpu_read = Some(data);
 
-        if self.block_counter == self.block.len() {
+        if self.block_counter >= self.block.len() {
             // finish transfer
             log::info!("DONE TRANSFERE");
             true
