@@ -105,15 +105,13 @@ impl Gp0Command for PolygonCommand {
     fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
         if !self.still_need_params() {
             log::info!("POLYGON executing {:#?}", self);
-            if self.semi_transparent {
-                todo!()
-            }
 
             ctx.draw_polygon(
                 &self.vertices[..self.input_pointer],
                 &self.texture_params,
                 self.textured,
                 self.texture_blending,
+                self.semi_transparent,
             );
 
             true
@@ -233,17 +231,19 @@ impl Gp0Command for RectangleCommand {
             ]);
 
             log::info!("RECTANGLE executing {:#?}", self);
-            if self.semi_transparent {
-                todo!()
-            }
-
             if self.textured {
                 // it will just take what is needed from the stat, which include the tex page
                 // to use and color mode
                 self.texture_params.tex_page_from_gpustat(ctx.gpu_stat.bits);
             }
 
-            ctx.draw_polygon(&self.vertices, &self.texture_params, self.textured, false);
+            ctx.draw_polygon(
+                &self.vertices,
+                &self.texture_params,
+                self.textured,
+                false,
+                self.semi_transparent,
+            );
 
             true
         } else {

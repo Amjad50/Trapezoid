@@ -71,6 +71,10 @@ impl GpuStat {
     fn display_enabled(&self) -> bool {
         !self.intersects(Self::DISPLAY_DISABLED)
     }
+
+    fn semi_transparency_mode(&self) -> u8 {
+        ((self.bits & Self::SEMI_TRASPARENCY.bits) >> 5) as u8
+    }
 }
 
 pub struct Gpu {

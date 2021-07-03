@@ -8,7 +8,8 @@ use glium::{
     texture::{ClientFormat, MipmapsOption, RawImage2d, Texture2d, UncompressedFloatFormat},
     uniform,
     uniforms::MagnifySamplerFilter,
-    BlitTarget, IndexBuffer, Rect, Surface, VertexBuffer,
+    Blend, BlendingFunction, BlitTarget, IndexBuffer, LinearBlendingFactor, Rect, Surface,
+    VertexBuffer,
 };
 
 use std::borrow::Cow;
@@ -132,8 +133,7 @@ implement_vertex!(DrawingVertex, position, color, tex_coord);
 pub struct DrawingTextureParams {
     clut_base: [u32; 2],
     tex_page_base: [u32; 2],
-    // TODO: add support for transparent later
-    // semi_transparecy_mode: u8,
+    semi_transparency_mode: u8,
     tex_page_color_mode: u8,
 }
 
@@ -147,7 +147,7 @@ impl DrawingTextureParams {
         let y = (param >> 4) & 1;
 
         self.tex_page_base = [x * 64, y * 256];
-        //self.semi_transparecy_mode = ((param >> 5) & 3) as u8;
+        self.semi_transparency_mode = ((param >> 5) & 3) as u8;
         self.tex_page_color_mode = ((param >> 7) & 3) as u8;
         // TODO: support disable later, in the bios, the textures have this bit set
         //self.texture_disable = (param >> 11) & 1 != 1;
@@ -414,6 +414,32 @@ impl GpuContext {
             println!("ranges now {:?}", self.ranges_in_rendering);
         }
     }
+
+    fn get_semi_transparency_blending_params(&self, semi_transparecy_mode: u8) -> Blend {
+        let color_func = match semi_transparecy_mode & 3 {
+            0 => BlendingFunction::Addition {
+                source: LinearBlendingFactor::SourceAlpha,
+                destination: LinearBlendingFactor::OneMinusSourceAlpha,
+            },
+            1 => BlendingFunction::Addition {
+                source: LinearBlendingFactor::One,
+                destination: LinearBlendingFactor::SourceAlpha,
+            },
+            2 => BlendingFunction::Subtraction {
+                source: LinearBlendingFactor::One,
+                destination: LinearBlendingFactor::SourceAlpha,
+            },
+            3 => todo!("not sure how to do semi_transparecy_mode 3"),
+            _ => unreachable!(),
+        };
+
+        Blend {
+            color: color_func,
+            // TODO: handle alpha so that it takes the mask value
+            alpha: BlendingFunction::AlwaysReplace,
+            constant_value: (1.0, 1.0, 1.0, 1.0),
+        }
+    }
 }
 
 impl GpuContext {
@@ -579,6 +605,7 @@ impl GpuContext {
         texture_params: &DrawingTextureParams,
         textured: bool,
         texture_blending: bool,
+        semi_transparent: bool,
     ) {
         // TODO: if its textured, make sure the textures are not in rendering
         //  ranges and are updated in the texture buffer
@@ -599,6 +626,13 @@ impl GpuContext {
         let width = drawing_right - drawing_left + 1;
         let bottom = to_gl_bottom(top, height);
 
+        let semi_transparency_mode = if textured {
+            texture_params.semi_transparency_mode
+        } else {
+            self.gpu_stat.semi_transparency_mode()
+        };
+        let blend = self.get_semi_transparency_blending_params(semi_transparency_mode);
+
         let draw_params = glium::DrawParameters {
             viewport: Some(glium::Rect {
                 left,
@@ -606,6 +640,7 @@ impl GpuContext {
                 width,
                 height,
             }),
+            blend,
             ..Default::default()
         };
 
@@ -654,6 +689,8 @@ impl GpuContext {
 
                     uniform bool is_textured;
                     uniform bool is_texture_blended;
+                    uniform bool semi_transparent;
+                    uniform uint semi_transparency_mode;
                     uniform sampler2D tex;
                     uniform uvec2 tex_page_base;
                     uniform uint tex_page_color_mode;
@@ -663,10 +700,34 @@ impl GpuContext {
                         uint r = color_texel & 0x1Fu;
                         uint g = (color_texel >> 5) & 0x1Fu;
                         uint b = (color_texel >> 10) & 0x1Fu;
-                        // TODO: use it for semi_transparency
                         uint a = (color_texel >> 15) & 1u;
 
-                        return vec4(float(r) / 31.0, float(g) / 31.0, float(b) / 31.0, 0.0);
+                        return vec4(float(r) / 31.0, float(g) / 31.0, float(b) / 31.0, float(a));
+                    }
+
+                    vec4 get_color_with_semi_transparency(vec3 color, float semi_transparency_param) {
+                        float alpha;
+                        if (semi_transparency_mode == 0u) {
+                            if (semi_transparency_param == 1.0) {
+                                alpha = 0.5;
+                            } else {
+                                alpha = 1.0;
+                            }
+                        } else if (semi_transparency_mode == 1u) {
+                            // FIXME: transparency does not work when removing this
+                            //  (maybe because of optimization?)
+                            return vec4(1.0, 1.0, 1.0, 1.0);
+                            alpha = semi_transparency_param;
+                        } else if (semi_transparency_mode == 2u) {
+                            return vec4(1.0, 1.0, 1.0, 1.0);
+                            alpha = semi_transparency_param;
+                        } else {
+                            return vec4(1.0, 1.0, 1.0, 1.0);
+                            // TODO: idk how to do this
+                            alpha = semi_transparency_param;
+                        }
+
+                        return vec4(color, alpha);
                     }
 
                     void main() {
@@ -706,15 +767,15 @@ impl GpuContext {
                                 discard;
                             }
 
-                            out_color = get_color_from_u16(color_value);
+                            vec4 color_with_alpha = get_color_from_u16(color_value);
+                            vec3 color = vec3(color_with_alpha);
 
                             if (is_texture_blended) {
-                                vec3 color = vec3(out_color);
                                 color *=  v_color * 2;
-                                out_color = vec4(color, out_color.a);
+                                out_color = get_color_with_semi_transparency(color, color_with_alpha.a);
                             }
-                        } else{
-                            out_color = vec4(v_color, 0.0);
+                        } else {
+                            out_color = get_color_with_semi_transparency(v_color, float(semi_transparent));
                         }       
                     }
                 "
@@ -726,6 +787,8 @@ impl GpuContext {
             offset: self.drawing_offset,
             is_textured: textured,
             is_texture_blended: texture_blending,
+            semi_transparency_mode: semi_transparency_mode,
+            semi_transparent: semi_transparent,
             tex: self.texture_buffer.sampled(),
             tex_page_base: texture_params.tex_page_base,
             tex_page_color_mode: texture_params.tex_page_color_mode,
