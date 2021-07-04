@@ -127,7 +127,7 @@ impl TimerBase {
                 // reset on write to mode
                 self.counter = 0;
 
-                log::info!("write mode {:?} at {:08X}", self.mode, unsafe { crate::PC });
+                log::info!("write mode {:?}", self.mode);
             }
             2 => {
                 self.target = data;
