@@ -768,8 +768,8 @@ impl GpuContext {
 
                             if (is_texture_blended) {
                                 color *=  v_color * 2;
-                                out_color = get_color_with_semi_transparency(color, color_with_alpha.a);
                             }
+                            out_color = get_color_with_semi_transparency(color, color_with_alpha.a);
                         } else {
                             out_color = get_color_with_semi_transparency(v_color, float(semi_transparent));
                         }       
