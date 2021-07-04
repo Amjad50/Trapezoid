@@ -637,6 +637,7 @@ impl GpuContext {
                 height,
             }),
             blend,
+            color_mask: (true, true, true, false),
             ..Default::default()
         };
 
