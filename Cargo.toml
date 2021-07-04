@@ -17,3 +17,5 @@ members = [
     "psx-core"
 ]
 
+[profile.dev]
+opt-level = 2
