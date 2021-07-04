@@ -334,10 +334,6 @@ impl GpuContext {
             if contain_start || contain_end {
                 assert!(contain_start && contain_end);
 
-                println!(
-                    "range found= {:?} containing block_range={:?}",
-                    range, block_range
-                );
                 return true;
             }
         }
