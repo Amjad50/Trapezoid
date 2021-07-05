@@ -14,7 +14,7 @@ pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
         1 => Box::new(PolygonCommand::new(data)),
         2 => todo!(),
         3 => Box::new(RectangleCommand::new(data)),
-        4 => todo!(),
+        4 => Box::new(VramToVramBlitCommand::new(data)),
         5 => Box::new(CpuToVramBlitCommand::new(data)),
         6 => Box::new(VramToCpuBlitCommand::new(data)),
         7 => Box::new(EnvironmentCommand::new(data)),
@@ -485,6 +485,76 @@ impl Gp0Command for CpuToVramBlitCommand {
 
     fn still_need_params(&mut self) -> bool {
         !self.done
+    }
+}
+
+struct VramToVramBlitCommand {
+    input_state: u8,
+    src: (u32, u32),
+    dest: (u32, u32),
+    size: (u32, u32),
+}
+
+impl Gp0Command for VramToVramBlitCommand {
+    fn new(_data0: u32) -> Self
+    where
+        Self: Sized,
+    {
+        Self {
+            input_state: 0,
+            src: (0, 0),
+            dest: (0, 0),
+            size: (0, 0),
+        }
+    }
+
+    fn add_param(&mut self, param: u32) {
+        match self.input_state {
+            0 => {
+                let start_x = param & 0x3FF;
+                let start_y = (param >> 16) & 0x1FF;
+                self.src = (start_x, start_y);
+                log::info!("VRAM to VRAM: input src {:?}", self.src);
+                self.input_state = 1;
+            }
+            1 => {
+                let start_x = param & 0x3FF;
+                let start_y = (param >> 16) & 0x1FF;
+                self.dest = (start_x, start_y);
+                log::info!("VRAM to VRAM: input dest {:?}", self.dest);
+                self.input_state = 2;
+            }
+            2 => {
+                let size_x = ((param & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1;
+                let size_y = ((param >> 16).wrapping_sub(1) & 0x1FF) + 1;
+                self.size = (size_x, size_y);
+                log::info!("VRAM to VRAM: size {:?}", self.size);
+                self.input_state = 3;
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
+        if self.input_state != 3 {
+            return false;
+        }
+
+        let x_range = (self.src.0)..(self.src.0 + self.size.0);
+        let y_range = (self.src.1)..(self.src.1 + self.size.1);
+        let block = ctx.read_vram_block((x_range, y_range));
+
+        let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
+        let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
+        ctx.write_vram_block((x_range, y_range), block.as_ref());
+        // update the texture buffer from the vram when we finish
+        // writing to vram
+        ctx.update_texture_buffer();
+        return true;
+    }
+
+    fn still_need_params(&mut self) -> bool {
+        self.input_state != 3
     }
 }
 
