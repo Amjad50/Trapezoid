@@ -421,11 +421,14 @@ impl GpuContext {
                 source: LinearBlendingFactor::One,
                 destination: LinearBlendingFactor::SourceAlpha,
             },
-            2 => BlendingFunction::Subtraction {
+            2 => BlendingFunction::ReverseSubtraction {
                 source: LinearBlendingFactor::One,
                 destination: LinearBlendingFactor::SourceAlpha,
             },
-            3 => todo!("not sure how to do semi_transparecy_mode 3"),
+            3 => BlendingFunction::Addition {
+                source: LinearBlendingFactor::SourceAlpha,
+                destination: LinearBlendingFactor::OneMinusSourceAlpha,
+            },
             _ => unreachable!(),
         };
 
@@ -721,17 +724,33 @@ impl GpuContext {
                                 alpha = 1.0;
                             }
                         } else if (semi_transparency_mode == 1u) {
-                            // FIXME: transparency does not work when removing this
-                            //  (maybe because of optimization?)
-                            return vec4(1.0, 1.0, 1.0, 1.0);
                             alpha = semi_transparency_param;
                         } else if (semi_transparency_mode == 2u) {
-                            return vec4(1.0, 1.0, 1.0, 1.0);
                             alpha = semi_transparency_param;
                         } else {
-                            return vec4(1.0, 1.0, 1.0, 1.0);
-                            // TODO: idk how to do this
-                            alpha = semi_transparency_param;
+                            // FIXME: inaccurate mode 3 semi transparency
+                            //
+                            // these numbers with the equation:
+                            // (source * source_alpha + dest * (1 - source_alpha)
+                            // Will result in the following cases:
+                            // if semi=1:
+                            //      s * 0.25 + d * 0.75
+                            // if semi=0:
+                            //      s * 1.0 + d * 0.0
+                            //
+                            // but we need
+                            // if semi=1:
+                            //      s * 0.25 + d * 1.00
+                            // if semi=0:
+                            //      s * 1.0 + d * 0.0
+                            //
+                            // Thus, this is not accurate, but temporary will keep
+                            // it like this until we find a new solution
+                            if (semi_transparency_param == 1.0) {
+                                alpha = 0.25;
+                            } else {
+                                alpha = 1.0;
+                            }
                         }
 
                         return vec4(color, alpha);
