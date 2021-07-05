@@ -556,8 +556,18 @@ impl GpuContext {
     }
 
     pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
-        let x_range = (top_left.0)..(top_left.0 + size.0);
-        let y_range = (top_left.1)..(top_left.1 + size.1);
+        let mut x_range = (top_left.0)..(top_left.0 + size.0);
+        let mut y_range = (top_left.1)..(top_left.1 + size.1);
+
+        if x_range.end >= 1024 {
+            self.fill_color((0, top_left.1), (x_range.end - 1024 + 1, size.1), color);
+            x_range.end = 1023;
+        }
+        if y_range.end >= 512 {
+            self.fill_color((top_left.0, 0), (size.0, y_range.end - 512 + 1), color);
+            y_range.end = 511;
+        }
+
         let block_range = (x_range, y_range);
 
         if self.is_block_in_rendering(&block_range) {
