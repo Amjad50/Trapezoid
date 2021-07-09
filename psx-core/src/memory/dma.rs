@@ -252,7 +252,7 @@ impl Dma {
                         linked_entry_addr
                     );
                 }
-                channel.delay += n_entries;
+                channel.delay += n_entries + 1;
 
                 for i in 1..(n_entries + 1) {
                     let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
