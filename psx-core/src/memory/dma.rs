@@ -271,6 +271,12 @@ impl Dma {
         }
     }
 
+    // Some control flags are ignored here like:
+    // - From RAM (Direction)
+    // - Forward address step
+    // - Chopping
+    // - sync mode
+    // Becuase they are hardwired
     fn perform_otc_channel6_dma(&mut self, dma_bus: &mut super::DmaBus) {
         let channel = &mut self.channels[6];
         // must be to main ram
@@ -285,6 +291,16 @@ impl Dma {
         assert!(!channel
             .channel_control
             .intersects(ChannelControl::CHOPPING_ENABLED));
+
+        // must be triggered manually
+        if !channel
+            .channel_control
+            .intersects(ChannelControl::START_TRIGGER)
+        {
+            channel.channel_control.finish_transfer();
+            self.interrupt.request_interrupt(6);
+            return;
+        }
 
         // word align
         let mut current = channel.base_address & 0xFFFFFC;
@@ -317,16 +333,18 @@ impl Dma {
 
             if channel_enabled && channel.channel_control.in_progress() {
                 log::info!("channel {} doing DMA", i);
-                // end transfer (remove busy bits)
-                channel
-                    .channel_control
-                    .remove(ChannelControl::START_TRIGGER);
 
                 match i {
                     2 => self.perform_gpu_channel2_dma(dma_bus),
                     6 => self.perform_otc_channel6_dma(dma_bus),
                     _ => todo!(),
                 }
+
+                // remove trigger afterwards, since some handlers might check
+                //  for manual trigger
+                self.channels[i]
+                    .channel_control
+                    .remove(ChannelControl::START_TRIGGER);
 
                 // handle only one DMA at a time
                 break;
@@ -358,11 +376,23 @@ impl BusLine for Dma {
         }
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
+    fn write_u32(&mut self, addr: u32, mut data: u32) {
         match addr {
             0x80..=0xEF => {
                 let channel_index = (addr >> 4) - 8;
                 log::info!("DMA, writing to channel {}", channel_index);
+
+                // hardwired some control for channel 6
+                // TODO: maybe rewrite channels in individual structs?
+                //  for special cases
+                if channel_index == 6 && addr & 0xF == 8 {
+                    // keep only START_TRIGGER | START_BUSY | UNKNOWN2
+                    // and hardwired the rest to zero
+                    data &= 0b01010001_00000000_00000000_00000000;
+                    // hardware the address direction to backward
+                    data |= 2;
+                }
+
                 self.channels[channel_index as usize].write(addr & 0xF, data)
             }
             0xF0 => {
