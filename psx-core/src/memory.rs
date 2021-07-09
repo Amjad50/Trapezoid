@@ -39,6 +39,24 @@ pub struct Bios {
 }
 
 impl Bios {
+    fn write_u32(&mut self, addr: u32, data: u32) {
+        let index = (addr & 0xFFFFF) as usize;
+
+        LittleEndian::write_u32(&mut self.data[index..index + 4], data)
+    }
+
+    fn apply_patches(&mut self) {
+        // patch to support TTY
+        // the BIOS by default hardcode disable the TTY driver, here we change it
+        // from writing 0 to 1 in order to enable the driver load
+        if self.read_u32(0x6f0c) == 0x3C01A001 && self.read_u32(0x6f14) == 0xAC20B9B0 {
+            self.write_u32(0x6f0c, 0x34010001);
+            self.write_u32(0x6f14, 0xAF81A9C0);
+        }
+    }
+}
+
+impl Bios {
     // TODO: produce a valid `Error` struct
     pub fn from_file<P: AsRef<Path>>(bios_file_path: P) -> Result<Self, ()> {
         let mut data = Vec::new();
@@ -47,7 +65,11 @@ impl Bios {
 
         file.read_to_end(&mut data).map_err(|_| ())?;
 
-        Ok(Self { data })
+        let mut s = Self { data };
+
+        s.apply_patches();
+
+        Ok(s)
     }
 
     pub fn read_u32(&self, addr: u32) -> u32 {
