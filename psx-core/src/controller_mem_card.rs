@@ -394,6 +394,13 @@ impl BusLine for ControllerAndMemoryCard {
                 if data & JOY_CTRL_RESET != 0 {
                     // TODO: not sure what it means by "Reset most JOY_registers to zero"
                     log::info!("joy reset");
+
+                    self.trigger_baudrate_reload();
+                    self.transfered_bits = 0;
+                    self.tx_fifo.clear();
+                    self.rx_fifo.clear();
+                    self.clk_position_high = false;
+
                     // reset the communication handlers
                     self.communication_handlers[0].state = 0;
                     self.communication_handlers[1].state = 0;
