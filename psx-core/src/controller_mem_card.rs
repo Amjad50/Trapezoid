@@ -98,62 +98,129 @@ bitflags! {
 }
 
 /// Emulate Digital pad controller communication
-/// and TODO: memory card
-struct CommunicationHandler {
-    // handles which byte we should send next
+struct Controller {
     state: u8,
     device_id: u16,
     digital_switches: u16,
     connected: bool,
 }
 
-impl CommunicationHandler {
+impl Controller {
     fn new(connected: bool) -> Self {
         Self {
             state: 0,
-            device_id: 0x5A41,
-            digital_switches: 0,
+            device_id: 0x5A41,        // digital controller
+            digital_switches: 0xFFFF, // all released
             connected,
+        }
+    }
+
+    fn start_access(&mut self) -> u8 {
+        if self.connected {
+            self.state = 1;
+            0
+        } else {
+            0xFF
+        }
+    }
+
+    fn exchange_bytes(&mut self, inp: u8) -> (u8, bool) {
+        match self.state {
+            1 => {
+                assert_eq!(inp, 0x42);
+                self.state = 2;
+                ((self.device_id & 0xFF) as u8, false)
+            }
+            2 => {
+                // TODO: handle mutlitap support
+                assert_eq!(inp, 0);
+                self.state = 3;
+                (((self.device_id >> 8) & 0xFF) as u8, false)
+            }
+            3 => {
+                // TODO: handle rumble support
+                self.state = 4;
+                ((self.digital_switches & 0xFF) as u8, false)
+            }
+            4 => {
+                // TODO: handle rumble support
+                self.state = 0;
+                (((self.digital_switches >> 8) & 0xFF) as u8, true)
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct MemoryCard {}
+
+impl MemoryCard {
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn start_access(&mut self) -> u8 {
+        // TODO: handle memory card
+        0xFF
+    }
+
+    fn exchange_bytes(&mut self, _inp: u8) -> (u8, bool) {
+        unreachable!()
+    }
+}
+
+/// Groups the controller and memory_card components for communication
+struct CommunicationHandler {
+    /// which component we are communicating with now
+    state: u8,
+    controller: Controller,
+    memory_card: MemoryCard,
+}
+
+impl CommunicationHandler {
+    fn new(controller_connected: bool) -> Self {
+        Self {
+            state: 0,
+            controller: Controller::new(controller_connected),
+            memory_card: MemoryCard::new(),
         }
     }
 }
 
 impl CommunicationHandler {
     fn exchange_bytes(&mut self, inp: u8) -> u8 {
-        // controller not connected results in floating bus
-        if !self.connected {
-            return 0xFF;
-        }
-
         match self.state {
-            0 => {
-                assert_eq!(inp, 0x01);
-                self.state = 1;
-                // garbage
-                0
-            }
+            0 => match inp {
+                0x01 => {
+                    let out = self.controller.start_access();
+                    if out != 0xFF {
+                        self.state = 1;
+                    }
+                    out
+                }
+                0x81 => {
+                    let out = self.memory_card.start_access();
+                    if out != 0xFF {
+                        self.state = 2;
+                    }
+                    out
+                }
+                _ => unreachable!(),
+            },
             1 => {
-                assert_eq!(inp, 0x42);
-                self.state = 2;
-                (self.device_id & 0xFF) as u8
+                let (result, done) = self.controller.exchange_bytes(inp);
+                if done {
+                    self.state = 0;
+                }
+                result
             }
             2 => {
-                // TODO: handle mutlitap support
-                assert_eq!(inp, 0);
-                self.state = 3;
-                ((self.device_id >> 8) & 0xFF) as u8
-            }
-            3 => {
-                // TODO: handle rumble support
-                assert_eq!(inp, 0);
-                self.state = 4;
-                (self.digital_switches & 0xFF) as u8
-            }
-            4 => {
-                // TODO: handle rumble support
-                assert_eq!(inp, 0);
-                self.state = 0;
-                ((self.digital_switches >> 8) & 0xFF) as u8
+                let (result, done) = self.memory_card.exchange_bytes(inp);
+                if done {
+                    self.state = 0;
+                }
+                result
             }
             _ => unreachable!(),
         }
@@ -192,7 +259,7 @@ impl Default for ControllerAndMemoryCard {
             rx_fifo: VecDeque::new(),
 
             communication_handlers: [
-                CommunicationHandler::new(false),
+                CommunicationHandler::new(true),
                 CommunicationHandler::new(false),
             ],
         }
@@ -293,18 +360,18 @@ impl ControllerAndMemoryCard {
 }
 
 impl BusLine for ControllerAndMemoryCard {
-    fn read_u32(&mut self, addr: u32) -> u32 {
+    fn read_u32(&mut self, _addr: u32) -> u32 {
         todo!()
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
+    fn write_u32(&mut self, _addr: u32, _data: u32) {
         todo!()
     }
 
     fn read_u16(&mut self, addr: u32) -> u16 {
         match addr {
             0x4 => self.get_stat() as u16,
-            0x8 => todo!("read 8"),
+            0x8 => self.mode.bits,
             0xA => self.ctrl.bits,
             0xE => self.baudrate_timer_reload as u16,
             _ => unreachable!(),
