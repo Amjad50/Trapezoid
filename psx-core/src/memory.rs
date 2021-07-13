@@ -53,6 +53,38 @@ impl Bios {
             self.write_u32(0x6f0c, 0x34010001);
             self.write_u32(0x6f14, 0xAF81A9C0);
         }
+        // patch to fix a bug where the cursor of the controller is blinking
+        //
+        // The problem is that the BIOS does this when getting the digital switches data:
+        //     while (I_STAT & 0x80 == 0) {
+        //         if (JOY_STAT & 2 != 0) {
+        //             goto save_input_and_continue;
+        //         }
+        //     }
+        //     while (JOY_STAT & 2 == 0) {}
+        //     // return value for "controller not connected"
+        //     return 0xFFFF;
+        //
+        // Which will save the input and continue *only and only if* it read the
+        // `controller_and_mem_card` interrupt from `I_STAT` first then read the
+        // `RX_FIFO_NOT_EMPTY` from `JOY_STAT`. If it read it the other way around
+        // (meaning that the transfer finished just after the read of `JOY_STAT`
+        // inside the loop, then it will report as `controller not connected`.
+        //
+        // This problem happens in some frames and results in blinking cursor.
+        //
+        // The patch fixes this issue by modifing the jump after the first loop
+        // to the `save_input_and_continue` address. It was also tested, switches
+        // in the controller works without any problems and the BIOS can read
+        // the keys, only the blinking is fixed.
+        if self.read_u32(0x14330) == 0x92200000
+            && self.read_u32(0x14334) == 0x10000047
+            && self.read_u32(0x14338) == 0x8fae0040
+        {
+            self.write_u32(0x14330, 0x00000000);
+            self.write_u32(0x14334, 0x10000006);
+            self.write_u32(0x14338, 0x00000000);
+        }
     }
 }
 
