@@ -539,7 +539,13 @@ impl Cpu {
                 self.execute_exception(0x08);
             }
             //Opcode::Break => {}
-            //Opcode::Cop(_) => {}
+            Opcode::Cop(n) => {
+                // the only cop0 command RFE is handled as its own opcode
+                // so we only handle cop2 commands
+                assert!(n == 2);
+
+                self.cop2.execute_command(instruction.imm25);
+            }
             Opcode::Mfc(n) => {
                 let result = match n {
                     0 => self.cop0.read_data(instruction.rd_raw),

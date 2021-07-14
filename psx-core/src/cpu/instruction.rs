@@ -115,6 +115,7 @@ pub struct Instruction {
     pub rs_raw: u8,
     pub rs: RegisterType,
     pub imm16: u16,
+    pub imm25: u32,
     pub imm26: u32,
 }
 
@@ -132,6 +133,7 @@ impl Instruction {
         // combination of the above
         let imm16 = instruction as u16;
         let imm26 = instruction & 0x3FFFFFF;
+        let imm25 = instruction & 0x1FFFFFF;
 
         let mut opcode = Self::get_opcode_from_primary(primary_identifier);
 
@@ -158,6 +160,7 @@ impl Instruction {
             rs_raw,
             rs,
             imm16,
+            imm25,
             imm26,
         }
     }

@@ -1,3 +1,103 @@
+#[derive(Debug)]
+enum GteCommandOpcode {
+    Na,
+
+    Rtps,
+    Rtpt,
+
+    Mvmva,
+
+    Dcpl,
+    Dpcs,
+    Dpct,
+    Intpl,
+    Sqr,
+
+    Ncs,
+    Nct,
+    Ncds,
+    Ncdt,
+    Nccs,
+    Ncct,
+    Cdp,
+    Cc,
+    Nclip,
+    Avsz3,
+    Avsz4,
+    Op,
+
+    Gpf,
+    Gpl,
+}
+
+impl GteCommandOpcode {
+    fn from_real_cmd(real_cmd: u8) -> Self {
+        match real_cmd {
+            0x01 => Self::Rtps,
+            0x06 => Self::Nclip,
+            0x0C => Self::Op,
+            0x10 => Self::Dpcs,
+            0x11 => Self::Intpl,
+            0x12 => Self::Mvmva,
+            0x13 => Self::Ncds,
+            0x14 => Self::Cdp,
+            0x16 => Self::Ncdt,
+            0x1B => Self::Nccs,
+            0x1C => Self::Cc,
+            0x1E => Self::Ncs,
+            0x20 => Self::Nct,
+            0x28 => Self::Sqr,
+            0x29 => Self::Dcpl,
+            0x2A => Self::Dpct,
+            0x2D => Self::Avsz3,
+            0x2E => Self::Avsz4,
+            0x30 => Self::Rtpt,
+            0x3D => Self::Gpf,
+            0x3E => Self::Gpl,
+            0x3F => Self::Ncct,
+            _ => Self::Na,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct GteCommand {
+    opcode: GteCommandOpcode,
+    lm: bool,
+    sf: bool,
+    tx: u8,
+    vx: u8,
+    mx: u8,
+}
+
+impl GteCommand {
+    fn from_u32(cmd: u32) -> Self {
+        // 20-24  Fake GTE Command Number (00h..1Fh) (ignored by hardware)
+        // 19     sf - Shift Fraction in IR registers (0=No fraction, 1=12bit fraction)
+        // 17-18  MVMVA Multiply Matrix    (0=Rotation. 1=Light, 2=Color, 3=Reserved)
+        // 15-16  MVMVA Multiply Vector    (0=V0, 1=V1, 2=V2, 3=IR/long)
+        // 13-14  MVMVA Translation Vector (0=TR, 1=BK, 2=FC/Bugged, 3=None)
+        // 10     lm - Saturate IR1,IR2,IR3 result (0=To -8000h..+7FFFh, 1=To 0..+7FFFh)
+        // 0-5    Real GTE Command Number (00h..3Fh) (used by hardware)
+
+        let real_cmd = cmd & 0x3F;
+        let lm = (cmd >> 10) & 1 != 0;
+        let sf = (cmd >> 19) & 1 != 0;
+        let translation_vector = ((cmd >> 13) & 3) as u8;
+        let multiply_vector = ((cmd >> 15) & 3) as u8;
+        let multiply_matrix = ((cmd >> 17) & 3) as u8;
+
+        Self {
+            opcode: GteCommandOpcode::from_real_cmd(real_cmd as u8),
+            lm,
+            sf,
+            tx: translation_vector,
+            vx: multiply_vector,
+            mx: multiply_matrix,
+        }
+    }
+}
+
 bitflags::bitflags! {
     #[derive(Default)]
     struct Flag: u32 {
@@ -330,6 +430,39 @@ impl Gte {
             30 => self.zsf4 = data as i16,
             31 => self.flag = Flag::from_bits_truncate(data),
             _ => unreachable!(),
+        }
+    }
+
+    pub fn execute_command(&mut self, cmd: u32) {
+        let cmd = GteCommand::from_u32(cmd);
+
+        log::info!("cop2 executing command {:?}", cmd);
+
+        match cmd.opcode {
+            // GteCommandOpcode::Na => todo!(),
+            // GteCommandOpcode::Rtps => todo!(),
+            // GteCommandOpcode::Rtpt => todo!(),
+            // GteCommandOpcode::Mvmva => todo!(),
+            // GteCommandOpcode::Dcpl => todo!(),
+            // GteCommandOpcode::Dpcs => todo!(),
+            // GteCommandOpcode::Dpct => todo!(),
+            // GteCommandOpcode::Intpl => todo!(),
+            // GteCommandOpcode::Sqr => todo!(),
+            // GteCommandOpcode::Ncs => todo!(),
+            // GteCommandOpcode::Nct => todo!(),
+            // GteCommandOpcode::Ncds => todo!(),
+            // GteCommandOpcode::Ncdt => todo!(),
+            // GteCommandOpcode::Nccs => todo!(),
+            // GteCommandOpcode::Ncct => todo!(),
+            // GteCommandOpcode::Cdp => todo!(),
+            // GteCommandOpcode::Cc => todo!(),
+            // GteCommandOpcode::Nclip => todo!(),
+            // GteCommandOpcode::Avsz3 => todo!(),
+            // GteCommandOpcode::Avsz4 => todo!(),
+            // GteCommandOpcode::Op => todo!(),
+            // GteCommandOpcode::Gpf => todo!(),
+            // GteCommandOpcode::Gpl => todo!(),
+            _ => todo!("cop2 unimplemented_command {:?}", cmd.opcode),
         }
     }
 }
