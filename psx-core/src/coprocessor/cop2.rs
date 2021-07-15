@@ -134,15 +134,8 @@ impl Flag {
 }
 
 #[derive(Default)]
-struct Vector<T> {
-    pub x: T,
-    pub y: T,
-    pub z: T,
-}
-
-#[derive(Default)]
 pub struct Gte {
-    vectors: [Vector<i16>; 3],
+    vectors: [[i16; 3]; 3],
     rgbc: u32,
     otz: u16,
     ir: [i16; 4],
@@ -163,10 +156,10 @@ pub struct Gte {
 
     background_color: [u32; 3],
     far_color: [u32; 3],
-    screen_offset: (u32, u32),
+    screen_offset: [i32; 2],
     projection_plain_distance: u16,
     dqa: i16,
-    dqb: u32,
+    dqb: i32,
     zsf3: i16,
     zsf4: i16,
     flag: Flag,
@@ -186,12 +179,13 @@ impl Gte {
 
     /// updates orgb register on any write/change to ir 1,2,3
     /// orgb also acts as irgb mirror
-    fn update_orgb(&mut self) {
+    fn update_orgb_irgb(&mut self) {
         let r = (self.ir[1] / 80).max(0).min(0x1F) as u16;
         let g = (self.ir[2] / 80).max(0).min(0x1F) as u16;
         let b = (self.ir[3] / 80).max(0).min(0x1F) as u16;
 
         self.orgb = b << 10 | g << 5 | r;
+        self.irgb = self.orgb;
     }
 
     /// count the number of leading ones or zeros from lzcs
@@ -202,6 +196,12 @@ impl Gte {
             self.lzcr = self.lzcs.leading_zeros()
         }
     }
+
+    fn push_sxy_fifo(&mut self, x: i16, y: i16) {
+        self.sxy[0] = self.sxy[1];
+        self.sxy[1] = self.sxy[2];
+        self.sxy[2] = (x, y);
+    }
 }
 
 impl Gte {
@@ -210,10 +210,10 @@ impl Gte {
 
         let out = match num {
             0 | 2 | 4 => {
-                ((self.vectors[num as usize / 2].y as u16 as u32) << 16)
-                    | self.vectors[num as usize / 2].x as u16 as u32
+                ((self.vectors[num as usize / 2][1] as u16 as u32) << 16)
+                    | self.vectors[num as usize / 2][0] as u16 as u32
             }
-            1 | 3 | 5 => self.vectors[num as usize / 2].z as i32 as u32,
+            1 | 3 | 5 => self.vectors[num as usize / 2][2] as i32 as u32,
             6 => self.rgbc,
             7 => self.otz as u32,
             8..=11 => self.ir[num as usize - 8] as i32 as u32,
@@ -247,15 +247,15 @@ impl Gte {
 
         match num {
             0 | 2 | 4 => {
-                self.vectors[num as usize / 2].x = lsb;
-                self.vectors[num as usize / 2].y = msb;
+                self.vectors[num as usize / 2][0] = lsb;
+                self.vectors[num as usize / 2][1] = msb;
             }
-            1 | 3 | 5 => self.vectors[num as usize / 2].z = (data & 0xFFFF) as i16,
+            1 | 3 | 5 => self.vectors[num as usize / 2][2] = (data & 0xFFFF) as i16,
             6 => self.rgbc = data,
             7 => self.otz = data as u16,
             8..=11 => {
                 self.ir[num as usize - 8] = (data & 0xFFFF) as i16;
-                self.update_orgb();
+                self.update_orgb_irgb();
             }
             12..=14 => {
                 // (x, y)
@@ -263,9 +263,7 @@ impl Gte {
             }
             15 => {
                 // move on write
-                self.sxy[0] = self.sxy[1];
-                self.sxy[1] = self.sxy[2];
-                self.sxy[2] = (lsb, msb);
+                self.push_sxy_fifo(lsb, msb);
             }
             16..=19 => self.sz[num as usize - 16] = data as u16,
             20..=22 => self.rgb[num as usize - 20] = data,
@@ -344,11 +342,11 @@ impl Gte {
             }
             20 => self.light_color_matrix[2][2] as i32 as u32,
             21..=23 => self.far_color[num as usize - 21],
-            24 => self.screen_offset.0,
-            25 => self.screen_offset.1,
+            24 => self.screen_offset[0] as u32,
+            25 => self.screen_offset[1] as u32,
             26 => self.projection_plain_distance as i16 as i32 as u32, // bug sign extend on read only
             27 => self.dqa as u32,
-            28 => self.dqb,
+            28 => self.dqb as u32,
             29 => self.zsf3 as u32,
             30 => self.zsf4 as u32,
             31 => self.flag.bits_with_error(),
@@ -421,11 +419,11 @@ impl Gte {
             }
             20 => self.light_color_matrix[2][2] = lsb,
             21..=23 => self.far_color[num as usize - 21] = data,
-            24 => self.screen_offset.0 = data,
-            25 => self.screen_offset.1 = data,
+            24 => self.screen_offset[0] = data as i32,
+            25 => self.screen_offset[1] = data as i32,
             26 => self.projection_plain_distance = data as u16,
             27 => self.dqa = (data & 0xFFFF) as i16,
-            28 => self.dqb = data,
+            28 => self.dqb = data as i32,
             29 => self.zsf3 = data as i16,
             30 => self.zsf4 = data as i16,
             31 => self.flag = Flag::from_bits_truncate(data),
