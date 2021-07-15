@@ -155,7 +155,7 @@ pub struct Gte {
     light_color_matrix: [[i16; 3]; 3],
 
     background_color: [u32; 3],
-    far_color: [u32; 3],
+    far_color: [i32; 3],
     screen_offset: [i32; 2],
     projection_plain_distance: u16,
     dqa: i16,
@@ -208,6 +208,16 @@ impl Gte {
         self.sxy[0] = self.sxy[1];
         self.sxy[1] = self.sxy[2];
         self.sxy[2] = (x, y);
+    }
+
+    fn push_color_fifo(&mut self, r: i64, g: i64, b: i64, code: u8) {
+        self.rgb[0] = self.rgb[1];
+        self.rgb[1] = self.rgb[2];
+        let r = self.saturate_put_flag(r, 0x00, 0xFF, Flag::COLOR_FIFO_R_SATURATED_TO_00_FF) as u32;
+        let g = self.saturate_put_flag(g, 0x00, 0xFF, Flag::COLOR_FIFO_G_SATURATED_TO_00_FF) as u32;
+        let b = self.saturate_put_flag(b, 0x00, 0xFF, Flag::COLOR_FIFO_B_SATURATED_TO_00_FF) as u32;
+
+        self.rgb[2] = (code as u32) << 24 | b << 16 | g << 8 | r;
     }
 }
 
@@ -302,6 +312,60 @@ impl Gte {
             self.flag.insert(Flag::DIVIDE_OVERFLOW);
             0x1FFFF
         }
+    }
+
+    /// A method that handles the comands Dcpl, Dpcs, Dpct, Intpl;
+    /// since these commands only differ in the input (first value of MAC)
+    fn dcpl_dpcs_dpct_intpl_handler(
+        &mut self,
+        mac1: i64,
+        mac2: i64,
+        mac3: i64,
+        sf: bool,
+        lm: bool,
+    ) {
+        // [MAC1,MAC2,MAC3] = [X, X, X]     ; input depending on the command
+        // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+        // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+
+        let sf = sf as u32;
+        let code = ((self.rgbc >> 24) & 0xFF) as u8;
+
+        // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+        // (FC-MAC)
+        let tmp_mac1 = (self.far_color[0] as i64).wrapping_shl(12) - mac1;
+        let tmp_mac2 = (self.far_color[1] as i64).wrapping_shl(12) - mac2;
+        let tmp_mac3 = (self.far_color[2] as i64).wrapping_shl(12) - mac3;
+        self.update_mac_overflow_flag(1, tmp_mac1);
+        self.update_mac_overflow_flag(2, tmp_mac2);
+        self.update_mac_overflow_flag(3, tmp_mac3);
+        // without changing mac1,2,3 variables
+        self.mac[1] = tmp_mac1.wrapping_shr(sf * 12) as i32;
+        self.mac[2] = tmp_mac2.wrapping_shr(sf * 12) as i32;
+        self.mac[3] = tmp_mac3.wrapping_shr(sf * 12) as i32;
+        self.copy_mac_ir_saturate(false);
+
+        // *IR0+MAC
+        let mac1 = (self.ir[1] as i64 * self.ir[0] as i64) + mac1;
+        let mac2 = (self.ir[2] as i64 * self.ir[0] as i64) + mac2;
+        let mac3 = (self.ir[3] as i64 * self.ir[0] as i64) + mac3;
+
+        // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+        self.update_mac_overflow_flag(1, mac1);
+        self.update_mac_overflow_flag(2, mac2);
+        self.update_mac_overflow_flag(3, mac3);
+        let mac1 = mac1.wrapping_shr(sf * 12);
+        let mac2 = mac2.wrapping_shr(sf * 12);
+        let mac3 = mac3.wrapping_shr(sf * 12);
+
+        self.mac[1] = mac1 as i32;
+        self.mac[2] = mac2 as i32;
+        self.mac[3] = mac3 as i32;
+
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+        self.push_color_fifo(mac1 >> 4, mac2 >> 4, mac3 >> 4, code);
+        self.copy_mac_ir_saturate(lm);
     }
 
     fn mac0_overflow_mul_add(&mut self, n: i32, a: i32, b: i32) -> i64 {
@@ -477,7 +541,7 @@ impl Gte {
                     | self.light_color_matrix[2][0] as u16 as u32
             }
             20 => self.light_color_matrix[2][2] as i32 as u32,
-            21..=23 => self.far_color[num as usize - 21],
+            21..=23 => self.far_color[num as usize - 21] as u32,
             24 => self.screen_offset[0] as u32,
             25 => self.screen_offset[1] as u32,
             26 => self.projection_plain_distance as i16 as i32 as u32, // bug sign extend on read only
@@ -554,7 +618,7 @@ impl Gte {
                 self.light_color_matrix[2][1] = msb;
             }
             20 => self.light_color_matrix[2][2] = lsb,
-            21..=23 => self.far_color[num as usize - 21] = data,
+            21..=23 => self.far_color[num as usize - 21] = data as i32,
             24 => self.screen_offset[0] = data as i32,
             25 => self.screen_offset[1] = data as i32,
             26 => self.projection_plain_distance = data as u16,
@@ -671,9 +735,27 @@ impl Gte {
             // GteCommandOpcode::Rtpt => todo!(),
             // GteCommandOpcode::Mvmva => todo!(),
             // GteCommandOpcode::Dcpl => todo!(),
-            // GteCommandOpcode::Dpcs => todo!(),
+            GteCommandOpcode::Dpcs => {
+                let r = ((self.rgbc >> 0) & 0xFF) as i64;
+                let g = ((self.rgbc >> 8) & 0xFF) as i64;
+                let b = ((self.rgbc >> 16) & 0xFF) as i64;
+
+                // [MAC1,MAC2,MAC3] = [R,G,B] SHL 16
+                let mac1 = r << 16;
+                let mac2 = g << 16;
+                let mac3 = b << 16;
+
+                self.dcpl_dpcs_dpct_intpl_handler(mac1, mac2, mac3, cmd.sf, cmd.lm);
+            }
             // GteCommandOpcode::Dpct => todo!(),
-            // GteCommandOpcode::Intpl => todo!(),
+            GteCommandOpcode::Intpl => {
+                // [MAC1,MAC2,MAC3] = [IR1,IR2,IR3] SHL 12
+                let mac1 = (self.ir[1] as i64).wrapping_shl(12);
+                let mac2 = (self.ir[2] as i64).wrapping_shl(12);
+                let mac3 = (self.ir[3] as i64).wrapping_shl(12);
+
+                self.dcpl_dpcs_dpct_intpl_handler(mac1, mac2, mac3, cmd.sf, cmd.lm);
+            }
             // GteCommandOpcode::Sqr => todo!(),
             // GteCommandOpcode::Ncs => todo!(),
             // GteCommandOpcode::Nct => todo!(),
