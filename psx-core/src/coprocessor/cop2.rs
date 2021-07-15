@@ -683,10 +683,45 @@ impl Gte {
             // GteCommandOpcode::Ncct => todo!(),
             // GteCommandOpcode::Cdp => todo!(),
             // GteCommandOpcode::Cc => todo!(),
-            // GteCommandOpcode::Nclip => todo!(),
+            GteCommandOpcode::Nclip => {
+                // MAC0 = SX0*SY1 + SX1*SY2 + SX2*SY0 - SX0*SY2 - SX1*SY0 - SX2*SY1
+                let mac0 = self.sxy[0].0 as i64 * self.sxy[1].1 as i64
+                    + self.sxy[1].0 as i64 * self.sxy[2].1 as i64
+                    + self.sxy[2].0 as i64 * self.sxy[0].1 as i64
+                    - self.sxy[0].0 as i64 * self.sxy[2].1 as i64
+                    - self.sxy[1].0 as i64 * self.sxy[0].1 as i64
+                    - self.sxy[2].0 as i64 * self.sxy[1].1 as i64;
+                self.set_mac0(mac0);
+            }
             // GteCommandOpcode::Avsz3 => todo!(),
             // GteCommandOpcode::Avsz4 => todo!(),
-            // GteCommandOpcode::Op => todo!(),
+            GteCommandOpcode::Op => {
+                //   [MAC1,MAC2,MAC3] = [IR3*D2-IR2*D3, IR1*D3-IR3*D1, IR2*D1-IR1*D2] SAR (sf*12)
+                //   [IR1,IR2,IR3]    = [MAC1,MAC2,MAC3]
+
+                //   [MAC1,MAC2,MAC3] = [IR3*D2-IR2*D3, IR1*D3-IR3*D1, IR2*D1-IR1*D2] SAR (sf*12)
+                let d = [
+                    self.rotation_matrix[0][0],
+                    self.rotation_matrix[1][1],
+                    self.rotation_matrix[2][2],
+                ];
+                let mac1 = self.ir[3] as i64 * d[1] as i64 - self.ir[2] as i64 * d[2] as i64;
+                let mac2 = self.ir[1] as i64 * d[2] as i64 - self.ir[3] as i64 * d[0] as i64;
+                let mac3 = self.ir[2] as i64 * d[0] as i64 - self.ir[1] as i64 * d[1] as i64;
+                self.update_mac_overflow_flag(1, mac1);
+                self.update_mac_overflow_flag(2, mac2);
+                self.update_mac_overflow_flag(3, mac3);
+                let mac1 = mac1.wrapping_shr(sf * 12);
+                let mac2 = mac2.wrapping_shr(sf * 12);
+                let mac3 = mac3.wrapping_shr(sf * 12);
+
+                self.mac[1] = mac1 as i32;
+                self.mac[2] = mac2 as i32;
+                self.mac[3] = mac3 as i32;
+
+                //   [IR1,IR2,IR3]    = [MAC1,MAC2,MAC3]
+                self.copy_mac_ir_saturate(lm);
+            }
             // GteCommandOpcode::Gpf => todo!(),
             // GteCommandOpcode::Gpl => todo!(),
             _ => todo!("cop2 unimplemented_command {:?}", cmd.opcode),
