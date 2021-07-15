@@ -197,10 +197,142 @@ impl Gte {
         }
     }
 
+    fn push_sz_fifo(&mut self, z: u16) {
+        self.sz[0] = self.sz[1];
+        self.sz[1] = self.sz[2];
+        self.sz[2] = self.sz[3];
+        self.sz[3] = z;
+    }
+
     fn push_sxy_fifo(&mut self, x: i16, y: i16) {
         self.sxy[0] = self.sxy[1];
         self.sxy[1] = self.sxy[2];
         self.sxy[2] = (x, y);
+    }
+}
+
+impl Gte {
+    fn saturate_put_flag<T: Ord>(&mut self, value: T, min: T, max: T, flag: Flag) -> T {
+        if value < min {
+            self.flag.insert(flag);
+            min
+        } else if value > max {
+            self.flag.insert(flag);
+            max
+        } else {
+            value
+        }
+    }
+
+    fn put_ir0(&mut self, value: i32) {
+        self.ir[0] =
+            self.saturate_put_flag(value, 0x0000, 0x1000, Flag::IR0_SATURATED_TO_P0000_P1000)
+                as i16;
+    }
+
+    fn copy_mac_ir_saturate(&mut self, lm: bool) {
+        let min = if lm { 0 } else { -0x8000 };
+        let flags = &[
+            Flag::IR1_SATURATED_TO_P0000_P7FFF_OR_N8000_P7FFF,
+            Flag::IR2_SATURATED_TO_P0000_P7FFF_OR_N8000_P7FFF,
+            Flag::IR3_SATURATED_TO_P0000_P7FFF_OR_N8000_P7FFF,
+        ];
+
+        for i in 1..=3 {
+            self.ir[i] = self.saturate_put_flag(self.mac[i], min, 0x7FFF, flags[i - 1]) as i16;
+        }
+
+        // because of a change in ir1,2,3 vector
+        self.update_orgb_irgb();
+    }
+}
+
+impl Gte {
+    fn vector_dot(v1: &[i16; 3], v2: &[i16; 3]) -> i64 {
+        v1[0] as i64 * v2[0] as i64 + v1[1] as i64 * v2[1] as i64 + v1[2] as i64 * v2[2] as i64
+    }
+
+    fn rtp_unr_division(&mut self) -> i32 {
+        let h = self.projection_plain_distance;
+        let sz3 = self.sz[3];
+
+        #[rustfmt::skip]
+        const UNR_TABLE: &[u32] = &[
+            0xFF, 0xFD, 0xFB, 0xF9, 0xF7, 0xF5, 0xF3, 0xF1, 0xEF, 0xEE, 0xEC, 0xEA, 0xE8, 0xE6, 0xE4, 0xE3, // \
+            0xE1, 0xDF, 0xDD, 0xDC, 0xDA, 0xD8, 0xD6, 0xD5, 0xD3, 0xD1, 0xD0, 0xCE, 0xCD, 0xCB, 0xC9, 0xC8, //  0x00..0x3F
+            0xC6, 0xC5, 0xC3, 0xC1, 0xC0, 0xBE, 0xBD, 0xBB, 0xBA, 0xB8, 0xB7, 0xB5, 0xB4, 0xB2, 0xB1, 0xB0, //
+            0xAE, 0xAD, 0xAB, 0xAA, 0xA9, 0xA7, 0xA6, 0xA4, 0xA3, 0xA2, 0xA0, 0x9F, 0x9E, 0x9C, 0x9B, 0x9A, // /
+            0x99, 0x97, 0x96, 0x95, 0x94, 0x92, 0x91, 0x90, 0x8F, 0x8D, 0x8C, 0x8B, 0x8A, 0x89, 0x87, 0x86, // \
+            0x85, 0x84, 0x83, 0x82, 0x81, 0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x7A, 0x79, 0x78, 0x77, 0x75, 0x74, //  0x40..0x7F
+            0x73, 0x72, 0x71, 0x70, 0x6F, 0x6E, 0x6D, 0x6C, 0x6B, 0x6A, 0x69, 0x68, 0x67, 0x66, 0x65, 0x64, //
+            0x63, 0x62, 0x61, 0x60, 0x5F, 0x5E, 0x5D, 0x5D, 0x5C, 0x5B, 0x5A, 0x59, 0x58, 0x57, 0x56, 0x55, // /
+            0x54, 0x53, 0x53, 0x52, 0x51, 0x50, 0x4F, 0x4E, 0x4D, 0x4D, 0x4C, 0x4B, 0x4A, 0x49, 0x48, 0x48, // \
+            0x47, 0x46, 0x45, 0x44, 0x43, 0x43, 0x42, 0x41, 0x40, 0x3F, 0x3F, 0x3E, 0x3D, 0x3C, 0x3C, 0x3B, //  0x80..0xBF
+            0x3A, 0x39, 0x39, 0x38, 0x37, 0x36, 0x36, 0x35, 0x34, 0x33, 0x33, 0x32, 0x31, 0x31, 0x30, 0x2F, //
+            0x2E, 0x2E, 0x2D, 0x2C, 0x2C, 0x2B, 0x2A, 0x2A, 0x29, 0x28, 0x28, 0x27, 0x26, 0x26, 0x25, 0x24, // /
+            0x24, 0x23, 0x22, 0x22, 0x21, 0x20, 0x20, 0x1F, 0x1E, 0x1E, 0x1D, 0x1D, 0x1C, 0x1B, 0x1B, 0x1A, // \
+            0x19, 0x19, 0x18, 0x18, 0x17, 0x16, 0x16, 0x15, 0x15, 0x14, 0x14, 0x13, 0x12, 0x12, 0x11, 0x11, //  0xC0..0xFF
+            0x10, 0x0F, 0x0F, 0x0E, 0x0E, 0x0D, 0x0D, 0x0C, 0x0C, 0x0B, 0x0A, 0x0A, 0x09, 0x09, 0x08, 0x08, //
+            0x07, 0x07, 0x06, 0x06, 0x05, 0x05, 0x04, 0x04, 0x03, 0x03, 0x02, 0x02, 0x01, 0x01, 0x00, 0x00, // /
+            0x00, //<-- one extra table entry (for "(d-7F0xC0)/0x80"=10x00)   // -10x00
+        ];
+
+        if (h as u32) < (sz3 as u32) * 2 {
+            let z = sz3.leading_zeros();
+            let n = (h as u32) << z;
+            let d = sz3.wrapping_shl(z) as u32;
+            let u = UNR_TABLE[((d - 0x7FC0) >> 7) as usize] + 0x101;
+            let d = (0x2000080 - (d * u)) >> 8;
+            let d = (0x0000080 + (d * u)) >> 8;
+
+            let n = (((n * d) + 0x8000) >> 16).min(0x1FFFF);
+
+            n as i32
+        } else {
+            self.flag.insert(Flag::DIVIDE_OVERFLOW);
+            0x1FFFF
+        }
+    }
+
+    fn mac0_overflow_mul_add(&mut self, n: i32, a: i32, b: i32) -> i64 {
+        let mac0 = n as i64 * a as i64 + b as i64;
+
+        if mac0 < -(1 << 31) {
+            self.flag.insert(Flag::MAC0_RES_LARGER_THAN_31_BITS_NEG);
+        } else if mac0 > (1 << 31) - 1 {
+            self.flag.insert(Flag::MAC0_RES_LARGER_THAN_31_BITS_POS);
+        }
+
+        self.mac[0] = mac0 as i32;
+
+        mac0
+    }
+
+    fn update_mac_overflow_flag(&mut self, index: usize, value: i64) {
+        assert!(index > 0 && index <= 3);
+
+        let flags = &[
+            (
+                Flag::MAC1_RES_LARGER_THAN_43_BITS_NEG,
+                Flag::MAC1_RES_LARGER_THAN_43_BITS_POS,
+            ),
+            (
+                Flag::MAC2_RES_LARGER_THAN_43_BITS_NEG,
+                Flag::MAC2_RES_LARGER_THAN_43_BITS_POS,
+            ),
+            (
+                Flag::MAC3_RES_LARGER_THAN_43_BITS_NEG,
+                Flag::MAC3_RES_LARGER_THAN_43_BITS_POS,
+            ),
+        ];
+
+        let (neg_flag, pos_flag) = flags[index - 1];
+
+        if value < -(1 << 43) {
+            self.flag.insert(neg_flag);
+        } else if value > (1 << 43) - 1 {
+            self.flag.insert(pos_flag);
+        }
     }
 }
 
@@ -432,13 +564,105 @@ impl Gte {
     }
 
     pub fn execute_command(&mut self, cmd: u32) {
+        // clear before start of command
+        self.flag.bits = 0;
+
         let cmd = GteCommand::from_u32(cmd);
 
         log::info!("cop2 executing command {:?}", cmd);
 
         match cmd.opcode {
             // GteCommandOpcode::Na => todo!(),
-            // GteCommandOpcode::Rtps => todo!(),
+            GteCommandOpcode::Rtps => {
+                // IR1 = MAC1 = (TRX*1000h + RT11*VX0 + RT12*VY0 + RT13*VZ0) SAR (sf*12)
+                // IR2 = MAC2 = (TRY*1000h + RT21*VX0 + RT22*VY0 + RT23*VZ0) SAR (sf*12)
+                // IR3 = MAC3 = (TRZ*1000h + RT31*VX0 + RT32*VY0 + RT33*VZ0) SAR (sf*12)
+                // SZ3 = MAC3 SAR ((1-sf)*12)
+                // MAC0=(((H*20000h/SZ3)+1)/2)*IR1+OFX, SX2=MAC0/10000h
+                // MAC0=(((H*20000h/SZ3)+1)/2)*IR2+OFY, SY2=MAC0/10000h
+                // MAC0=(((H*20000h/SZ3)+1)/2)*DQA+DQB, IR0=MAC0/1000h
+
+                let sf = cmd.sf as u32;
+                // TODO: no$psx docs says that lm is always fixed as false in this command,
+                //  but in gh:JaCzekanski/ps1-tests gte tests it should be used from
+                //  the command, so find out which is correct
+                let lm = cmd.lm;
+
+                // IR1 = MAC1 = (TRX*1000h + RT11*VX0 + RT12*VY0 + RT13*VZ0) SAR (sf*12)
+                let mac1 = self.translation_vector[0] as i64 * 0x1000
+                    + Self::vector_dot(&self.rotation_matrix[0], &self.vectors[0]);
+                self.update_mac_overflow_flag(1, mac1);
+                let mac1 = mac1.wrapping_shr(sf * 12);
+
+                // IR2 = MAC2 = (TRY*1000h + RT21*VX0 + RT22*VY0 + RT23*VZ0) SAR (sf*12)
+                let mac2 = self.translation_vector[1] as i64 * 0x1000
+                    + Self::vector_dot(&self.rotation_matrix[1], &self.vectors[0]);
+                self.update_mac_overflow_flag(2, mac2);
+                let mac2 = mac2.wrapping_shr(sf * 12);
+
+                // IR3 = MAC3 = (TRZ*1000h + RT31*VX0 + RT32*VY0 + RT33*VZ0) SAR (sf*12)
+                let mac3 = self.translation_vector[2] as i64 * 0x1000
+                    + Self::vector_dot(&self.rotation_matrix[2], &self.vectors[0]);
+                self.update_mac_overflow_flag(3, mac3);
+                let mac3 = mac3.wrapping_shr(sf * 12);
+
+                self.mac[1] = mac1 as i32;
+                self.mac[2] = mac2 as i32;
+                self.mac[3] = mac3 as i32;
+
+                self.copy_mac_ir_saturate(lm);
+
+                // When using RTP command with sf=0, then the IR3 saturation
+                // flag (FLAG.22) gets set only if "MAC3 SAR 12" exceeds -8000h..+7FFFh
+                if sf == 0 {
+                    self.flag
+                        .remove(Flag::IR3_SATURATED_TO_P0000_P7FFF_OR_N8000_P7FFF);
+
+                    let shifted_mac3 = self.mac[3].wrapping_shr(12);
+
+                    if shifted_mac3 > 0x7FFF || shifted_mac3 < -0x8000 {
+                        self.flag
+                            .insert(Flag::IR3_SATURATED_TO_P0000_P7FFF_OR_N8000_P7FFF);
+                    }
+                }
+
+                // SZ3 = MAC3 SAR ((1-sf)*12)
+                let sz = self.saturate_put_flag(
+                    mac3.wrapping_shr((1 - sf) * 12) as i32,
+                    0,
+                    0xFFFF,
+                    Flag::SZ3_OR_OTZ_SATURATED_TO_0000_FFFF,
+                ) as u16;
+                self.push_sz_fifo(sz);
+
+                // this value is used 3 times, so we cache it here
+                let n = self.rtp_unr_division();
+
+                // MAC0=(((H*20000h/SZ3)+1)/2)*IR1+OFX, SX2=MAC0/10000h
+                let mac0 =
+                    self.mac0_overflow_mul_add(n, self.ir[1] as i32, self.screen_offset[0] as i32);
+                let sx = self.saturate_put_flag(
+                    (mac0 >> 16) as i32,
+                    -0x400,
+                    0x3FF,
+                    Flag::SX2_SATURATED_TO_N0400_P03FF,
+                ) as i16;
+
+                // MAC0=(((H*20000h/SZ3)+1)/2)*IR2+OFY, SY2=MAC0/10000h
+                let mac0 =
+                    self.mac0_overflow_mul_add(n, self.ir[2] as i32, self.screen_offset[1] as i32);
+                let sy = self.saturate_put_flag(
+                    (mac0 >> 16) as i32,
+                    -0x400,
+                    0x3FF,
+                    Flag::SY2_SATURATED_TO_N0400_P03FF,
+                ) as i16;
+                self.push_sxy_fifo(sx, sy);
+
+                // MAC0=(((H*20000h/SZ3)+1)/2)*DQA+DQB, IR0=MAC0/1000h
+                let mac0 = self.mac0_overflow_mul_add(n, self.dqa as i32, self.dqb as i32);
+                self.put_ir0((mac0 >> 12) as i32);
+            }
             // GteCommandOpcode::Rtpt => todo!(),
             // GteCommandOpcode::Mvmva => todo!(),
             // GteCommandOpcode::Dcpl => todo!(),
