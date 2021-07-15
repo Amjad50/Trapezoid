@@ -180,9 +180,9 @@ impl Gte {
     /// updates orgb register on any write/change to ir 1,2,3
     /// orgb also acts as irgb mirror
     fn update_orgb_irgb(&mut self) {
-        let r = (self.ir[1] / 80).max(0).min(0x1F) as u16;
-        let g = (self.ir[2] / 80).max(0).min(0x1F) as u16;
-        let b = (self.ir[3] / 80).max(0).min(0x1F) as u16;
+        let r = (self.ir[1] >> 7).max(0).min(0x1F) as u16;
+        let g = (self.ir[2] >> 7).max(0).min(0x1F) as u16;
+        let b = (self.ir[3] >> 7).max(0).min(0x1F) as u16;
 
         self.orgb = b << 10 | g << 5 | r;
         self.irgb = self.orgb;
@@ -224,10 +224,20 @@ impl Gte {
         }
     }
 
-    fn put_ir0(&mut self, value: i32) {
+    fn set_ir0(&mut self, value: i32) {
         self.ir[0] =
             self.saturate_put_flag(value, 0x0000, 0x1000, Flag::IR0_SATURATED_TO_P0000_P1000)
                 as i16;
+    }
+
+    fn set_mac0(&mut self, mac0: i64) {
+        if mac0 < -(1 << 31) {
+            self.flag.insert(Flag::MAC0_RES_LARGER_THAN_31_BITS_NEG);
+        } else if mac0 > (1 << 31) - 1 {
+            self.flag.insert(Flag::MAC0_RES_LARGER_THAN_31_BITS_POS);
+        }
+
+        self.mac[0] = mac0 as i32;
     }
 
     fn copy_mac_ir_saturate(&mut self, lm: bool) {
@@ -297,13 +307,7 @@ impl Gte {
     fn mac0_overflow_mul_add(&mut self, n: i32, a: i32, b: i32) -> i64 {
         let mac0 = n as i64 * a as i64 + b as i64;
 
-        if mac0 < -(1 << 31) {
-            self.flag.insert(Flag::MAC0_RES_LARGER_THAN_31_BITS_NEG);
-        } else if mac0 > (1 << 31) - 1 {
-            self.flag.insert(Flag::MAC0_RES_LARGER_THAN_31_BITS_POS);
-        }
-
-        self.mac[0] = mac0 as i32;
+        self.set_mac0(mac0);
 
         mac0
     }
@@ -568,6 +572,8 @@ impl Gte {
         self.flag.bits = 0;
 
         let cmd = GteCommand::from_u32(cmd);
+        let sf = cmd.sf as u32;
+        let lm = cmd.lm;
 
         log::info!("cop2 executing command {:?}", cmd);
 
@@ -582,7 +588,6 @@ impl Gte {
                 // MAC0=(((H*20000h/SZ3)+1)/2)*IR2+OFY, SY2=MAC0/10000h
                 // MAC0=(((H*20000h/SZ3)+1)/2)*DQA+DQB, IR0=MAC0/1000h
 
-                let sf = cmd.sf as u32;
                 // TODO: no$psx docs says that lm is always fixed as false in this command,
                 //  but in gh:JaCzekanski/ps1-tests gte tests it should be used from
                 //  the command, so find out which is correct
@@ -661,7 +666,7 @@ impl Gte {
 
                 // MAC0=(((H*20000h/SZ3)+1)/2)*DQA+DQB, IR0=MAC0/1000h
                 let mac0 = self.mac0_overflow_mul_add(n, self.dqa as i32, self.dqb as i32);
-                self.put_ir0((mac0 >> 12) as i32);
+                self.set_ir0((mac0 >> 12) as i32);
             }
             // GteCommandOpcode::Rtpt => todo!(),
             // GteCommandOpcode::Mvmva => todo!(),
