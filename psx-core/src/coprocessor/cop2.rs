@@ -154,7 +154,7 @@ pub struct Gte {
     light_source_matrix: [[i16; 3]; 3],
     light_color_matrix: [[i16; 3]; 3],
 
-    background_color: [u32; 3],
+    background_color: [i32; 3],
     far_color: [i32; 3],
     screen_offset: [i32; 2],
     projection_plain_distance: u16,
@@ -270,6 +270,41 @@ impl Gte {
 impl Gte {
     fn vector_dot(v1: &[i16; 3], v2: &[i16; 3]) -> i64 {
         v1[0] as i64 * v2[0] as i64 + v1[1] as i64 * v2[1] as i64 + v1[2] as i64 * v2[2] as i64
+    }
+
+    fn mvmva(
+        &mut self,
+        tx: &[i32; 3],
+        mx: &[[i16; 3]; 3],
+        vx: &[i16; 3],
+        sf: bool,
+        lm: bool,
+    ) -> (i64, i64, i64) {
+        let sf = sf as u32;
+
+        // MAC1 = (Tx1*1000h + Mx11*Vx1 + Mx12*Vx2 + Mx13*Vx3) SAR (sf*12)
+        let mac1 = (tx[0] as i64).wrapping_shl(12) + Self::vector_dot(&mx[0], vx);
+
+        // MAC2 = (Tx2*1000h + Mx21*Vx1 + Mx22*Vx2 + Mx23*Vx3) SAR (sf*12)
+        let mac2 = (tx[1] as i64).wrapping_shl(12) + Self::vector_dot(&mx[1], vx);
+
+        // MAC3 = (Tx3*1000h + Mx31*Vx1 + Mx32*Vx2 + Mx33*Vx3) SAR (sf*12)
+        let mac3 = (tx[2] as i64).wrapping_shl(12) + Self::vector_dot(&mx[2], vx);
+
+        self.update_mac_overflow_flag(1, mac1);
+        self.update_mac_overflow_flag(2, mac2);
+        self.update_mac_overflow_flag(3, mac3);
+        let mac3 = mac3.wrapping_shr(sf * 12);
+        let mac2 = mac2.wrapping_shr(sf * 12);
+        let mac1 = mac1.wrapping_shr(sf * 12);
+
+        self.mac[1] = mac1 as i32;
+        self.mac[2] = mac2 as i32;
+        self.mac[3] = mac3 as i32;
+
+        self.copy_mac_ir_saturate(lm);
+
+        (mac1, mac2, mac3)
     }
 
     fn rtp_unr_division(&mut self) -> i32 {
@@ -523,7 +558,7 @@ impl Gte {
                     | self.light_source_matrix[2][0] as u16 as u32
             }
             12 => self.light_source_matrix[2][2] as i32 as u32,
-            13..=15 => self.background_color[num as usize - 13],
+            13..=15 => self.background_color[num as usize - 13] as u32,
             16 => {
                 ((self.light_color_matrix[0][1] as u16 as u32) << 16)
                     | self.light_color_matrix[0][0] as u16 as u32
@@ -600,7 +635,7 @@ impl Gte {
                 self.light_source_matrix[2][1] = msb;
             }
             12 => self.light_source_matrix[2][2] = lsb,
-            13..=15 => self.background_color[num as usize - 13] = data,
+            13..=15 => self.background_color[num as usize - 13] = data as i32,
             16 => {
                 self.light_color_matrix[0][0] = lsb;
                 self.light_color_matrix[0][1] = msb;
@@ -657,29 +692,14 @@ impl Gte {
                 //  the command, so find out which is correct
                 let lm = cmd.lm;
 
+                let tx = self.translation_vector;
+                let mx = self.rotation_matrix;
+                let vx = self.vectors[0];
+
                 // IR1 = MAC1 = (TRX*1000h + RT11*VX0 + RT12*VY0 + RT13*VZ0) SAR (sf*12)
-                let mac1 = self.translation_vector[0] as i64 * 0x1000
-                    + Self::vector_dot(&self.rotation_matrix[0], &self.vectors[0]);
-                self.update_mac_overflow_flag(1, mac1);
-                let mac1 = mac1.wrapping_shr(sf * 12);
-
                 // IR2 = MAC2 = (TRY*1000h + RT21*VX0 + RT22*VY0 + RT23*VZ0) SAR (sf*12)
-                let mac2 = self.translation_vector[1] as i64 * 0x1000
-                    + Self::vector_dot(&self.rotation_matrix[1], &self.vectors[0]);
-                self.update_mac_overflow_flag(2, mac2);
-                let mac2 = mac2.wrapping_shr(sf * 12);
-
                 // IR3 = MAC3 = (TRZ*1000h + RT31*VX0 + RT32*VY0 + RT33*VZ0) SAR (sf*12)
-                let mac3 = self.translation_vector[2] as i64 * 0x1000
-                    + Self::vector_dot(&self.rotation_matrix[2], &self.vectors[0]);
-                self.update_mac_overflow_flag(3, mac3);
-                let mac3 = mac3.wrapping_shr(sf * 12);
-
-                self.mac[1] = mac1 as i32;
-                self.mac[2] = mac2 as i32;
-                self.mac[3] = mac3 as i32;
-
-                self.copy_mac_ir_saturate(lm);
+                let (_mac1, _mac2, mac3) = self.mvmva(&tx, &mx, &vx, cmd.sf, lm);
 
                 // When using RTP command with sf=0, then the IR3 saturation
                 // flag (FLAG.22) gets set only if "MAC3 SAR 12" exceeds -8000h..+7FFFh
@@ -733,7 +753,61 @@ impl Gte {
                 self.set_ir0((mac0 >> 12) as i32);
             }
             // GteCommandOpcode::Rtpt => todo!(),
-            // GteCommandOpcode::Mvmva => todo!(),
+            GteCommandOpcode::Mvmva => {
+                // MAC1 = (Tx1*1000h + Mx11*Vx1 + Mx12*Vx2 + Mx13*Vx3) SAR (sf*12)
+                // MAC2 = (Tx2*1000h + Mx21*Vx1 + Mx22*Vx2 + Mx23*Vx3) SAR (sf*12)
+                // MAC3 = (Tx3*1000h + Mx31*Vx1 + Mx32*Vx2 + Mx33*Vx3) SAR (sf*12)
+                // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+
+                let mx = match cmd.mx {
+                    0 => self.rotation_matrix,
+                    1 => self.light_source_matrix,
+                    2 => self.light_color_matrix,
+                    3 => {
+                        let r = (self.rgbc & 0xFF) as i16;
+                        [
+                            [-(r << 4), r << 4, self.ir[0]],
+                            [self.rotation_matrix[0][2]; 3],
+                            [self.rotation_matrix[1][1]; 3],
+                        ]
+                    }
+                    _ => unreachable!(),
+                };
+
+                let mut tx = match cmd.tx {
+                    0 => self.translation_vector,
+                    1 => self.background_color,
+                    2 => self.far_color,
+                    3 => [0; 3], // none
+                    _ => unreachable!(),
+                };
+
+                let mut vx = [0; 3];
+                match cmd.vx {
+                    0..=2 => vx = self.vectors[cmd.vx as usize],
+                    3 => vx.copy_from_slice(&self.ir[1..]),
+                    _ => unreachable!(),
+                }
+
+                // perform mvmva calculation, even if far_color is selected,
+                // as we need the flags to be correct, but will do the operation
+                // again for the correct (bugged) result
+                self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
+
+                // if far_color is selected, the return values are reduced to
+                // the last portion of the formula,
+                // ie. MAC1=(Mx12*Vx2 + Mx13*Vx3) SAR (sf*12), and similar for
+                // MAC2 and MAC3.
+                //
+                // We can achieve that by zeroing out the tx vector and vx1
+                // from the vx vector
+                if cmd.tx == 2 {
+                    tx = [0; 3];
+                    vx[0] = 0;
+
+                    self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
+                }
+            }
             // GteCommandOpcode::Dcpl => todo!(),
             GteCommandOpcode::Dpcs => {
                 let r = ((self.rgbc >> 0) & 0xFF) as i64;
