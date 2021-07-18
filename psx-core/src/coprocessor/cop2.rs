@@ -955,7 +955,16 @@ impl Gte {
                 // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
                 self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
             }
-            // GteCommandOpcode::Sqr => todo!(),
+            GteCommandOpcode::Sqr => {
+                // [MAC1,MAC2,MAC3] = [IR1*IR1,IR2*IR2,IR3*IR3] SHR (sf*12)
+                // [IR1,IR2,IR3]    = [MAC1,MAC2,MAC3]    ;IR1,IR2,IR3 saturated to max 7FFFh
+
+                let mac1 = self.ir[1] as i64 * self.ir[1] as i64;
+                let mac2 = self.ir[2] as i64 * self.ir[2] as i64;
+                let mac3 = self.ir[3] as i64 * self.ir[3] as i64;
+                self.set_mac123(mac1, mac2, mac3, cmd.sf);
+                self.copy_mac_ir_saturate(cmd.lm);
+            }
             GteCommandOpcode::Ncs => {
                 self.ncs(0, cmd.sf, cmd.lm);
             }
