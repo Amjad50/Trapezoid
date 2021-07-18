@@ -265,13 +265,66 @@ impl Gte {
         // because of a change in ir1,2,3 vector
         self.update_orgb_irgb();
     }
+
+    fn update_mac123_overflow_flags(&mut self, mac1: i64, mac2: i64, mac3: i64) {
+        let flags = &[
+            (
+                Flag::MAC1_RES_LARGER_THAN_43_BITS_NEG,
+                Flag::MAC1_RES_LARGER_THAN_43_BITS_POS,
+            ),
+            (
+                Flag::MAC2_RES_LARGER_THAN_43_BITS_NEG,
+                Flag::MAC2_RES_LARGER_THAN_43_BITS_POS,
+            ),
+            (
+                Flag::MAC3_RES_LARGER_THAN_43_BITS_NEG,
+                Flag::MAC3_RES_LARGER_THAN_43_BITS_POS,
+            ),
+        ];
+
+        let mut mac = [mac1, mac2, mac3];
+
+        for (value, (neg_flag, pos_flag)) in mac.iter_mut().zip(flags) {
+            if *value < -(1 << 43) {
+                self.flag.insert(*neg_flag);
+            } else if *value > (1 << 43) - 1 {
+                self.flag.insert(*pos_flag);
+            }
+        }
+    }
+
+    fn mac123_sign_extend(&mut self, mac1: i64, mac2: i64, mac3: i64) -> (i64, i64, i64) {
+        self.update_mac123_overflow_flags(mac1, mac2, mac3);
+
+        #[inline(always)]
+        fn sign_extend(value: i64) -> i64 {
+            (((value as u64) << (64 - 43 - 1)) as i64) >> (64 - 43 - 1)
+        }
+
+        (sign_extend(mac1), sign_extend(mac2), sign_extend(mac3))
+    }
+
+    // check overflow for mac123, shifts the values with sf flag, and return the
+    // shifted value but not truncated (i64 value) to be used by later calucations
+    // if needed
+    fn set_mac123(&mut self, mac1: i64, mac2: i64, mac3: i64, sf: bool) -> (i64, i64, i64) {
+        let sf = sf as u32;
+
+        self.update_mac123_overflow_flags(mac1, mac2, mac3);
+
+        let mac1 = mac1.wrapping_shr(sf * 12);
+        let mac2 = mac2.wrapping_shr(sf * 12);
+        let mac3 = mac3.wrapping_shr(sf * 12);
+
+        self.mac[1] = mac1 as i32;
+        self.mac[2] = mac2 as i32;
+        self.mac[3] = mac3 as i32;
+
+        (mac1, mac2, mac3)
+    }
 }
 
 impl Gte {
-    fn vector_dot(v1: &[i16; 3], v2: &[i16; 3]) -> i64 {
-        v1[0] as i64 * v2[0] as i64 + v1[1] as i64 * v2[1] as i64 + v1[2] as i64 * v2[2] as i64
-    }
-
     fn mvmva(
         &mut self,
         tx: &[i32; 3],
@@ -280,27 +333,31 @@ impl Gte {
         sf: bool,
         lm: bool,
     ) -> (i64, i64, i64) {
-        let sf = sf as u32;
-
         // MAC1 = (Tx1*1000h + Mx11*Vx1 + Mx12*Vx2 + Mx13*Vx3) SAR (sf*12)
-        let mac1 = (tx[0] as i64).wrapping_shl(12) + Self::vector_dot(&mx[0], vx);
-
         // MAC2 = (Tx2*1000h + Mx21*Vx1 + Mx22*Vx2 + Mx23*Vx3) SAR (sf*12)
-        let mac2 = (tx[1] as i64).wrapping_shl(12) + Self::vector_dot(&mx[1], vx);
-
         // MAC3 = (Tx3*1000h + Mx31*Vx1 + Mx32*Vx2 + Mx33*Vx3) SAR (sf*12)
-        let mac3 = (tx[2] as i64).wrapping_shl(12) + Self::vector_dot(&mx[2], vx);
 
-        self.update_mac_overflow_flag(1, mac1);
-        self.update_mac_overflow_flag(2, mac2);
-        self.update_mac_overflow_flag(3, mac3);
-        let mac3 = mac3.wrapping_shr(sf * 12);
-        let mac2 = mac2.wrapping_shr(sf * 12);
-        let mac1 = mac1.wrapping_shr(sf * 12);
+        let mac1 = (tx[0] as i64).wrapping_shl(12);
+        let mac2 = (tx[1] as i64).wrapping_shl(12);
+        let mac3 = (tx[2] as i64).wrapping_shl(12);
+        let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
 
-        self.mac[1] = mac1 as i32;
-        self.mac[2] = mac2 as i32;
-        self.mac[3] = mac3 as i32;
+        let mac1 = mac1 + mx[0][0] as i64 * vx[0] as i64;
+        let mac2 = mac2 + mx[1][0] as i64 * vx[0] as i64;
+        let mac3 = mac3 + mx[2][0] as i64 * vx[0] as i64;
+        let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+        let mac1 = mac1 + mx[0][1] as i64 * vx[1] as i64;
+        let mac2 = mac2 + mx[1][1] as i64 * vx[1] as i64;
+        let mac3 = mac3 + mx[2][1] as i64 * vx[1] as i64;
+        let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+        let mac1 = mac1 + mx[0][2] as i64 * vx[2] as i64;
+        let mac2 = mac2 + mx[1][2] as i64 * vx[2] as i64;
+        let mac3 = mac3 + mx[2][2] as i64 * vx[2] as i64;
+        let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+        let (mac1, mac2, mac3) = self.set_mac123(mac1, mac2, mac3, sf);
 
         self.copy_mac_ir_saturate(lm);
 
@@ -364,39 +421,28 @@ impl Gte {
         // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
         // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
 
-        let sf = sf as u32;
         let code = ((self.rgbc >> 24) & 0xFF) as u8;
 
         // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+        //
         // (FC-MAC)
+        // [IR1,IR2,IR3] = (([RFC,GFC,BFC] SHL 12) - [MAC1,MAC2,MAC3]) SAR (sf*12)
         let tmp_mac1 = (self.far_color[0] as i64).wrapping_shl(12) - mac1;
         let tmp_mac2 = (self.far_color[1] as i64).wrapping_shl(12) - mac2;
         let tmp_mac3 = (self.far_color[2] as i64).wrapping_shl(12) - mac3;
-        self.update_mac_overflow_flag(1, tmp_mac1);
-        self.update_mac_overflow_flag(2, tmp_mac2);
-        self.update_mac_overflow_flag(3, tmp_mac3);
-        // without changing mac1,2,3 variables
-        self.mac[1] = tmp_mac1.wrapping_shr(sf * 12) as i32;
-        self.mac[2] = tmp_mac2.wrapping_shr(sf * 12) as i32;
-        self.mac[3] = tmp_mac3.wrapping_shr(sf * 12) as i32;
+
+        self.set_mac123(tmp_mac1, tmp_mac2, tmp_mac3, sf);
+
         self.copy_mac_ir_saturate(false);
 
         // *IR0+MAC
+        // [MAC1,MAC2,MAC3] = (([IR1,IR2,IR3] * IR0) + [MAC1,MAC2,MAC3])
         let mac1 = (self.ir[1] as i64 * self.ir[0] as i64) + mac1;
         let mac2 = (self.ir[2] as i64 * self.ir[0] as i64) + mac2;
         let mac3 = (self.ir[3] as i64 * self.ir[0] as i64) + mac3;
 
         // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
-        self.update_mac_overflow_flag(1, mac1);
-        self.update_mac_overflow_flag(2, mac2);
-        self.update_mac_overflow_flag(3, mac3);
-        let mac1 = mac1.wrapping_shr(sf * 12);
-        let mac2 = mac2.wrapping_shr(sf * 12);
-        let mac3 = mac3.wrapping_shr(sf * 12);
-
-        self.mac[1] = mac1 as i32;
-        self.mac[2] = mac2 as i32;
-        self.mac[3] = mac3 as i32;
+        let (mac1, mac2, mac3) = self.set_mac123(mac1, mac2, mac3, sf);
 
         // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
         self.push_color_fifo(mac1 >> 4, mac2 >> 4, mac3 >> 4, code);
@@ -409,33 +455,6 @@ impl Gte {
         self.set_mac0(mac0);
 
         mac0
-    }
-
-    fn update_mac_overflow_flag(&mut self, index: usize, value: i64) {
-        assert!(index > 0 && index <= 3);
-
-        let flags = &[
-            (
-                Flag::MAC1_RES_LARGER_THAN_43_BITS_NEG,
-                Flag::MAC1_RES_LARGER_THAN_43_BITS_POS,
-            ),
-            (
-                Flag::MAC2_RES_LARGER_THAN_43_BITS_NEG,
-                Flag::MAC2_RES_LARGER_THAN_43_BITS_POS,
-            ),
-            (
-                Flag::MAC3_RES_LARGER_THAN_43_BITS_NEG,
-                Flag::MAC3_RES_LARGER_THAN_43_BITS_POS,
-            ),
-        ];
-
-        let (neg_flag, pos_flag) = flags[index - 1];
-
-        if value < -(1 << 43) {
-            self.flag.insert(neg_flag);
-        } else if value > (1 << 43) - 1 {
-            self.flag.insert(pos_flag);
-        }
     }
 }
 
@@ -789,19 +808,22 @@ impl Gte {
                     _ => unreachable!(),
                 }
 
-                // perform mvmva calculation, even if far_color is selected,
-                // as we need the flags to be correct, but will do the operation
-                // again for the correct (bugged) result
-                self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
+                if cmd.tx != 2 {
+                    self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
+                } else {
+                    // If far_color is selected, then a bug occured where we check
+                    // for the flag with the calculation MAC1=(Tx1*1000h + Mx11*Vx1)
+                    // but the values are not returned, so we use the calculation only
+                    // to set the flags, then perform it again with another modification
+                    // to get the returned result
+                    self.mvmva(&tx, &mx, &[vx[0], 0, 0], cmd.sf, cmd.lm);
 
-                // if far_color is selected, the return values are reduced to
-                // the last portion of the formula,
-                // ie. MAC1=(Mx12*Vx2 + Mx13*Vx3) SAR (sf*12), and similar for
-                // MAC2 and MAC3.
-                //
-                // We can achieve that by zeroing out the tx vector and vx1
-                // from the vx vector
-                if cmd.tx == 2 {
+                    // the return values are reduced to:
+                    // MAC1=(Mx12*Vx2 + Mx13*Vx3) SAR (sf*12), and similar for
+                    // MAC2 and MAC3.
+                    //
+                    // We can achieve that by zeroing out the tx vector and vx1
+                    // from the vx vector
                     tx = [0; 3];
                     vx[0] = 0;
 
@@ -818,6 +840,7 @@ impl Gte {
                 let mac1 = r << 16;
                 let mac2 = g << 16;
                 let mac3 = b << 16;
+                let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
 
                 self.dcpl_dpcs_dpct_intpl_handler(mac1, mac2, mac3, cmd.sf, cmd.lm);
             }
@@ -827,6 +850,7 @@ impl Gte {
                 let mac1 = (self.ir[1] as i64).wrapping_shl(12);
                 let mac2 = (self.ir[2] as i64).wrapping_shl(12);
                 let mac3 = (self.ir[3] as i64).wrapping_shl(12);
+                let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
 
                 self.dcpl_dpcs_dpct_intpl_handler(mac1, mac2, mac3, cmd.sf, cmd.lm);
             }
@@ -861,19 +885,15 @@ impl Gte {
                     self.rotation_matrix[1][1],
                     self.rotation_matrix[2][2],
                 ];
-                let mac1 = self.ir[3] as i64 * d[1] as i64 - self.ir[2] as i64 * d[2] as i64;
-                let mac2 = self.ir[1] as i64 * d[2] as i64 - self.ir[3] as i64 * d[0] as i64;
-                let mac3 = self.ir[2] as i64 * d[0] as i64 - self.ir[1] as i64 * d[1] as i64;
-                self.update_mac_overflow_flag(1, mac1);
-                self.update_mac_overflow_flag(2, mac2);
-                self.update_mac_overflow_flag(3, mac3);
-                let mac1 = mac1.wrapping_shr(sf * 12);
-                let mac2 = mac2.wrapping_shr(sf * 12);
-                let mac3 = mac3.wrapping_shr(sf * 12);
+                let mac1 = self.ir[3] as i64 * d[1] as i64;
+                let mac2 = self.ir[1] as i64 * d[2] as i64;
+                let mac3 = self.ir[2] as i64 * d[0] as i64;
+                let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+                let mac1 = mac1 - self.ir[2] as i64 * d[2] as i64;
+                let mac2 = mac2 - self.ir[3] as i64 * d[0] as i64;
+                let mac3 = mac3 - self.ir[1] as i64 * d[1] as i64;
 
-                self.mac[1] = mac1 as i32;
-                self.mac[2] = mac2 as i32;
-                self.mac[3] = mac3 as i32;
+                self.set_mac123(mac1, mac2, mac3, cmd.sf);
 
                 //   [IR1,IR2,IR3]    = [MAC1,MAC2,MAC3]
                 self.copy_mac_ir_saturate(lm);
