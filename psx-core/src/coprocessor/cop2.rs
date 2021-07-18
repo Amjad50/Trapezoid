@@ -406,6 +406,20 @@ impl Gte {
         }
     }
 
+    fn push_color_fifo_from_mac123(&mut self, mac1: i64, mac2: i64, mac3: i64, sf: bool, lm: bool) {
+        // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+
+        let code = ((self.rgbc >> 24) & 0xFF) as u8;
+
+        // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+        let (mac1, mac2, mac3) = self.set_mac123(mac1, mac2, mac3, sf);
+
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+        self.push_color_fifo(mac1 >> 4, mac2 >> 4, mac3 >> 4, code);
+        self.copy_mac_ir_saturate(lm);
+    }
+
     /// A method that handles the end part of commands such as:
     /// Dcpl, Dpcs, Dpct, Intpl, Ncd*, Cdp
     fn color_interpolation(&mut self, mac1: i64, mac2: i64, mac3: i64, sf: bool, lm: bool) {
@@ -413,8 +427,6 @@ impl Gte {
         // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
         // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
         // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
-
-        let code = ((self.rgbc >> 24) & 0xFF) as u8;
 
         // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
         //
@@ -435,11 +447,78 @@ impl Gte {
         let mac3 = (self.ir[3] as i64 * self.ir[0] as i64) + mac3;
 
         // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
-        let (mac1, mac2, mac3) = self.set_mac123(mac1, mac2, mac3, sf);
-
         // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
-        self.push_color_fifo(mac1 >> 4, mac2 >> 4, mac3 >> 4, code);
-        self.copy_mac_ir_saturate(lm);
+        self.push_color_fifo_from_mac123(mac1, mac2, mac3, sf, lm);
+    }
+
+    fn ncds(&mut self, v_index: usize, sf: bool, lm: bool) {
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*Vx) SAR (sf*12)
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+        // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
+        // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+        // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+
+        let r = ((self.rgbc >> 0) & 0xFF) as i64;
+        let g = ((self.rgbc >> 8) & 0xFF) as i64;
+        let b = ((self.rgbc >> 16) & 0xFF) as i64;
+
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
+        let vx = self.vectors[v_index];
+        let mx = self.light_source_matrix;
+        let tx = [0; 3];
+        self.mvmva(&tx, &mx, &vx, sf, lm);
+
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+        let vx = [self.ir[1], self.ir[2], self.ir[3]];
+        let mx = self.light_color_matrix;
+        let tx = self.background_color;
+        self.mvmva(&tx, &mx, &vx, sf, lm);
+
+        // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
+        let mac1 = (self.ir[1] as i64 * r) << 4;
+        let mac2 = (self.ir[2] as i64 * g) << 4;
+        let mac3 = (self.ir[3] as i64 * b) << 4;
+        let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+        // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+        // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+        self.color_interpolation(mac1, mac2, mac3, sf, lm);
+    }
+
+    fn nccs(&mut self, v_index: usize, sf: bool, lm: bool) {
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+        // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
+        // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+
+        let r = ((self.rgbc >> 0) & 0xFF) as i64;
+        let g = ((self.rgbc >> 8) & 0xFF) as i64;
+        let b = ((self.rgbc >> 16) & 0xFF) as i64;
+
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
+        let vx = self.vectors[v_index];
+        let mx = self.light_source_matrix;
+        let tx = [0; 3];
+        self.mvmva(&tx, &mx, &vx, sf, lm);
+
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+        let vx = [self.ir[1], self.ir[2], self.ir[3]];
+        let mx = self.light_color_matrix;
+        let tx = self.background_color;
+        self.mvmva(&tx, &mx, &vx, sf, lm);
+
+        // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
+        let mac1 = (self.ir[1] as i64 * r) << 4;
+        let mac2 = (self.ir[2] as i64 * g) << 4;
+        let mac3 = (self.ir[3] as i64 * b) << 4;
+        let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+        // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+        self.push_color_fifo_from_mac123(mac1, mac2, mac3, sf, lm);
     }
 
     fn mac0_overflow_mul_add(&mut self, n: i32, a: i32, b: i32) -> i64 {
@@ -835,6 +914,9 @@ impl Gte {
                 let mac3 = b << 16;
                 let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
 
+                // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+                // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
                 self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
             }
             // GteCommandOpcode::Dpct => todo!(),
@@ -845,53 +927,34 @@ impl Gte {
                 let mac3 = (self.ir[3] as i64).wrapping_shl(12);
                 let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
 
+                // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+                // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
                 self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
             }
             // GteCommandOpcode::Sqr => todo!(),
             // GteCommandOpcode::Ncs => todo!(),
             // GteCommandOpcode::Nct => todo!(),
             GteCommandOpcode::Ncds => {
-                // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
-                // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
-                // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
-                // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
-                // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
-                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
-
-                let r = ((self.rgbc >> 0) & 0xFF) as i64;
-                let g = ((self.rgbc >> 8) & 0xFF) as i64;
-                let b = ((self.rgbc >> 16) & 0xFF) as i64;
-
-                // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
-                let vx = self.vectors[0];
-                let mx = self.light_source_matrix;
-                let tx = [0; 3];
-                self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
-
-                // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
-                let vx = [self.ir[1], self.ir[2], self.ir[3]];
-                let mx = self.light_color_matrix;
-                let tx = self.background_color;
-                self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
-
-                // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
-                let mac1 = (self.ir[1] as i64 * r) << 4;
-                let mac2 = (self.ir[2] as i64 * g) << 4;
-                let mac3 = (self.ir[3] as i64 * b) << 4;
-                self.mac123_sign_extend(mac1, mac2, mac3);
-
-                // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
-                // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
-                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
-                self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
+                self.ncds(0, cmd.sf, cmd.lm);
             }
-            // GteCommandOpcode::Ncdt => todo!(),
-            // GteCommandOpcode::Nccs => todo!(),
-            // GteCommandOpcode::Ncct => todo!(),
+            GteCommandOpcode::Ncdt => {
+                self.ncds(0, cmd.sf, cmd.lm);
+                self.ncds(1, cmd.sf, cmd.lm);
+                self.ncds(2, cmd.sf, cmd.lm);
+            }
+            GteCommandOpcode::Nccs => {
+                self.nccs(0, cmd.sf, cmd.lm);
+            }
+            GteCommandOpcode::Ncct => {
+                self.nccs(0, cmd.sf, cmd.lm);
+                self.nccs(1, cmd.sf, cmd.lm);
+                self.nccs(2, cmd.sf, cmd.lm);
+            }
             GteCommandOpcode::Cdp => {
                 // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
                 // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
-                // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0                   ;<--- for CDP only
+                // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
                 // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
                 // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
 
@@ -911,9 +974,37 @@ impl Gte {
                 let mac3 = (self.ir[3] as i64 * b) << 4;
                 let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
 
+                // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+                // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
                 self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
             }
-            // GteCommandOpcode::Cc => todo!(),
+            GteCommandOpcode::Cc => {
+                // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+                // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
+                // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+
+                let r = ((self.rgbc >> 0) & 0xFF) as i64;
+                let g = ((self.rgbc >> 8) & 0xFF) as i64;
+                let b = ((self.rgbc >> 16) & 0xFF) as i64;
+
+                // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+                let vx = [self.ir[1], self.ir[2], self.ir[3]];
+                let mx = self.light_color_matrix;
+                let tx = self.background_color;
+                self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
+
+                // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
+                let mac1 = (self.ir[1] as i64 * r) << 4;
+                let mac2 = (self.ir[2] as i64 * g) << 4;
+                let mac3 = (self.ir[3] as i64 * b) << 4;
+                let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+                // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+                self.push_color_fifo_from_mac123(mac1, mac2, mac3, cmd.sf, cmd.lm);
+            }
             GteCommandOpcode::Nclip => {
                 // MAC0 = SX0*SY1 + SX1*SY2 + SX2*SY0 - SX0*SY2 - SX1*SY0 - SX2*SY1
                 let mac0 = self.sxy[0].0 as i64 * self.sxy[1].1 as i64
