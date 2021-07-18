@@ -210,7 +210,7 @@ impl Gte {
         self.sxy[2] = (x, y);
     }
 
-    fn push_color_fifo(&mut self, r: i64, g: i64, b: i64, code: u8) {
+    fn push_color_fifo(&mut self, r: i32, g: i32, b: i32, code: u8) {
         self.rgb[0] = self.rgb[1];
         self.rgb[1] = self.rgb[2];
         let r = self.saturate_put_flag(r, 0x00, 0xFF, Flag::COLOR_FIFO_R_SATURATED_TO_00_FF) as u32;
@@ -413,10 +413,10 @@ impl Gte {
         let code = ((self.rgbc >> 24) & 0xFF) as u8;
 
         // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
-        let (mac1, mac2, mac3) = self.set_mac123(mac1, mac2, mac3, sf);
+        self.set_mac123(mac1, mac2, mac3, sf);
 
         // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
-        self.push_color_fifo(mac1 >> 4, mac2 >> 4, mac3 >> 4, code);
+        self.push_color_fifo(self.mac[1] >> 4, self.mac[2] >> 4, self.mac[3] >> 4, code);
         self.copy_mac_ir_saturate(lm);
     }
 
@@ -519,6 +519,29 @@ impl Gte {
         // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
         // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
         self.push_color_fifo_from_mac123(mac1, mac2, mac3, sf, lm);
+    }
+
+    fn ncs(&mut self, v_index: usize, sf: bool, lm: bool) {
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+
+        let code = ((self.rgbc >> 24) & 0xFF) as u8;
+
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
+        let vx = self.vectors[v_index];
+        let mx = self.light_source_matrix;
+        let tx = [0; 3];
+        self.mvmva(&tx, &mx, &vx, sf, lm);
+
+        // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+        let vx = [self.ir[1], self.ir[2], self.ir[3]];
+        let mx = self.light_color_matrix;
+        let tx = self.background_color;
+        self.mvmva(&tx, &mx, &vx, sf, lm);
+
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+        self.push_color_fifo(self.mac[1] >> 4, self.mac[2] >> 4, self.mac[3] >> 4, code);
     }
 
     fn mac0_overflow_mul_add(&mut self, n: i32, a: i32, b: i32) -> i64 {
@@ -933,8 +956,14 @@ impl Gte {
                 self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
             }
             // GteCommandOpcode::Sqr => todo!(),
-            // GteCommandOpcode::Ncs => todo!(),
-            // GteCommandOpcode::Nct => todo!(),
+            GteCommandOpcode::Ncs => {
+                self.ncs(0, cmd.sf, cmd.lm);
+            }
+            GteCommandOpcode::Nct => {
+                self.ncs(0, cmd.sf, cmd.lm);
+                self.ncs(1, cmd.sf, cmd.lm);
+                self.ncs(2, cmd.sf, cmd.lm);
+            }
             GteCommandOpcode::Ncds => {
                 self.ncds(0, cmd.sf, cmd.lm);
             }
