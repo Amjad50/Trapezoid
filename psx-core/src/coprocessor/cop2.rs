@@ -925,7 +925,22 @@ impl Gte {
                     self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
                 }
             }
-            // GteCommandOpcode::Dcpl => todo!(),
+            GteCommandOpcode::Dcpl => {
+                let r = ((self.rgbc >> 0) & 0xFF) as i64;
+                let g = ((self.rgbc >> 8) & 0xFF) as i64;
+                let b = ((self.rgbc >> 16) & 0xFF) as i64;
+
+                // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
+                let mac1 = (self.ir[1] as i64 * r) << 4;
+                let mac2 = (self.ir[2] as i64 * g) << 4;
+                let mac3 = (self.ir[3] as i64 * b) << 4;
+                let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+                // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+                // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+                self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
+            }
             GteCommandOpcode::Dpcs => {
                 let r = ((self.rgbc >> 0) & 0xFF) as i64;
                 let g = ((self.rgbc >> 8) & 0xFF) as i64;
@@ -942,7 +957,24 @@ impl Gte {
                 // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
                 self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
             }
-            // GteCommandOpcode::Dpct => todo!(),
+            GteCommandOpcode::Dpct => {
+                for _ in 0..3 {
+                    let r = ((self.rgb[0] >> 0) & 0xFF) as i64;
+                    let g = ((self.rgb[0] >> 8) & 0xFF) as i64;
+                    let b = ((self.rgb[0] >> 16) & 0xFF) as i64;
+
+                    // [MAC1,MAC2,MAC3] = [R,G,B] SHL 16
+                    let mac1 = r << 16;
+                    let mac2 = g << 16;
+                    let mac3 = b << 16;
+                    let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+                    // [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+                    // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+                    // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+                    self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
+                }
+            }
             GteCommandOpcode::Intpl => {
                 // [MAC1,MAC2,MAC3] = [IR1,IR2,IR3] SHL 12
                 let mac1 = (self.ir[1] as i64).wrapping_shl(12);
