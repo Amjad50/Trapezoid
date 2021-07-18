@@ -619,6 +619,17 @@ impl Gte {
         // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
         self.push_color_fifo(self.mac[1] >> 4, self.mac[2] >> 4, self.mac[3] >> 4, code);
     }
+
+    fn gpf(&mut self, mac1: i64, mac2: i64, mac3: i64, sf: bool, lm: bool) {
+        // [MAC1,MAC2,MAC3] = (([IR1,IR2,IR3] * IR0) + [MAC1,MAC2,MAC3])
+        let mac1 = (self.ir[1] as i64 * self.ir[0] as i64) + mac1;
+        let mac2 = (self.ir[2] as i64 * self.ir[0] as i64) + mac2;
+        let mac3 = (self.ir[3] as i64 * self.ir[0] as i64) + mac3;
+        let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+        // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+        self.push_color_fifo_from_mac123(mac1, mac2, mac3, sf, lm);
+    }
 }
 
 impl Gte {
@@ -857,7 +868,7 @@ impl Gte {
         log::info!("cop2 executing command {:?}", cmd);
 
         match cmd.opcode {
-            // GteCommandOpcode::Na => todo!(),
+            GteCommandOpcode::Na => todo!(),
             GteCommandOpcode::Rtps => {
                 self.rtps(0, cmd.sf, cmd.lm, false, true);
             }
@@ -1140,9 +1151,27 @@ impl Gte {
                 // [IR1,IR2,IR3]    = [MAC1,MAC2,MAC3]
                 self.copy_mac_ir_saturate(cmd.lm);
             }
-            // GteCommandOpcode::Gpf => todo!(),
-            // GteCommandOpcode::Gpl => todo!(),
-            _ => todo!("cop2 unimplemented_command {:?}", cmd.opcode),
+            GteCommandOpcode::Gpf => {
+                // [MAC1,MAC2,MAC3] = [0,0,0]
+                // [MAC1,MAC2,MAC3] = (([IR1,IR2,IR3] * IR0) + [MAC1,MAC2,MAC3]) SAR (sf*12)
+                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+
+                self.gpf(0, 0, 0, cmd.sf, cmd.lm);
+            }
+            GteCommandOpcode::Gpl => {
+                // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SHL (sf*12)
+                // [MAC1,MAC2,MAC3] = (([IR1,IR2,IR3] * IR0) + [MAC1,MAC2,MAC3]) SAR (sf*12)
+                // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+
+                let sf = cmd.sf as u32;
+
+                let mac1 = (self.mac[1] as i64) << (sf * 12);
+                let mac2 = (self.mac[2] as i64) << (sf * 12);
+                let mac3 = (self.mac[3] as i64) << (sf * 12);
+                let (mac1, mac2, mac3) = self.mac123_sign_extend(mac1, mac2, mac3);
+
+                self.gpf(mac1, mac2, mac3, cmd.sf, cmd.lm);
+            }
         }
     }
 }
