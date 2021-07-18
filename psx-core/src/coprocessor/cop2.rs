@@ -1085,8 +1085,39 @@ impl Gte {
                     - self.sxy[2].0 as i64 * self.sxy[1].1 as i64;
                 self.set_mac0(mac0);
             }
-            // GteCommandOpcode::Avsz3 => todo!(),
-            // GteCommandOpcode::Avsz4 => todo!(),
+            GteCommandOpcode::Avsz3 => {
+                // MAC0 =  ZSF3*(SZ1+SZ2+SZ3)
+                // OTZ  =  MAC0/1000h               ;(saturated to 0..FFFFh)
+
+                let mac0 =
+                    self.zsf3 as i64 * (self.sz[1] as i64 + self.sz[2] as i64 + self.sz[3] as i64);
+                self.set_mac0(mac0);
+
+                self.otz = self.saturate_put_flag(
+                    mac0 >> 12,
+                    0,
+                    0xFFFF,
+                    Flag::SZ3_OR_OTZ_SATURATED_TO_0000_FFFF,
+                ) as u16;
+            }
+            GteCommandOpcode::Avsz4 => {
+                // MAC0 =  ZSF4*(SZ0+SZ1+SZ2+SZ3)
+                // OTZ  =  MAC0/1000h               ; (saturated to 0..FFFFh)
+
+                let mac0 = self.zsf4 as i64
+                    * (self.sz[0] as i64
+                        + self.sz[1] as i64
+                        + self.sz[2] as i64
+                        + self.sz[3] as i64);
+                self.set_mac0(mac0);
+
+                self.otz = self.saturate_put_flag(
+                    mac0 >> 12,
+                    0,
+                    0xFFFF,
+                    Flag::SZ3_OR_OTZ_SATURATED_TO_0000_FFFF,
+                ) as u16;
+            }
             GteCommandOpcode::Op => {
                 //   [MAC1,MAC2,MAC3] = [IR3*D2-IR2*D3, IR1*D3-IR3*D1, IR2*D1-IR1*D2] SAR (sf*12)
                 //   [IR1,IR2,IR3]    = [MAC1,MAC2,MAC3]
