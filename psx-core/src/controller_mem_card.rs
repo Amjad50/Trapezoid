@@ -247,12 +247,14 @@ pub struct ControllerAndMemoryCard {
 
 impl Default for ControllerAndMemoryCard {
     fn default() -> Self {
+        let baudrate_timer_reload = 0x0088;
+        let baudrate_timer = baudrate_timer_reload / 2;
         Self {
             ctrl: JoyControl::empty(),
-            mode: JoyMode::empty(),
+            mode: JoyMode::from_bits_truncate(0x000D),
             stat: JoyStat::TX_READY_1 | JoyStat::TX_READY_2,
-            baudrate_timer_reload: 0,
-            baudrate_timer: 0,
+            baudrate_timer_reload,
+            baudrate_timer,
             transfered_bits: 0,
             clk_position_high: false,
             tx_fifo: VecDeque::new(),
