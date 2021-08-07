@@ -13,6 +13,8 @@ use cpu::Cpu;
 use gpu::GlContext;
 use memory::{Bios, CpuBus};
 
+pub use controller_mem_card::DigitalControllerKey;
+
 pub struct Psx {
     bus: CpuBus,
     cpu: Cpu,
@@ -39,6 +41,12 @@ impl Psx {
         self.cpu.execute_next(&mut self.bus);
 
         self.bus.gpu().in_vblank() && !in_vblank_old
+    }
+
+    pub fn change_controller_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {
+        self.bus
+            .controller_mem_card_mut()
+            .change_controller_key_state(key, pressed);
     }
 
     pub fn blit_to_front<S: glium::Surface>(&self, s: &S) {

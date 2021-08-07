@@ -3,6 +3,32 @@ use bitflags::bitflags;
 
 use std::collections::VecDeque;
 
+#[derive(Clone, Copy)]
+pub enum DigitalControllerKey {
+    Select,
+    L3,
+    R3,
+    Start,
+    Up,
+    Right,
+    Down,
+    Left,
+    L2,
+    R2,
+    L1,
+    R1,
+    Triangle,
+    Circle,
+    X,
+    Square,
+}
+
+impl DigitalControllerKey {
+    fn mask(&self) -> u16 {
+        1 << *self as u16
+    }
+}
+
 const JOY_CTRL_ACKKNOWLEDGE: u16 = 0b0000000000010000;
 const JOY_CTRL_RESET: u16 = 0b0000000001000000;
 bitflags! {
@@ -112,6 +138,16 @@ impl Controller {
             device_id: 0x5A41,        // digital controller
             digital_switches: 0xFFFF, // all released
             connected,
+        }
+    }
+
+    fn change_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {
+        let mask = key.mask();
+
+        if pressed {
+            self.digital_switches &= !mask;
+        } else {
+            self.digital_switches |= mask;
         }
     }
 
@@ -226,6 +262,10 @@ impl CommunicationHandler {
         }
     }
 
+    fn change_controller_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {
+        self.controller.change_key_state(key, pressed);
+    }
+
     fn has_more(&self) -> bool {
         self.state != 0
     }
@@ -312,6 +352,10 @@ impl ControllerAndMemoryCard {
                 }
             }
         }
+    }
+
+    pub fn change_controller_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {
+        self.communication_handlers[0].change_controller_key_state(key, pressed);
     }
 }
 

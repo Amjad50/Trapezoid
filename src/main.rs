@@ -1,10 +1,17 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use psx_core::Psx;
+use psx_core::{DigitalControllerKey, Psx};
 
 use clap::Clap;
-use glium::{glutin, Surface};
+use glium::{
+    glutin::{
+        self,
+        event::{ElementState, Event, VirtualKeyCode, WindowEvent},
+        event_loop::ControlFlow,
+    },
+    Surface,
+};
 
 enum GlDisplay {
     Headless(glium::HeadlessRenderer),
@@ -73,9 +80,32 @@ fn main() {
 
     let mut psx = Psx::new(&args.bios, args.disk_file, &display).unwrap();
 
-    loop {
-        if psx.clock() {
-            display.render_frame(&psx);
+    event_loop.run(move |event, _target, control_flow| {
+        match event {
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => {
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                WindowEvent::KeyboardInput { input, .. } => {
+                    // TODO: handle all keys, this is just for testing temporary
+                    if let Some(VirtualKeyCode::Return) = input.virtual_keycode {
+                        let pressed = input.state == ElementState::Pressed;
+
+                        psx.change_controller_key_state(DigitalControllerKey::Start, pressed);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
         }
-    }
+        *control_flow = ControlFlow::Poll;
+
+        // do several clocks in one time to reduce latency of the `event_loop.run` method.
+        for _ in 0..100 {
+            if psx.clock() {
+                display.render_frame(&psx);
+            }
+        }
+    });
 }
