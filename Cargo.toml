@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-psx-core = { path = "./psx-core", version = "" }
+psx-core = { path = "./psx-core", version = "*" }
 env_logger = "0.8.3"
 glium = "0.29.1"
 clap = "3.0.0-beta.2"
