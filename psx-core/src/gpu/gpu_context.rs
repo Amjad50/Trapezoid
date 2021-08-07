@@ -8,7 +8,7 @@ use glium::{
     texture::{ClientFormat, MipmapsOption, RawImage2d, Texture2d, UncompressedFloatFormat},
     uniform,
     uniforms::MagnifySamplerFilter,
-    Blend, BlendingFunction, BlitTarget, IndexBuffer, LinearBlendingFactor, Rect, Surface,
+    Blend, BlendingFunction, BlitTarget, IndexBuffer, LinearBlendingFactor, Program, Rect, Surface,
     VertexBuffer,
 };
 
@@ -259,6 +259,7 @@ pub struct GpuContext {
     pub(super) display_vertical_range: (u32, u32),
 
     gl_context: GlContext,
+    program: Program,
     drawing_texture: Texture2d,
     /// Stores the VRAM content to be used for rendering in the shaders
     texture_buffer: Texture2d,
@@ -291,6 +292,150 @@ impl GpuContext {
         )
         .unwrap();
 
+        let program = program!(&gl_context,
+            140 => {
+                vertex: "
+                    #version 140
+                    in vec2 position;
+                    in vec3 color;
+                    in uvec2 tex_coord;
+
+                    out vec3 v_color;
+                    out vec2 v_tex_coord;
+
+                    uniform ivec2 offset;
+                    uniform uvec2 drawing_top_left;
+                    uniform uvec2 drawing_size;
+
+                    void main() {
+                        float posx = (position.x + offset.x - drawing_top_left.x) / drawing_size.x * 2 - 1;
+                        float posy = (position.y + offset.y - drawing_top_left.x) / drawing_size.y * (-2) + 1;
+
+                        gl_Position = vec4(posx, posy, 0.0, 1.0);
+                        v_color = color;
+                        v_tex_coord = vec2(tex_coord);
+                    }
+                ",
+                fragment: "
+                    #version 140
+
+                    in vec3 v_color;
+                    in vec2 v_tex_coord;
+
+                    out vec4 out_color;
+
+                    uniform bool is_textured;
+                    uniform bool is_texture_blended;
+                    uniform bool semi_transparent;
+                    uniform uint semi_transparency_mode;
+                    uniform sampler2D tex;
+                    uniform uvec2 tex_page_base;
+                    uniform uint tex_page_color_mode;
+                    uniform uvec2 clut_base;
+
+                    vec4 get_color_from_u16(uint color_texel) {
+                        uint r = color_texel & 0x1Fu;
+                        uint g = (color_texel >> 5) & 0x1Fu;
+                        uint b = (color_texel >> 10) & 0x1Fu;
+                        uint a = (color_texel >> 15) & 1u;
+
+                        return vec4(float(r) / 31.0, float(g) / 31.0, float(b) / 31.0, float(a));
+                    }
+
+                    vec4 get_color_with_semi_transparency(vec3 color, float semi_transparency_param) {
+                        float alpha;
+                        if (semi_transparency_mode == 0u) {
+                            if (semi_transparency_param == 1.0) {
+                                alpha = 0.5;
+                            } else {
+                                alpha = 1.0;
+                            }
+                        } else if (semi_transparency_mode == 1u) {
+                            alpha = semi_transparency_param;
+                        } else if (semi_transparency_mode == 2u) {
+                            alpha = semi_transparency_param;
+                        } else {
+                            // FIXME: inaccurate mode 3 semi transparency
+                            //
+                            // these numbers with the equation:
+                            // (source * source_alpha + dest * (1 - source_alpha)
+                            // Will result in the following cases:
+                            // if semi=1:
+                            //      s * 0.25 + d * 0.75
+                            // if semi=0:
+                            //      s * 1.0 + d * 0.0
+                            //
+                            // but we need
+                            // if semi=1:
+                            //      s * 0.25 + d * 1.00
+                            // if semi=0:
+                            //      s * 1.0 + d * 0.0
+                            //
+                            // Thus, this is not accurate, but temporary will keep
+                            // it like this until we find a new solution
+                            if (semi_transparency_param == 1.0) {
+                                alpha = 0.25;
+                            } else {
+                                alpha = 1.0;
+                            }
+                        }
+
+                        return vec4(color, alpha);
+                    }
+
+                    void main() {
+                        // retrieve the interpolated value of `tex_coord`
+                        uvec2 tex_coord = uvec2(round(v_tex_coord));
+
+                        if (is_textured) {
+                            // how many pixels in 16 bit
+                            uint divider;
+                            if (tex_page_color_mode == 0u) {
+                                divider = 4u;
+                            } else if (tex_page_color_mode == 1u) {
+                                divider = 2u;
+                            } else {
+                                divider = 1u;
+                            };
+
+                            // offsetted position
+                            uint x = tex_page_base.x + (tex_coord.x / divider);
+                            uint y = tex_page_base.y + tex_coord.y;
+
+                            uint color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
+
+                            // if we need clut, then compute it
+                            if (tex_page_color_mode == 0u || tex_page_color_mode == 1u) {
+                                uint mask = 0xFFFFu >> (16u - (16u / divider));
+                                uint clut_index_shift = (tex_coord.x % divider) * (16u / divider);
+                                uint clut_index = (color_value >> clut_index_shift) & mask;
+
+                                x = clut_base.x + clut_index;
+                                y = clut_base.y;
+                                color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
+                            }
+
+                            // if its all 0, then its transparent
+                            if (color_value == 0u){
+                                discard;
+                            }
+
+                            vec4 color_with_alpha = get_color_from_u16(color_value);
+                            vec3 color = vec3(color_with_alpha);
+
+                            if (is_texture_blended) {
+                                color *=  v_color * 2;
+                            }
+                            out_color = get_color_with_semi_transparency(color, color_with_alpha.a);
+                        } else {
+                            out_color = get_color_with_semi_transparency(v_color, float(semi_transparent));
+                        }       
+                    }
+                "
+            },
+        )
+        .unwrap();
+
         Self {
             gpu_stat: Default::default(),
             gpu_read: Default::default(),
@@ -306,6 +451,7 @@ impl GpuContext {
             display_horizontal_range: (0, 0),
             display_vertical_range: (0, 0),
             gl_context,
+            program,
             drawing_texture,
             texture_buffer,
             ranges_in_rendering: Vec::new(),
@@ -665,150 +811,6 @@ impl GpuContext {
         let index_buffer =
             IndexBuffer::new(&self.gl_context, PrimitiveType::TrianglesList, index_list).unwrap();
 
-        let program = program!(&self.gl_context,
-            140 => {
-                vertex: "
-                    #version 140
-                    in vec2 position;
-                    in vec3 color;
-                    in uvec2 tex_coord;
-
-                    out vec3 v_color;
-                    out vec2 v_tex_coord;
-
-                    uniform ivec2 offset;
-                    uniform uvec2 drawing_top_left;
-                    uniform uvec2 drawing_size;
-
-                    void main() {
-                        float posx = (position.x + offset.x - drawing_top_left.x) / drawing_size.x * 2 - 1;
-                        float posy = (position.y + offset.y - drawing_top_left.x) / drawing_size.y * (-2) + 1;
-
-                        gl_Position = vec4(posx, posy, 0.0, 1.0);
-                        v_color = color;
-                        v_tex_coord = vec2(tex_coord);
-                    }
-                ",
-                fragment: "
-                    #version 140
-
-                    in vec3 v_color;
-                    in vec2 v_tex_coord;
-
-                    out vec4 out_color;
-
-                    uniform bool is_textured;
-                    uniform bool is_texture_blended;
-                    uniform bool semi_transparent;
-                    uniform uint semi_transparency_mode;
-                    uniform sampler2D tex;
-                    uniform uvec2 tex_page_base;
-                    uniform uint tex_page_color_mode;
-                    uniform uvec2 clut_base;
-
-                    vec4 get_color_from_u16(uint color_texel) {
-                        uint r = color_texel & 0x1Fu;
-                        uint g = (color_texel >> 5) & 0x1Fu;
-                        uint b = (color_texel >> 10) & 0x1Fu;
-                        uint a = (color_texel >> 15) & 1u;
-
-                        return vec4(float(r) / 31.0, float(g) / 31.0, float(b) / 31.0, float(a));
-                    }
-
-                    vec4 get_color_with_semi_transparency(vec3 color, float semi_transparency_param) {
-                        float alpha;
-                        if (semi_transparency_mode == 0u) {
-                            if (semi_transparency_param == 1.0) {
-                                alpha = 0.5;
-                            } else {
-                                alpha = 1.0;
-                            }
-                        } else if (semi_transparency_mode == 1u) {
-                            alpha = semi_transparency_param;
-                        } else if (semi_transparency_mode == 2u) {
-                            alpha = semi_transparency_param;
-                        } else {
-                            // FIXME: inaccurate mode 3 semi transparency
-                            //
-                            // these numbers with the equation:
-                            // (source * source_alpha + dest * (1 - source_alpha)
-                            // Will result in the following cases:
-                            // if semi=1:
-                            //      s * 0.25 + d * 0.75
-                            // if semi=0:
-                            //      s * 1.0 + d * 0.0
-                            //
-                            // but we need
-                            // if semi=1:
-                            //      s * 0.25 + d * 1.00
-                            // if semi=0:
-                            //      s * 1.0 + d * 0.0
-                            //
-                            // Thus, this is not accurate, but temporary will keep
-                            // it like this until we find a new solution
-                            if (semi_transparency_param == 1.0) {
-                                alpha = 0.25;
-                            } else {
-                                alpha = 1.0;
-                            }
-                        }
-
-                        return vec4(color, alpha);
-                    }
-
-                    void main() {
-                        // retrieve the interpolated value of `tex_coord`
-                        uvec2 tex_coord = uvec2(round(v_tex_coord));
-
-                        if (is_textured) {
-                            // how many pixels in 16 bit
-                            uint divider;
-                            if (tex_page_color_mode == 0u) {
-                                divider = 4u;
-                            } else if (tex_page_color_mode == 1u) {
-                                divider = 2u;
-                            } else {
-                                divider = 1u;
-                            };
-
-                            // offsetted position
-                            uint x = tex_page_base.x + (tex_coord.x / divider);
-                            uint y = tex_page_base.y + tex_coord.y;
-
-                            uint color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
-
-                            // if we need clut, then compute it
-                            if (tex_page_color_mode == 0u || tex_page_color_mode == 1u) {
-                                uint mask = 0xFFFFu >> (16u - (16u / divider));
-                                uint clut_index_shift = (tex_coord.x % divider) * (16u / divider);
-                                uint clut_index = (color_value >> clut_index_shift) & mask;
-
-                                x = clut_base.x + clut_index;
-                                y = clut_base.y;
-                                color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
-                            }
-
-                            // if its all 0, then its transparent
-                            if (color_value == 0u){
-                                discard;
-                            }
-
-                            vec4 color_with_alpha = get_color_from_u16(color_value);
-                            vec3 color = vec3(color_with_alpha);
-
-                            if (is_texture_blended) {
-                                color *=  v_color * 2;
-                            }
-                            out_color = get_color_with_semi_transparency(color, color_with_alpha.a);
-                        } else {
-                            out_color = get_color_with_semi_transparency(v_color, float(semi_transparent));
-                        }       
-                    }
-                "
-            },
-        )
-        .unwrap();
-
         let uniforms = uniform! {
             offset: self.drawing_offset,
             is_textured: textured,
@@ -828,7 +830,7 @@ impl GpuContext {
             .draw(
                 &vertex_buffer,
                 &index_buffer,
-                &program,
+                &self.program,
                 &uniforms,
                 &draw_params,
             )
