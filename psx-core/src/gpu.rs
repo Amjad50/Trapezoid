@@ -345,6 +345,54 @@ impl Gpu {
                 self.gpu_stat.bits |= stat_bit_16_horizontal_resolution_2 << 16;
                 self.gpu_stat.bits |= interlace_field << 13;
             }
+            0x10 => {
+                // GPU info
+
+                // 0x0~0xF retreive info, and the rest are mirrors
+                let info_id = data & 0xF;
+
+                // make sure we are not overriding any data
+                assert!(self.gpu_read.is_none());
+
+                // TODO: some commands read old value of GPUREAD, we can't do that
+                // now. might need to change how we handle GPUREAD in general
+                let result = match info_id {
+                    2 => {
+                        // Read Texture Window setting GP0(E2h)
+                        self.cached_gp0_e2
+                    }
+                    3 => {
+                        // Read Draw area top left GP0(E3h)
+                        self.cached_gp0_e3
+                    }
+                    4 => {
+                        // Read Draw area bottom right GP0(E4h)
+                        self.cached_gp0_e4
+                    }
+                    5 => {
+                        // Read Draw offset GP0(E5h)
+                        self.cached_gp0_e5
+                    }
+                    6 => {
+                        // return old value of GPUREAD
+                        0
+                    }
+                    7 => {
+                        // GPU type
+                        2
+                    }
+                    8 => {
+                        // unknown
+                        0
+                    }
+                    _ => {
+                        // return old value of GPUREAD
+                        0
+                    }
+                };
+
+                self.gpu_read = Some(result);
+            }
             _ => todo!("gp1 command {:02X}", cmd),
         }
     }

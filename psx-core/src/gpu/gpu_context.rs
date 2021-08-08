@@ -258,6 +258,13 @@ pub struct GpuContext {
     pub(super) display_horizontal_range: (u32, u32),
     pub(super) display_vertical_range: (u32, u32),
 
+    // These are only used for handleing GP1(0x10) command, so instead of creating
+    // the values again from the individual parts, we just cache it
+    pub(super) cached_gp0_e2: u32,
+    pub(super) cached_gp0_e3: u32,
+    pub(super) cached_gp0_e4: u32,
+    pub(super) cached_gp0_e5: u32,
+
     gl_context: GlContext,
     program: Program,
     drawing_texture: Texture2d,
@@ -446,6 +453,11 @@ impl GpuContext {
             drawing_offset: (0, 0),
             texture_window_mask: (0, 0),
             texture_window_offset: (0, 0),
+
+            cached_gp0_e2: 0,
+            cached_gp0_e3: 0,
+            cached_gp0_e4: 0,
+            cached_gp0_e5: 0,
 
             vram_display_area_start: (0, 0),
             display_horizontal_range: (0, 0),

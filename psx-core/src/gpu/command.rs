@@ -298,6 +298,8 @@ impl Gp0Command for EnvironmentCommand {
                 ctx.gpu_stat.bits |= stat_bit_15_texture_disable << 15;
             }
             0xe2 => {
+                ctx.cached_gp0_e2 = data;
+
                 // Texture window settings
                 let mask_x = data & 0x1F;
                 let mask_y = (data >> 5) & 0x1F;
@@ -314,6 +316,8 @@ impl Gp0Command for EnvironmentCommand {
                 );
             }
             0xe3 => {
+                ctx.cached_gp0_e3 = data;
+
                 // Set Drawing Area top left
                 let x = data & 0x3ff;
                 let y = (data >> 10) & 0x3ff;
@@ -321,6 +325,8 @@ impl Gp0Command for EnvironmentCommand {
                 log::info!("drawing area top left = {:?}", ctx.drawing_area_top_left,);
             }
             0xe4 => {
+                ctx.cached_gp0_e4 = data;
+
                 // Set Drawing Area bottom right
                 let x = data & 0x3ff;
                 let y = (data >> 10) & 0x3ff;
@@ -331,6 +337,8 @@ impl Gp0Command for EnvironmentCommand {
                 );
             }
             0xe5 => {
+                ctx.cached_gp0_e5 = data;
+
                 // Set Drawing offset
                 // TODO: test the accuracy of the sign extension
                 let x = data & 0x7ff;
