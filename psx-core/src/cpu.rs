@@ -12,6 +12,20 @@ pub trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Exception {
+    Interrupt = 0x00,
+    AddressErrorLoad = 0x04,
+    AddressErrorStore = 0x05,
+    BusErrorInstructionFetch = 0x06,
+    BusErrorDataLoadStore = 0x07,
+    Syscall = 0x08,
+    Breakpoint = 0x09,
+    ReservedInstruction = 0x0A,
+    CoprocessorUnusable = 0x0B,
+    ArithmeticOverflow = 0x0C,
+}
+
 pub struct Cpu {
     regs: Registers,
     cop0: SystemControlCoprocessor,
@@ -59,8 +73,14 @@ impl Cpu {
 }
 
 impl Cpu {
-    fn execute_exception(&mut self, cause_code: u8) {
-        log::info!("executing exception: cause code: {:02X}", cause_code);
+    fn execute_exception(&mut self, cause: Exception) {
+        log::info!(
+            "executing exception: {:?}, cause code: {:02X}",
+            cause,
+            cause as u8
+        );
+
+        let cause_code = cause as u8;
 
         let old_cause = self.cop0.read_cause();
         // remove the next jump
@@ -83,8 +103,8 @@ impl Cpu {
         let jmp_vector = if bev { 0xBFC00180 } else { 0x80000080 };
 
         // TODO: check the written value to EPC
-        let target_pc = match cause_code {
-            0x00 => {
+        let target_pc = match cause {
+            Exception::Interrupt => {
                 if bd {
                     // execute branch again
                     self.regs.pc - 4
@@ -105,7 +125,7 @@ impl Cpu {
 
         // cause.10 is set and sr.10 and sr.0 are set, then execute the interrupt
         if cause & 0x400 != 0 && sr & 0x401 == 0x401 {
-            self.execute_exception(0x00);
+            self.execute_exception(Exception::Interrupt);
             true
         } else {
             false
@@ -538,7 +558,7 @@ impl Cpu {
             }
             Opcode::Bcondz => unreachable!("bcondz should be converted"),
             Opcode::Syscall => {
-                self.execute_exception(0x08);
+                self.execute_exception(Exception::Syscall);
             }
             //Opcode::Break => {}
             Opcode::Cop(n) => {
@@ -609,7 +629,7 @@ impl Cpu {
 impl Cpu {
     fn bus_read_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u32> {
         if addr % 4 != 0 {
-            self.execute_exception(0x04);
+            self.execute_exception(Exception::AddressErrorLoad);
             self.cop0.write_bad_vaddr(addr);
 
             return None;
@@ -623,7 +643,7 @@ impl Cpu {
 
     fn bus_write_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u32) {
         if addr % 4 != 0 {
-            self.execute_exception(0x05);
+            self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
             match addr {
@@ -635,7 +655,7 @@ impl Cpu {
 
     fn bus_read_u16<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u16> {
         if addr % 2 != 0 {
-            self.execute_exception(0x04);
+            self.execute_exception(Exception::AddressErrorLoad);
             self.cop0.write_bad_vaddr(addr);
 
             return None;
@@ -649,7 +669,7 @@ impl Cpu {
 
     fn bus_write_u16<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u16) {
         if addr % 2 != 0 {
-            self.execute_exception(0x05);
+            self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
             match addr {
