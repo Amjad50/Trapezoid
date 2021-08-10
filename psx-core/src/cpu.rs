@@ -142,13 +142,17 @@ impl Cpu {
 
     fn execute_alu_reg<F>(&mut self, instruction: Instruction, handler: F)
     where
-        F: FnOnce(u32, u32) -> u32,
+        F: FnOnce(u32, u32) -> (u32, bool),
     {
         let rs = self.regs.read_register(instruction.rs);
         let rt = self.regs.read_register(instruction.rt);
 
-        let result = handler(rs, rt);
-        self.regs.write_register(instruction.rd, result);
+        let (result, overflow) = handler(rs, rt);
+        if overflow {
+            self.execute_exception(Exception::ArithmeticOverflow);
+        } else {
+            self.regs.write_register(instruction.rd, result);
+        }
     }
 
     fn execute_alu_imm<F>(&mut self, instruction: Instruction, handler: F)
@@ -353,19 +357,21 @@ impl Cpu {
                 self.regs.write_register(instruction.rt, (rs < imm) as u32);
             }
             Opcode::Addu => {
-                self.execute_alu_reg(instruction, |rs, rt| rs.wrapping_add(rt));
+                self.execute_alu_reg(instruction, |rs, rt| (rs.wrapping_add(rt), false));
             }
             Opcode::Add => {
                 self.execute_alu_reg(instruction, |rs, rt| {
-                    rs.checked_add(rt).expect("overflow trap")
+                    let (value, overflow) = (rs as i32).overflowing_add(rt as i32);
+                    (value as u32, overflow)
                 });
             }
             Opcode::Subu => {
-                self.execute_alu_reg(instruction, |rs, rt| rs.wrapping_sub(rt));
+                self.execute_alu_reg(instruction, |rs, rt| (rs.wrapping_sub(rt), false));
             }
             Opcode::Sub => {
                 self.execute_alu_reg(instruction, |rs, rt| {
-                    rs.checked_sub(rt).expect("overflow trap")
+                    let (value, overflow) = (rs as i32).overflowing_sub(rt as i32);
+                    (value as u32, overflow)
                 });
             }
             Opcode::Addiu => {
@@ -374,24 +380,27 @@ impl Cpu {
                 });
             }
             Opcode::Addi => {
-                self.execute_alu_imm(instruction, |rs, instr| {
-                    // TODO: implement overflow trap
-                    (rs as i32)
-                        .checked_add(Self::sign_extend_16(instr.imm16) as i32)
-                        .expect("overflow trap") as u32
-                });
+                let rs = self.regs.read_register(instruction.rs);
+                let (result, overflow) =
+                    (rs as i32).overflowing_add(Self::sign_extend_16(instruction.imm16) as i32);
+
+                if overflow {
+                    self.execute_exception(Exception::ArithmeticOverflow);
+                } else {
+                    self.regs.write_register(instruction.rt, result as u32);
+                }
             }
             Opcode::And => {
-                self.execute_alu_reg(instruction, |rs, rt| rs & rt);
+                self.execute_alu_reg(instruction, |rs, rt| (rs & rt, false));
             }
             Opcode::Or => {
-                self.execute_alu_reg(instruction, |rs, rt| rs | rt);
+                self.execute_alu_reg(instruction, |rs, rt| (rs | rt, false));
             }
             Opcode::Xor => {
-                self.execute_alu_reg(instruction, |rs, rt| rs ^ rt);
+                self.execute_alu_reg(instruction, |rs, rt| (rs ^ rt, false));
             }
             Opcode::Nor => {
-                self.execute_alu_reg(instruction, |rs, rt| !(rs | rt));
+                self.execute_alu_reg(instruction, |rs, rt| (!(rs | rt), false));
             }
             Opcode::Andi => {
                 self.execute_alu_imm(instruction, |rs, instr| rs & (instr.imm16 as u32));
@@ -403,13 +412,15 @@ impl Cpu {
                 self.execute_alu_imm(instruction, |rs, instr| rs ^ (instr.imm16 as u32));
             }
             Opcode::Sllv => {
-                self.execute_alu_reg(instruction, |rs, rt| rt << (rs & 0x1F));
+                self.execute_alu_reg(instruction, |rs, rt| (rt << (rs & 0x1F), false));
             }
             Opcode::Srlv => {
-                self.execute_alu_reg(instruction, |rs, rt| rt >> (rs & 0x1F));
+                self.execute_alu_reg(instruction, |rs, rt| (rt >> (rs & 0x1F), false));
             }
             Opcode::Srav => {
-                self.execute_alu_reg(instruction, |rs, rt| ((rt as i32) >> (rs & 0x1F)) as u32);
+                self.execute_alu_reg(instruction, |rs, rt| {
+                    (((rt as i32) >> (rs & 0x1F)) as u32, false)
+                });
             }
             Opcode::Sll => {
                 let rt = self.regs.read_register(instruction.rt);
@@ -452,18 +463,9 @@ impl Cpu {
                 let rs = self.regs.read_register(instruction.rs) as i32 as i64;
                 let rt = self.regs.read_register(instruction.rt) as i32 as i64;
 
-                // in case of overflow (the following condition), it should return
-                // the output we manually put in `hi` and `lo`, but we can
-                // acheive the same thing using the normal division below
-                // TODO: maybe add test for this?
-                // if rt == -1 && rs == -0x80000000 {
-                //    self.regs.hi = 0;
-                //    self.regs.lo = (-0x80000000 as i64 & 0xFFFFFFFF) as u32;
-                // }
-                //
-                // division by zero
+                // division by zero (overflow)
                 if rt == 0 {
-                    if rs > 0 {
+                    if rs >= 0 {
                         self.regs.hi = rs as u32;
                         self.regs.lo = 0xFFFFFFFF; // -1
                     } else {
