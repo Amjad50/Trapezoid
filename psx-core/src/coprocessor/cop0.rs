@@ -39,6 +39,10 @@ impl SystemControlCoprocessor {
     pub fn write_epc(&mut self, data: u32) {
         self.epc = data;
     }
+
+    pub fn write_bad_vaddr(&mut self, addr: u32) {
+        self.bad_vaddr = addr;
+    }
 }
 
 impl SystemControlCoprocessor {
@@ -62,9 +66,9 @@ impl SystemControlCoprocessor {
             //0..=2 | 4 | 10 => 0, // N/A
             //3 => self.bpc,
             //5 => self.bda,
-            //6 => self.jmp_dest,
-            //7 => self.dcic,
-            //8 => self.bad_vaddr,
+            6 => self.jmp_dest,
+            7 => self.dcic,
+            8 => self.bad_vaddr,
             //9 => self.bdam,
             //11 => self.bpcm,
             12 => self.sr,

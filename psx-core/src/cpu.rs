@@ -39,18 +39,21 @@ impl Cpu {
 
         if !self.check_and_execute_interrupt() {
             let pc = self.regs.pc;
-            let instruction = self.bus_read_u32(bus, self.regs.pc);
-            let instruction = Instruction::from_u32(instruction);
 
-            self.regs.pc += 4;
+            // if its not a valid read, it will generate an exception
+            if let Some(instruction) = self.bus_read_u32(bus, self.regs.pc) {
+                let instruction = Instruction::from_u32(instruction);
 
-            if let Some(jump_dest) = self.jump_dest_next.take() {
-                log::trace!("pc jump {:08X}", jump_dest);
-                self.regs.pc = jump_dest;
+                self.regs.pc += 4;
+
+                if let Some(jump_dest) = self.jump_dest_next.take() {
+                    log::trace!("pc jump {:08X}", jump_dest);
+                    self.regs.pc = jump_dest;
+                }
+
+                log::trace!("{:08X}: {:02X?}", pc, instruction);
+                self.execute_instruction(instruction, bus);
             }
-
-            log::trace!("{:08X}: {:02X?}", pc, instruction);
-            self.execute_instruction(instruction, bus);
         }
     }
 }
@@ -89,8 +92,7 @@ impl Cpu {
                     self.regs.pc
                 }
             }
-            0x08 => self.regs.pc - 4,
-            _ => todo!(),
+            _ => self.regs.pc - 4,
         };
 
         self.cop0.write_epc(target_pc);
@@ -160,19 +162,19 @@ impl Cpu {
 
     fn execute_load<F>(&mut self, instruction: Instruction, mut handler: F)
     where
-        F: FnMut(&Self, u32) -> u32,
+        F: FnMut(&mut Self, u32) -> Option<u32>,
     {
         let rs = self.regs.read_register(instruction.rs);
         let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
 
-        let data = handler(self, computed_addr);
-
-        self.regs.write_register(instruction.rt, data);
+        if let Some(data) = handler(self, computed_addr) {
+            self.regs.write_register(instruction.rt, data);
+        }
     }
 
     fn execute_store<F>(&mut self, instruction: Instruction, mut handler: F)
     where
-        F: FnMut(&Self, u32, u32),
+        F: FnMut(&mut Self, u32, u32),
     {
         let rs = self.regs.read_register(instruction.rs);
         let rt = self.regs.read_register(instruction.rt);
@@ -185,22 +187,22 @@ impl Cpu {
         match instruction.opcode {
             Opcode::Lb => {
                 self.execute_load(instruction, |s, computed_addr| {
-                    Self::sign_extend_8(s.bus_read_u8(bus, computed_addr))
+                    Some(Self::sign_extend_8(s.bus_read_u8(bus, computed_addr)))
                 });
             }
             Opcode::Lbu => {
                 self.execute_load(instruction, |s, computed_addr| {
-                    s.bus_read_u8(bus, computed_addr) as u32
+                    Some(s.bus_read_u8(bus, computed_addr) as u32)
                 });
             }
             Opcode::Lh => {
                 self.execute_load(instruction, |s, computed_addr| {
-                    Self::sign_extend_16(s.bus_read_u16(bus, computed_addr))
+                    Some(Self::sign_extend_16(s.bus_read_u16(bus, computed_addr)?))
                 });
             }
             Opcode::Lhu => {
                 self.execute_load(instruction, |s, computed_addr| {
-                    s.bus_read_u16(bus, computed_addr) as u32
+                    Some(s.bus_read_u16(bus, computed_addr)? as u32)
                 });
             }
             Opcode::Lw => {
@@ -605,31 +607,55 @@ impl Cpu {
 }
 
 impl Cpu {
-    fn bus_read_u32<P: BusLine>(&self, bus: &mut P, addr: u32) -> u32 {
-        match addr {
+    fn bus_read_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u32> {
+        if addr % 4 != 0 {
+            self.execute_exception(0x04);
+            self.cop0.write_bad_vaddr(addr);
+
+            return None;
+        }
+
+        Some(match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             _ => bus.read_u32(addr),
+        })
+    }
+
+    fn bus_write_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u32) {
+        if addr % 4 != 0 {
+            self.execute_exception(0x05);
+            self.cop0.write_bad_vaddr(addr);
+        } else {
+            match addr {
+                0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
+                _ => bus.write_u32(addr, data),
+            }
         }
     }
 
-    fn bus_write_u32<P: BusLine>(&self, bus: &mut P, addr: u32, data: u32) {
-        match addr {
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
-            _ => bus.write_u32(addr, data),
-        }
-    }
+    fn bus_read_u16<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u16> {
+        if addr % 2 != 0 {
+            self.execute_exception(0x04);
+            self.cop0.write_bad_vaddr(addr);
 
-    fn bus_read_u16<P: BusLine>(&self, bus: &mut P, addr: u32) -> u16 {
-        match addr {
+            return None;
+        }
+
+        Some(match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             _ => bus.read_u16(addr),
-        }
+        })
     }
 
-    fn bus_write_u16<P: BusLine>(&self, bus: &mut P, addr: u32, data: u16) {
-        match addr {
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
-            _ => bus.write_u16(addr, data),
+    fn bus_write_u16<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u16) {
+        if addr % 2 != 0 {
+            self.execute_exception(0x05);
+            self.cop0.write_bad_vaddr(addr);
+        } else {
+            match addr {
+                0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
+                _ => bus.write_u16(addr, data),
+            }
         }
     }
 
