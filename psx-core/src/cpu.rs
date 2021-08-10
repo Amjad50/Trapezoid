@@ -560,7 +560,9 @@ impl Cpu {
             Opcode::Syscall => {
                 self.execute_exception(Exception::Syscall);
             }
-            //Opcode::Break => {}
+            Opcode::Break => {
+                self.execute_exception(Exception::Breakpoint);
+            }
             Opcode::Cop(n) => {
                 // the only cop0 command RFE is handled as its own opcode
                 // so we only handle cop2 commands
