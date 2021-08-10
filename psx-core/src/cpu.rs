@@ -619,8 +619,29 @@ impl Cpu {
 
                 self.cop0.write_sr(sr);
             }
-            //Opcode::Lwc(_) => {}
-            //Opcode::Swc(_) => {}
+            Opcode::Lwc(n) => {
+                let rs = self.regs.read_register(instruction.rs);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+
+                if let Some(data) = self.bus_read_u32(bus, computed_addr) {
+                    match n {
+                        0 => self.cop0.write_data(instruction.rt_raw, data),
+                        2 => self.cop2.write_data(instruction.rt_raw, data),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            Opcode::Swc(n) => {
+                let result = match n {
+                    0 => self.cop0.read_data(instruction.rt_raw),
+                    2 => self.cop2.read_data(instruction.rt_raw),
+                    _ => unreachable!(),
+                };
+
+                self.execute_store(instruction, |s, computed_addr, _| {
+                    s.bus_write_u32(bus, computed_addr, result);
+                });
+            }
             Opcode::Invalid => {
                 self.execute_exception(Exception::ReservedInstruction);
             }
