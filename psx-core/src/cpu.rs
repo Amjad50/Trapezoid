@@ -164,7 +164,7 @@ impl Cpu {
         self.regs.write_register(instruction.rt, result);
     }
 
-    fn execute_branch<F>(&mut self, instruction: Instruction, have_rt: bool, handler: F) -> bool
+    fn execute_branch<F>(&mut self, instruction: Instruction, have_rt: bool, handler: F)
     where
         F: FnOnce(i32, i32) -> bool,
     {
@@ -180,8 +180,6 @@ impl Cpu {
         if should_jump {
             self.jump_dest_next = Some(self.regs.pc.wrapping_add(signed_imm16));
         }
-
-        should_jump
     }
 
     fn execute_load<F>(&mut self, instruction: Instruction, mut handler: F)
@@ -549,14 +547,14 @@ impl Cpu {
                 self.execute_branch(instruction, false, |rs, _| rs >= 0);
             }
             Opcode::Bltzal => {
-                if self.execute_branch(instruction, false, |rs, _| rs < 0) {
-                    self.regs.ra = self.regs.pc + 4;
-                }
+                self.execute_branch(instruction, false, |rs, _| rs < 0);
+                // modify ra either way
+                self.regs.ra = self.regs.pc + 4;
             }
             Opcode::Bgezal => {
-                if self.execute_branch(instruction, false, |rs, _| rs >= 0) {
-                    self.regs.ra = self.regs.pc + 4;
-                }
+                self.execute_branch(instruction, false, |rs, _| rs >= 0);
+                // modify ra either way
+                self.regs.ra = self.regs.pc + 4;
             }
             Opcode::Bcondz => unreachable!("bcondz should be converted"),
             Opcode::Syscall => {
