@@ -619,8 +619,10 @@ impl Cpu {
             }
             //Opcode::Lwc(_) => {}
             //Opcode::Swc(_) => {}
+            Opcode::Invalid => {
+                self.execute_exception(Exception::ReservedInstruction);
+            }
             Opcode::Special => unreachable!(),
-            Opcode::Invalid => unreachable!(),
             _ => todo!("unimplemented_instruction {:?}", instruction.opcode),
         }
     }
