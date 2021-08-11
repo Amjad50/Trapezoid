@@ -6,7 +6,7 @@ use crate::coprocessor::{Gte, SystemControlCoprocessor};
 use crate::memory::BusLine;
 
 use instruction::{Instruction, Opcode};
-use register::Registers;
+use register::{RegisterType, Registers};
 
 pub trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
@@ -32,6 +32,7 @@ pub struct Cpu {
     cop2: Gte,
 
     jump_dest_next: Option<u32>,
+    data_load_delay_register: Option<(RegisterType, u32, bool)>,
 }
 
 impl Cpu {
@@ -42,6 +43,7 @@ impl Cpu {
             cop0: SystemControlCoprocessor::default(),
             cop2: Gte::default(),
             jump_dest_next: None,
+            data_load_delay_register: None,
         }
     }
 
@@ -67,6 +69,8 @@ impl Cpu {
 
                 log::trace!("{:08X}: {:02X?}", pc, instruction);
                 self.execute_instruction(instruction, bus);
+
+                self.complete_delayed_load();
             }
         }
     }
@@ -182,6 +186,35 @@ impl Cpu {
         }
     }
 
+    /// This function registers a value to be loaded into a given register
+    /// after two instructions. Because in the PSX CPU, there is a delay on
+    /// load instructions, the load value will be visible in the register after
+    /// two instructions
+    fn add_delayed_load(&mut self, reg_type: RegisterType, data: u32) {
+        // complete any pending loads so that we don't override them
+        self.complete_delayed_load();
+        self.complete_delayed_load();
+        self.data_load_delay_register = Some((reg_type, data, false));
+    }
+
+    /// Check if there is pending delayed loads and finish them if they should
+    /// be finished now (after executing two instructions) or after the next
+    /// instruction
+    fn complete_delayed_load(&mut self) {
+        match &mut self.data_load_delay_register {
+            // if it should be completed now, finish it and remove it
+            Some((reg_type, data, true)) => {
+                self.regs.write_register(*reg_type, *data);
+                self.data_load_delay_register = None;
+            }
+            // if we should not complete it now, mark it to be completed next time
+            Some((_reg_type, _data, complete_next)) => {
+                *complete_next = true;
+            }
+            None => {}
+        }
+    }
+
     fn execute_load<F>(&mut self, instruction: Instruction, mut handler: F)
     where
         F: FnMut(&mut Self, u32) -> Option<u32>,
@@ -190,7 +223,7 @@ impl Cpu {
         let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
 
         if let Some(data) = handler(self, computed_addr) {
-            self.regs.write_register(instruction.rt, data);
+            self.add_delayed_load(instruction.rt, data);
         }
     }
 
@@ -256,7 +289,7 @@ impl Cpu {
                 let original_rt = self.regs.read_register(instruction.rt);
                 let result = (original_rt & mask) | result;
 
-                self.regs.write_register(instruction.rt, result);
+                self.add_delayed_load(instruction.rt, result);
             }
             Opcode::Lwr => {
                 let rs = self.regs.read_register(instruction.rs);
@@ -279,7 +312,7 @@ impl Cpu {
                 let original_rt = self.regs.read_register(instruction.rt);
                 let result = (original_rt & mask) | result;
 
-                self.regs.write_register(instruction.rt, result);
+                self.add_delayed_load(instruction.rt, result);
             }
             Opcode::Sb => {
                 self.execute_store(instruction, |s, computed_addr, data| {
