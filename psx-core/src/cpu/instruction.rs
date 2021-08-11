@@ -177,11 +177,11 @@ impl Instruction {
 
     fn get_bcondz_opcode(rt_raw: u8) -> Opcode {
         match rt_raw {
-            0x00 => Opcode::Bltz,
-            0x01 => Opcode::Bgez,
             0x10 => Opcode::Bltzal,
             0x11 => Opcode::Bgezal,
-            _ => Opcode::Invalid,
+            x if x & 1 == 0 => Opcode::Bltz,
+            x if x & 1 == 1 => Opcode::Bgez,
+            _ => unreachable!("rt_raw should be only 5 bits"),
         }
     }
 
