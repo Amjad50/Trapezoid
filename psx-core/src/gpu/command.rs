@@ -108,7 +108,7 @@ impl Gp0Command for PolygonCommand {
 
             ctx.draw_polygon(
                 &self.vertices[..self.input_pointer],
-                &self.texture_params,
+                self.texture_params,
                 self.textured,
                 self.texture_blending,
                 self.semi_transparent,
@@ -239,7 +239,7 @@ impl Gp0Command for RectangleCommand {
 
             ctx.draw_polygon(
                 &self.vertices,
-                &self.texture_params,
+                self.texture_params,
                 self.textured,
                 false,
                 self.semi_transparent,
@@ -284,9 +284,9 @@ impl Gp0Command for EnvironmentCommand {
                 // 7-8   Texture page colors   (0=4bit, 1=8bit, 2=15bit, 3=Reserved)
                 // 9     Dither 24bit to 15bit (0=Off/strip LSBs, 1=Dither Enabled)
                 // 10    Drawing to display area (0=Prohibited, 1=Allowed)
-                // 11    Set Mask-bit when drawing pixels (0=No, 1=Yes/Mask)
+                // 11    Texture Disable (0=Normal, 1=Disable if GP1(09h).Bit0=1)   ;GPUSTAT.15
                 let stat_lower_11_bits = data & 0x7FF;
-                let stat_bit_15_texture_disable = (data >> 11) & 1;
+                let stat_bit_15_texture_disable = (data >> 11) & 1 == 1;
 
                 #[allow(unused)]
                 let textured_rect_x_flip = (data >> 12) & 1;
@@ -295,7 +295,9 @@ impl Gp0Command for EnvironmentCommand {
 
                 ctx.gpu_stat.bits &= !0x87FF;
                 ctx.gpu_stat.bits |= stat_lower_11_bits;
-                ctx.gpu_stat.bits |= stat_bit_15_texture_disable << 15;
+                if stat_bit_15_texture_disable && ctx.allow_texture_disable {
+                    ctx.gpu_stat.bits |= 1 << 15;
+                }
             }
             0xe2 => {
                 ctx.cached_gp0_e2 = data;

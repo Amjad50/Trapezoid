@@ -135,6 +135,7 @@ pub struct DrawingTextureParams {
     tex_page_base: [u32; 2],
     semi_transparency_mode: u8,
     tex_page_color_mode: u8,
+    texture_disable: bool,
 }
 
 impl DrawingTextureParams {
@@ -149,8 +150,7 @@ impl DrawingTextureParams {
         self.tex_page_base = [x * 64, y * 256];
         self.semi_transparency_mode = ((param >> 5) & 3) as u8;
         self.tex_page_color_mode = ((param >> 7) & 3) as u8;
-        // TODO: support disable later, in the bios, the textures have this bit set
-        //self.texture_disable = (param >> 11) & 1 != 1;
+        self.texture_disable = (param >> 11) & 1 == 1;
     }
 
     /// Process tex page params, from the higher 16 bits, which is found
@@ -245,6 +245,7 @@ impl Vram {
 
 pub struct GpuContext {
     pub(super) gpu_stat: GpuStat,
+    pub(super) allow_texture_disable: bool,
     pub(super) gpu_read: Option<u32>,
     pub(super) vram: Vram,
 
@@ -445,6 +446,7 @@ impl GpuContext {
 
         Self {
             gpu_stat: Default::default(),
+            allow_texture_disable: false,
             gpu_read: Default::default(),
             vram: Vram::new(&gl_context),
 
@@ -472,6 +474,18 @@ impl GpuContext {
 }
 
 impl GpuContext {
+    /// Drawing commands that use textures will update gpustat
+    fn update_gpu_stat_from_texture_params(&mut self, texture_params: &DrawingTextureParams) {
+        let x = (texture_params.tex_page_base[0] / 64) & 0xF;
+        let y = (texture_params.tex_page_base[1] / 256) & 1;
+        self.gpu_stat.bits &= !0x81FF;
+        self.gpu_stat.bits |= x;
+        self.gpu_stat.bits |= y << 4;
+        self.gpu_stat.bits |= (texture_params.semi_transparency_mode as u32) << 5;
+        self.gpu_stat.bits |= (texture_params.tex_page_color_mode as u32) << 7;
+        self.gpu_stat.bits |= (texture_params.texture_disable as u32) << 15;
+    }
+
     /// check if a whole block in rendering
     fn is_block_in_rendering(&self, block_range: &(Range<u32>, Range<u32>)) -> bool {
         let positions = [
@@ -769,11 +783,18 @@ impl GpuContext {
     pub fn draw_polygon(
         &mut self,
         vertices: &[DrawingVertex],
-        texture_params: &DrawingTextureParams,
+        mut texture_params: DrawingTextureParams,
         textured: bool,
         texture_blending: bool,
         semi_transparent: bool,
     ) {
+        if textured {
+            if !self.allow_texture_disable {
+                texture_params.texture_disable = false;
+            }
+            self.update_gpu_stat_from_texture_params(&texture_params);
+        }
+
         // TODO: if its textured, make sure the textures are not in rendering
         //  ranges and are updated in the texture buffer
 

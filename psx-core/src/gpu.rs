@@ -345,6 +345,10 @@ impl Gpu {
                 self.gpu_stat.bits |= stat_bit_16_horizontal_resolution_2 << 16;
                 self.gpu_stat.bits |= interlace_field << 13;
             }
+            0x09 => {
+                // Allow texture disable
+                self.allow_texture_disable = data & 1 == 1;
+            }
             0x10 => {
                 // GPU info
 
