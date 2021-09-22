@@ -235,6 +235,7 @@ impl Gp0Command for RectangleCommand {
                 // it will just take what is needed from the stat, which include the tex page
                 // to use and color mode
                 self.texture_params.tex_page_from_gpustat(ctx.gpu_stat.bits);
+                self.texture_params.set_texture_flip(ctx.textured_rect_flip);
             }
 
             ctx.draw_polygon(
@@ -288,10 +289,9 @@ impl Gp0Command for EnvironmentCommand {
                 let stat_lower_11_bits = data & 0x7FF;
                 let stat_bit_15_texture_disable = (data >> 11) & 1 == 1;
 
-                #[allow(unused)]
-                let textured_rect_x_flip = (data >> 12) & 1;
-                #[allow(unused)]
-                let textured_rect_y_flip = (data >> 13) & 1;
+                let textured_rect_x_flip = (data >> 12) & 1 == 1;
+                let textured_rect_y_flip = (data >> 13) & 1 == 1;
+                ctx.textured_rect_flip = (textured_rect_x_flip, textured_rect_y_flip);
 
                 ctx.gpu_stat.bits &= !0x87FF;
                 ctx.gpu_stat.bits |= stat_lower_11_bits;

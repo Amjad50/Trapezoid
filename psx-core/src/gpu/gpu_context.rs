@@ -136,6 +136,7 @@ pub struct DrawingTextureParams {
     semi_transparency_mode: u8,
     tex_page_color_mode: u8,
     texture_disable: bool,
+    texture_flip: (bool, bool),
 }
 
 impl DrawingTextureParams {
@@ -167,6 +168,11 @@ impl DrawingTextureParams {
         let x = param & 0x3F;
         let y = (param >> 6) & 0x1FF;
         self.clut_base = [x * 16, y];
+    }
+
+    #[inline]
+    pub fn set_texture_flip(&mut self, flip: (bool, bool)) {
+        self.texture_flip = flip;
     }
 }
 
@@ -246,6 +252,7 @@ impl Vram {
 pub struct GpuContext {
     pub(super) gpu_stat: GpuStat,
     pub(super) allow_texture_disable: bool,
+    pub(super) textured_rect_flip: (bool, bool),
     pub(super) gpu_read: Option<u32>,
     pub(super) vram: Vram,
 
@@ -332,6 +339,8 @@ impl GpuContext {
 
                     out vec4 out_color;
 
+                    uniform bool texture_flip_x;
+                    uniform bool texture_flip_y;
                     uniform bool is_textured;
                     uniform bool is_texture_blended;
                     uniform bool semi_transparent;
@@ -407,8 +416,19 @@ impl GpuContext {
                             };
 
                             // offsetted position
-                            uint x = tex_page_base.x + (tex_coord.x / divider);
-                            uint y = tex_page_base.y + tex_coord.y;
+                            // FIXME: fix weird inconsistent types here (uint and int)
+                            int x;
+                            int y;
+                            if (texture_flip_x) {
+                                x = int(tex_page_base.x + (256u / divider)) - int(tex_coord.x / divider);
+                            } else {
+                                x = int(tex_page_base.x) + int(tex_coord.x / divider);
+                            }
+                            if (texture_flip_y) {
+                                y = int(tex_page_base.y + 256u) - int(tex_coord.y);
+                            } else {
+                                y = int(tex_page_base.y) + int(tex_coord.y);
+                            }
 
                             uint color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
 
@@ -416,10 +436,13 @@ impl GpuContext {
                             if (tex_page_color_mode == 0u || tex_page_color_mode == 1u) {
                                 uint mask = 0xFFFFu >> (16u - (16u / divider));
                                 uint clut_index_shift = (tex_coord.x % divider) * (16u / divider);
+                                if (texture_flip_x) {
+                                    clut_index_shift = 12u - clut_index_shift;
+                                }
                                 uint clut_index = (color_value >> clut_index_shift) & mask;
 
-                                x = clut_base.x + clut_index;
-                                y = clut_base.y;
+                                x = int(clut_base.x + clut_index);
+                                y = int(clut_base.y);
                                 color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
                             }
 
@@ -447,6 +470,7 @@ impl GpuContext {
         Self {
             gpu_stat: Default::default(),
             allow_texture_disable: false,
+            textured_rect_flip: (false, false),
             gpu_read: Default::default(),
             vram: Vram::new(&gl_context),
 
@@ -908,6 +932,8 @@ impl GpuContext {
 
         let uniforms = uniform! {
             offset: self.drawing_offset,
+            texture_flip_x: texture_params.texture_flip.0,
+            texture_flip_y: texture_params.texture_flip.1,
             is_textured: textured,
             is_texture_blended: texture_blending,
             semi_transparency_mode: semi_transparency_mode,
