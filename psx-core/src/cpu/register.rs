@@ -13,25 +13,44 @@ pub enum RegisterType {
     Ra,
 }
 
+const REG_TYPES: [RegisterType; 32] = [
+    RegisterType::Zero,
+    RegisterType::At,
+    RegisterType::V(0),
+    RegisterType::V(1),
+    RegisterType::A(0),
+    RegisterType::A(1),
+    RegisterType::A(2),
+    RegisterType::A(3),
+    RegisterType::T(0),
+    RegisterType::T(1),
+    RegisterType::T(2),
+    RegisterType::T(3),
+    RegisterType::T(4),
+    RegisterType::T(5),
+    RegisterType::T(6),
+    RegisterType::T(7),
+    RegisterType::S(0),
+    RegisterType::S(1),
+    RegisterType::S(2),
+    RegisterType::S(3),
+    RegisterType::S(4),
+    RegisterType::S(5),
+    RegisterType::S(6),
+    RegisterType::S(7),
+    RegisterType::T(8),
+    RegisterType::T(9),
+    RegisterType::K(0),
+    RegisterType::K(1),
+    RegisterType::Gp,
+    RegisterType::Sp,
+    RegisterType::Fp,
+    RegisterType::Ra,
+];
+
 impl RegisterType {
     pub fn from_byte(ident: u8) -> Self {
-        let ident = ident & 0x1F;
-
-        match ident {
-            0 => Self::Zero,
-            1 => Self::At,
-            2..=3 => Self::V(ident - 2),
-            4..=7 => Self::A(ident - 4),
-            8..=15 => Self::T(ident - 8),
-            16..=23 => Self::S(ident - 16),
-            24..=25 => Self::T(ident - 16), // t8 and t9
-            26..=27 => Self::K(ident - 26),
-            28 => Self::Gp,
-            29 => Self::Sp,
-            30 => Self::Fp,
-            31 => Self::Ra,
-            _ => unreachable!(),
-        }
+        REG_TYPES[(ident & 0x1F) as usize]
     }
 }
 
