@@ -205,7 +205,7 @@ impl Vram {
     }
 
     #[inline]
-    fn read_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
+    fn read_block(&mut self, block_range: &(Range<u32>, Range<u32>), reverse: bool) -> Vec<u16> {
         let (x_range, y_range) = block_range;
 
         let row_size = x_range.len();
@@ -214,7 +214,13 @@ impl Vram {
 
         let mapping = self.data.map_read();
 
-        for y in y_range.clone() {
+        let y_range_iter: Box<dyn Iterator<Item = _>> = if reverse {
+            Box::new(y_range.clone())
+        } else {
+            Box::new(y_range.clone().rev())
+        };
+
+        for y in y_range_iter {
             let row_start_addr = y * 1024 + x_range.start;
             block.extend_from_slice(
                 &mapping[(row_start_addr as usize)..(row_start_addr as usize + row_size)],
@@ -527,14 +533,7 @@ impl GpuContext {
         let width = x_range.len() as u32;
         let height = y_range.len() as u32;
 
-        let block = self.vram.read_block(&range);
-        // reverse on y axis
-        let block: Vec<_> = block
-            .chunks(width as usize)
-            .rev()
-            .flat_map(|row| row.iter())
-            .cloned()
-            .collect();
+        let block = self.vram.read_block(&range, true);
 
         self.drawing_texture.write(
             Rect {
@@ -748,7 +747,7 @@ impl GpuContext {
 
             block
         } else {
-            self.vram.read_block(block_range)
+            self.vram.read_block(block_range, false)
         }
     }
 
