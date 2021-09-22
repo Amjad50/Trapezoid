@@ -26,16 +26,6 @@ fn gl_pixel_to_u16(pixel: &(u8, u8, u8, u8)) -> u16 {
         | (pixel.0 >> 3) as u16
 }
 
-#[inline]
-fn u16_to_gl_pixel(pixel: u16) -> (f32, f32, f32, f32) {
-    (
-        (pixel & 0x1F) as f32 / 31.0,
-        ((pixel >> 5) & 0x1F) as f32 / 31.0,
-        ((pixel >> 10) & 0x1F) as f32 / 31.0,
-        ((pixel >> 15) & 0x1) as f32,
-    )
-}
-
 /// helper in getting the correct value for bottom for gl drawing/coordinate stuff
 #[inline]
 fn to_gl_bottom(top: u32, height: u32) -> u32 {
@@ -195,19 +185,7 @@ impl Vram {
     }
 
     #[inline]
-    fn write_at_position(&mut self, position: (u32, u32), data: u16) {
-        let address = position.1 * 1024 + position.0;
-        self.data.map_write().set(address as usize, data);
-    }
-
-    #[inline]
-    fn read_at_position(&mut self, position: (u32, u32)) -> u16 {
-        let address = position.1 * 1024 + position.0;
-        self.data.map_read()[address as usize]
-    }
-
-    #[inline]
-    fn write_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
+    fn write_block(&mut self, block_range: &(Range<u32>, Range<u32>), block: &[u16]) {
         let (x_range, y_range) = block_range;
         let whole_size = x_range.len() * y_range.len();
         assert_eq!(block.len(), whole_size);
@@ -215,7 +193,7 @@ impl Vram {
         let mut mapping = self.data.map_write();
         let mut block_iter = block.into_iter();
 
-        for y in y_range {
+        for y in y_range.clone() {
             let mut current_pixel_pos = (y * 1024 + x_range.start) as usize;
             for _ in 0..x_range.len() {
                 mapping.set(current_pixel_pos, *block_iter.next().unwrap());
@@ -533,14 +511,14 @@ impl GpuContext {
             MagnifySamplerFilter::Nearest,
         );
 
-        let pixel_buffer: Vec<_> = tex.read();
-        let mut pixels = pixel_buffer.iter().rev().flatten();
-        for y in range.1.clone().into_iter() {
-            for x in range.0.clone() {
-                let pixel = pixels.next().unwrap();
-                self.vram.write_at_position((x, y), gl_pixel_to_u16(&pixel));
-            }
-        }
+        let pixels: Vec<_> = tex
+            .read::<Vec<_>>()
+            .iter()
+            .rev()
+            .flatten()
+            .map(gl_pixel_to_u16)
+            .collect();
+        self.vram.write_block(range, &pixels);
         self.update_texture_buffer();
     }
 
@@ -551,40 +529,19 @@ impl GpuContext {
 
         let block = self.read_vram_block(&range);
 
-        // TODO: converting pixels manually is not efficient, so try to use
-        //  U5U5U5U1 but reversed (maybe PR to glium?)
-        let tex = Texture2d::with_mipmaps(
-            &self.gl_context,
-            RawImage2d::from_raw_rgba_reversed(
-                &block
-                    .iter()
-                    .cloned()
-                    .map(u16_to_gl_pixel)
-                    .map(|x| vec![x.0, x.1, x.2, x.3])
-                    .flatten()
-                    .collect::<Vec<_>>(),
-                (width, height),
-            ),
-            MipmapsOption::NoMipmap,
-        )
-        .unwrap();
-
-        // using blit is faster then using `raw_upload_from_pixel_buffer`
-        tex.as_surface().blit_color(
-            &Rect {
-                left: 0,
-                bottom: 0,
+        self.drawing_texture.write(
+            Rect {
+                left: x_range.start,
+                bottom: to_gl_bottom(y_range.start, height),
                 width,
                 height,
             },
-            &self.drawing_texture.as_surface(),
-            &BlitTarget {
-                left: x_range.start,
-                bottom: to_gl_bottom(y_range.start, height),
-                width: width as i32,
-                height: height as i32,
+            RawImage2d {
+                data: Cow::Borrowed(&block),
+                width,
+                height,
+                format: ClientFormat::U1U5U5U5Reversed,
             },
-            MagnifySamplerFilter::Nearest,
         );
     }
 
@@ -710,43 +667,22 @@ impl GpuContext {
             let width = x_range.len() as u32;
             let height = y_range.len() as u32;
 
-            // TODO: converting pixels manually is not efficient, so try to use
-            //  U5U5U5U1 but reversed (maybe PR to glium?)
-            let tex = Texture2d::with_mipmaps(
-                &self.gl_context,
-                RawImage2d::from_raw_rgba_reversed(
-                    &block
-                        .iter()
-                        .cloned()
-                        .map(u16_to_gl_pixel)
-                        .map(|x| vec![x.0, x.1, x.2, x.3])
-                        .flatten()
-                        .collect::<Vec<_>>(),
-                    (width, height),
-                ),
-                MipmapsOption::NoMipmap,
-            )
-            .unwrap();
-
-            // using blit is faster then using `raw_upload_from_pixel_buffer`
-            tex.as_surface().blit_color(
-                &Rect {
-                    left: 0,
-                    bottom: 0,
+            self.drawing_texture.write(
+                Rect {
+                    left: x_range.start,
+                    bottom: to_gl_bottom(y_range.start, height),
                     width,
                     height,
                 },
-                &self.drawing_texture.as_surface(),
-                &BlitTarget {
-                    left: x_range.start,
-                    bottom: to_gl_bottom(y_range.start, height),
-                    width: width as i32,
-                    height: height as i32,
+                RawImage2d {
+                    data: Cow::Borrowed(&block),
+                    width,
+                    height,
+                    format: ClientFormat::U1U5U5U5Reversed,
                 },
-                MagnifySamplerFilter::Nearest,
             );
         } else {
-            self.vram.write_block(block_range, block);
+            self.vram.write_block(&block_range, block);
             self.update_texture_buffer();
         }
     }
@@ -836,11 +772,9 @@ impl GpuContext {
             );
         } else {
             let color = gl_pixel_to_u16(&(color.0, color.1, color.2, 0));
-            for x in block_range.0 {
-                for y in block_range.1.clone() {
-                    self.vram.write_at_position((x, y), color);
-                }
-            }
+            let size = block_range.0.len() * block_range.1.len();
+
+            self.vram.write_block(&block_range, &vec![color; size]);
             self.update_texture_buffer();
         }
     }

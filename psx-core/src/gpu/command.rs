@@ -485,9 +485,6 @@ impl Gp0Command for CpuToVramBlitCommand {
                 let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
 
                 ctx.write_vram_block((x_range, y_range), self.block.as_ref());
-                // update the texture buffer from the vram when we finish
-                // writing to vram
-                ctx.update_texture_buffer();
                 return true;
             }
         }
@@ -559,9 +556,6 @@ impl Gp0Command for VramToVramBlitCommand {
         let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
         let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
         ctx.write_vram_block((x_range, y_range), block.as_ref());
-        // update the texture buffer from the vram when we finish
-        // writing to vram
-        ctx.update_texture_buffer();
         return true;
     }
 

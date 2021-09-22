@@ -9,7 +9,7 @@ edition = "2018"
 [dependencies]
 psx-core = { path = "./psx-core", version = "*" }
 env_logger = "0.8.3"
-glium = "0.29.1"
+glium = "0.30.2"
 clap = "3.0.0-beta.2"
 
 [workspace]
