@@ -221,7 +221,7 @@ impl Vram {
     }
 
     #[inline]
-    fn read_block(&mut self, block_range: (Range<u32>, Range<u32>)) -> Vec<u16> {
+    fn read_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
         let (x_range, y_range) = block_range;
 
         let row_size = x_range.len();
@@ -230,7 +230,7 @@ impl Vram {
 
         let mapping = self.data.map_read();
 
-        for y in y_range {
+        for y in y_range.clone() {
             let row_start_addr = y * 1024 + x_range.start;
             block.extend_from_slice(
                 &mapping[(row_start_addr as usize)..(row_start_addr as usize + row_size)],
@@ -486,6 +486,84 @@ impl GpuContext {
         self.gpu_stat.bits |= (texture_params.texture_disable as u32) << 15;
     }
 
+    fn move_from_rendering_to_vram(&mut self, range: &(Range<u32>, Range<u32>)) {
+        let width = range.0.end - range.0.start;
+        let height = range.1.end - range.1.start;
+        let tex =
+            Texture2d::empty_with_mipmaps(&self.gl_context, MipmapsOption::NoMipmap, width, height)
+                .unwrap();
+        self.drawing_texture.as_surface().blit_color(
+            &Rect {
+                left: range.0.start,
+                bottom: to_gl_bottom(range.1.start, height),
+                width,
+                height,
+            },
+            &tex.as_surface(),
+            &BlitTarget {
+                left: 0,
+                bottom: 0,
+                width: width as i32,
+                height: height as i32,
+            },
+            MagnifySamplerFilter::Nearest,
+        );
+
+        let pixel_buffer: Vec<_> = tex.read();
+        let mut pixels = pixel_buffer.iter().rev().flatten();
+        for y in range.1.clone().into_iter() {
+            for x in range.0.clone() {
+                let pixel = pixels.next().unwrap();
+                self.vram.write_at_position((x, y), gl_pixel_to_u16(&pixel));
+            }
+        }
+        self.update_texture_buffer();
+    }
+
+    fn move_from_vram_to_rendering(&mut self, range: &(Range<u32>, Range<u32>)) {
+        let (x_range, y_range) = range;
+        let width = x_range.len() as u32;
+        let height = y_range.len() as u32;
+
+        let block = self.read_vram_block(&range);
+
+        // TODO: converting pixels manually is not efficient, so try to use
+        //  U5U5U5U1 but reversed (maybe PR to glium?)
+        let tex = Texture2d::with_mipmaps(
+            &self.gl_context,
+            RawImage2d::from_raw_rgba_reversed(
+                &block
+                    .iter()
+                    .cloned()
+                    .map(u16_to_gl_pixel)
+                    .map(|x| vec![x.0, x.1, x.2, x.3])
+                    .flatten()
+                    .collect::<Vec<_>>(),
+                (width, height),
+            ),
+            MipmapsOption::NoMipmap,
+        )
+        .unwrap();
+
+        // using blit is faster then using `raw_upload_from_pixel_buffer`
+        tex.as_surface().blit_color(
+            &Rect {
+                left: 0,
+                bottom: 0,
+                width,
+                height,
+            },
+            &self.drawing_texture.as_surface(),
+            &BlitTarget {
+                left: x_range.start,
+                bottom: to_gl_bottom(y_range.start, height),
+                width: width as i32,
+                height: height as i32,
+            },
+            MagnifySamplerFilter::Nearest,
+        );
+    }
+
     /// check if a whole block in rendering
     fn is_block_in_rendering(&self, block_range: &(Range<u32>, Range<u32>)) -> bool {
         let positions = [
@@ -541,41 +619,9 @@ impl GpuContext {
 
             // return the parts that we deleted into the Vram buffer
             for range in overlapped_ranges {
-                let width = range.0.end - range.0.start;
-                let height = range.1.end - range.1.start;
-                let tex = Texture2d::empty_with_mipmaps(
-                    &self.gl_context,
-                    MipmapsOption::NoMipmap,
-                    width,
-                    height,
-                )
-                .unwrap();
-                self.drawing_texture.as_surface().blit_color(
-                    &Rect {
-                        left: range.0.start,
-                        bottom: to_gl_bottom(range.1.start, height),
-                        width,
-                        height,
-                    },
-                    &tex.as_surface(),
-                    &BlitTarget {
-                        left: 0,
-                        bottom: 0,
-                        width: width as i32,
-                        height: height as i32,
-                    },
-                    MagnifySamplerFilter::Nearest,
-                );
-
-                let pixel_buffer: Vec<_> = tex.read();
-                let mut pixels = pixel_buffer.iter().rev().flatten();
-                for y in range.1.into_iter() {
-                    for x in range.0.clone() {
-                        let pixel = pixels.next().unwrap();
-                        self.vram.write_at_position((x, y), gl_pixel_to_u16(&pixel));
-                    }
-                }
+                self.move_from_rendering_to_vram(&range);
             }
+            self.move_from_vram_to_rendering(&new_range);
 
             self.ranges_in_rendering.push(new_range);
 
@@ -677,10 +723,11 @@ impl GpuContext {
             );
         } else {
             self.vram.write_block(block_range, block);
+            self.update_texture_buffer();
         }
     }
 
-    pub fn read_vram_block(&mut self, block_range: (Range<u32>, Range<u32>)) -> Vec<u16> {
+    pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
         // cannot read outside range
         assert!(block_range.0.end <= 1024);
         assert!(block_range.1.end <= 512);
@@ -793,6 +840,21 @@ impl GpuContext {
                 texture_params.texture_disable = false;
             }
             self.update_gpu_stat_from_texture_params(&texture_params);
+
+            // if the texure we can using is inside `rendering`, bring it back
+            // to `vram` and `texture_buffer`
+            //
+            // 0 => 64,
+            // 1 => 128,
+            // 2 => 256,
+            let row_size = 64 * (1 << texture_params.tex_page_color_mode);
+            let texture_block = (
+                texture_params.tex_page_base[0]..texture_params.tex_page_base[0] + row_size,
+                texture_params.tex_page_base[1]..texture_params.tex_page_base[1] + 256,
+            );
+            if self.is_block_in_rendering(&texture_block) {
+                self.move_from_rendering_to_vram(&texture_block);
+            }
         }
 
         // TODO: if its textured, make sure the textures are not in rendering

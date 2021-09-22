@@ -552,7 +552,7 @@ impl Gp0Command for VramToVramBlitCommand {
 
         let x_range = (self.src.0)..(self.src.0 + self.size.0);
         let y_range = (self.src.1)..(self.src.1 + self.size.1);
-        let block = ctx.read_vram_block((x_range, y_range));
+        let block = ctx.read_vram_block(&(x_range, y_range));
 
         let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
         let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
@@ -618,7 +618,7 @@ impl Gp0Command for VramToCpuBlitCommand {
             let x_range = (self.src.0)..(self.src.0 + self.size.0);
             let y_range = (self.src.1)..(self.src.1 + self.size.1);
 
-            self.block = ctx.read_vram_block((x_range, y_range));
+            self.block = ctx.read_vram_block(&(x_range, y_range));
         }
 
         // used for debugging only
