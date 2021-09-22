@@ -527,7 +527,7 @@ impl GpuContext {
         let width = x_range.len() as u32;
         let height = y_range.len() as u32;
 
-        let block = self.read_vram_block(&range);
+        let block = self.vram.read_block(&range);
         // reverse on y axis
         let block: Vec<_> = block
             .chunks(width as usize)
