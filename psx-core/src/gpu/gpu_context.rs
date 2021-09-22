@@ -528,6 +528,13 @@ impl GpuContext {
         let height = y_range.len() as u32;
 
         let block = self.read_vram_block(&range);
+        // reverse on y axis
+        let block: Vec<_> = block
+            .chunks(width as usize)
+            .rev()
+            .flat_map(|row| row.iter())
+            .cloned()
+            .collect();
 
         self.drawing_texture.write(
             Rect {
@@ -537,7 +544,7 @@ impl GpuContext {
                 height,
             },
             RawImage2d {
-                data: Cow::Borrowed(&block),
+                data: Cow::Borrowed(block.as_ref()),
                 width,
                 height,
                 format: ClientFormat::U1U5U5U5Reversed,
@@ -667,6 +674,14 @@ impl GpuContext {
             let width = x_range.len() as u32;
             let height = y_range.len() as u32;
 
+            // reverse on y axis
+            let block: Vec<_> = block
+                .chunks(width as usize)
+                .rev()
+                .flat_map(|row| row.iter())
+                .cloned()
+                .collect();
+
             self.drawing_texture.write(
                 Rect {
                     left: x_range.start,
@@ -675,7 +690,7 @@ impl GpuContext {
                     height,
                 },
                 RawImage2d {
-                    data: Cow::Borrowed(&block),
+                    data: Cow::Borrowed(block.as_ref()),
                     width,
                     height,
                     format: ClientFormat::U1U5U5U5Reversed,
