@@ -473,7 +473,9 @@ impl Gp0Command for CpuToVramBlitCommand {
             let d2 = (next_data >> 16) as u16;
 
             self.block[self.block_counter] = d1;
-            self.block[self.block_counter + 1] = d2;
+            if self.block_counter + 1 < self.block.len() {
+                self.block[self.block_counter + 1] = d2;
+            }
             self.block_counter += 2;
 
             if self.block_counter >= self.block.len() {
@@ -626,11 +628,15 @@ impl Gp0Command for VramToCpuBlitCommand {
             (self.block_counter as u32 % self.size.0) + self.src.0,
             (self.block_counter as u32 / self.size.0) + self.src.1,
         );
-        let data_parts = &self.block[self.block_counter..(self.block_counter + 2)];
+        let d1 = self.block[self.block_counter];
+        let d2 = if self.block_counter + 1 < self.block.len() {
+            self.block[self.block_counter + 1]
+        } else {
+            0
+        };
         self.block_counter += 2;
 
-        // TODO: check order
-        let data = ((data_parts[1] as u32) << 16) | data_parts[0] as u32;
+        let data = ((d2 as u32) << 16) | d1 as u32;
         log::info!("IN TRANSFERE, src={:?}, data={:08X}", vram_pos, data);
 
         ctx.gpu_read = Some(data);
