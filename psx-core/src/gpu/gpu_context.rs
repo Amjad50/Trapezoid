@@ -215,9 +215,9 @@ impl Vram {
         let mapping = self.data.map_read();
 
         let y_range_iter: Box<dyn Iterator<Item = _>> = if reverse {
-            Box::new(y_range.clone())
-        } else {
             Box::new(y_range.clone().rev())
+        } else {
+            Box::new(y_range.clone())
         };
 
         for y in y_range_iter {
