@@ -1,6 +1,19 @@
 use super::gpu_context::{vertex_position_from_u32, DrawingTextureParams, DrawingVertex};
 use super::GpuContext;
 
+pub enum Gp0CmdType {
+    Misc = 0,
+    Polygon = 1,
+    Line = 2,
+    Rectangle = 3,
+    VramToVramBlit = 4,
+    CpuToVramBlit = 5,
+    VramToCpuBlit = 6,
+    Environment = 7,
+    // the `cmd` is actually `0`, but only one can have only one which is zero
+    FillVram = 8,
+}
+
 // TODO: using dyn and dynamic dispatch might not be the best case for fast performance
 //  we might need to change into another solution
 pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
@@ -29,6 +42,7 @@ pub trait Gp0Command {
     fn add_param(&mut self, param: u32);
     fn exec_command(&mut self, ctx: &mut GpuContext) -> bool;
     fn still_need_params(&mut self) -> bool;
+    fn cmd_type(&self) -> Gp0CmdType;
 }
 
 #[derive(Debug)]
@@ -124,7 +138,12 @@ impl Gp0Command for PolygonCommand {
         !((self.input_pointer == 4 && self.is_4_vertices)
             || (self.input_pointer == 3 && !self.is_4_vertices))
     }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::Polygon
+    }
 }
+
 #[derive(Debug)]
 struct RectangleCommand {
     textured: bool,
@@ -255,6 +274,10 @@ impl Gp0Command for RectangleCommand {
     fn still_need_params(&mut self) -> bool {
         self.current_input_state != 3
     }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::Rectangle
+    }
 }
 
 struct EnvironmentCommand(u32);
@@ -370,6 +393,10 @@ impl Gp0Command for EnvironmentCommand {
     fn still_need_params(&mut self) -> bool {
         false
     }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::Environment
+    }
 }
 
 struct MiscCommand(u32);
@@ -404,6 +431,10 @@ impl Gp0Command for MiscCommand {
 
     fn still_need_params(&mut self) -> bool {
         false
+    }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::Misc
     }
 }
 
@@ -495,6 +526,10 @@ impl Gp0Command for CpuToVramBlitCommand {
     fn still_need_params(&mut self) -> bool {
         !self.done
     }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::CpuToVramBlit
+    }
 }
 
 struct VramToVramBlitCommand {
@@ -561,6 +596,10 @@ impl Gp0Command for VramToVramBlitCommand {
 
     fn still_need_params(&mut self) -> bool {
         self.input_state != 3
+    }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::VramToVramBlit
     }
 }
 
@@ -648,6 +687,10 @@ impl Gp0Command for VramToCpuBlitCommand {
         // still inputting header (state not 3) or we still have some rows
         self.input_state != 2
     }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::VramToCpuBlit
+    }
 }
 
 struct FillVramCommand {
@@ -713,5 +756,9 @@ impl Gp0Command for FillVramCommand {
     fn still_need_params(&mut self) -> bool {
         // still inputting header (state not 3) or we still have some rows
         self.input_state != 2
+    }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::FillVram
     }
 }

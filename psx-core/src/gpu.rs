@@ -4,7 +4,7 @@ mod gpu_context;
 use crate::memory::{interrupts::InterruptRequester, BusLine};
 use std::collections::VecDeque;
 
-use command::{instantiate_gp0_command, Gp0Command};
+use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 pub use gpu_context::GlContext;
 use gpu_context::GpuContext;
 
@@ -278,6 +278,23 @@ impl Gpu {
                     "Gpu resetting fifo, now at length={}",
                     self.command_fifo.len()
                 );
+                if let Some(cmd) = &mut self.current_command {
+                    match cmd.cmd_type() {
+                        Gp0CmdType::CpuToVramBlit => {
+                            // flush vram write
+
+                            // FIXME: close the write here and flush
+                            //  do not add more data
+                            while !cmd.exec_command(&mut self.gpu_context) {
+                                if cmd.still_need_params() {
+                                    cmd.add_param(0);
+                                }
+                            }
+                            self.current_command = None;
+                        }
+                        _ => {}
+                    }
+                }
                 self.command_fifo.clear();
             }
             0x02 => {
