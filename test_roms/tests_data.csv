@@ -1,0 +1,3 @@
+#url,installation_type,destination_folder,[branch]
+https://github.com/JaCzekanski/ps1-tests/releases/latest/download/tests.zip,unzip_make_folder,JaCzekanski_tests
+
