@@ -239,7 +239,6 @@ impl Gpu {
         match cmd {
             _ => {
                 // add the command or param to the fifo
-                assert!(self.command_fifo.len() < 16);
                 self.command_fifo.push_back(data);
             }
         }
@@ -252,7 +251,6 @@ impl Gpu {
             if !cmd.still_need_params() {
                 self.execute_gp0_or_add_to_fifo(data);
             } else {
-                assert!(self.command_fifo.len() < 16);
                 self.command_fifo.push_back(data);
             }
             return;

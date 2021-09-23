@@ -168,7 +168,8 @@ impl Dma {
                     .intersects(ChannelControl::DIRECTION);
                 let address_step = channel.channel_control.address_step();
 
-                let block_size = (channel.block_control & 0xFFFF).max(0x10);
+                // TODO: check if the max is 16 or not
+                let block_size = channel.block_control & 0xFFFF;
                 let blocks = channel.block_control >> 16;
                 // transfer one block only
                 let mut remaining_length = block_size;
