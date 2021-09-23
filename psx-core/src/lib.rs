@@ -49,7 +49,7 @@ impl Psx {
             .change_controller_key_state(key, pressed);
     }
 
-    pub fn blit_to_front<S: glium::Surface>(&self, s: &S) {
-        self.bus.gpu().blit_to_front(s);
+    pub fn blit_to_front<S: glium::Surface>(&self, s: &S, full_vram: bool) {
+        self.bus.gpu().blit_to_front(s, full_vram);
     }
 }

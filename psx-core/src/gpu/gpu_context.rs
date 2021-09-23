@@ -906,21 +906,32 @@ impl GpuContext {
             .unwrap();
     }
 
-    pub fn blit_to_front<S: glium::Surface>(&self, s: &S) {
+    pub fn blit_to_front<S: glium::Surface>(&self, s: &S, full_vram: bool) {
         let (left, top) = self.vram_display_area_start;
         let width = self.gpu_stat.horizontal_resolution();
         let height = self.gpu_stat.vertical_resolution();
         let bottom = to_gl_bottom(top, height);
 
-        let (target_w, target_h) = s.get_dimensions();
-
-        self.drawing_texture.as_surface().blit_color(
-            &Rect {
+        let src_rect = if full_vram {
+            Rect {
+                left: 0,
+                bottom: 0,
+                width: 1024,
+                height: 512,
+            }
+        } else {
+            Rect {
                 left,
                 bottom,
                 width,
                 height,
-            },
+            }
+        };
+
+        let (target_w, target_h) = s.get_dimensions();
+
+        self.drawing_texture.as_surface().blit_color(
+            &src_rect,
             s,
             &BlitTarget {
                 left: 0,

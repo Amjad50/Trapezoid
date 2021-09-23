@@ -129,8 +129,8 @@ impl Gpu {
         self.in_vblank
     }
 
-    pub fn blit_to_front<S: glium::Surface>(&self, s: &S) {
-        self.gpu_context.blit_to_front(s);
+    pub fn blit_to_front<S: glium::Surface>(&self, s: &S, full_vram: bool) {
+        self.gpu_context.blit_to_front(s, full_vram);
     }
 }
 

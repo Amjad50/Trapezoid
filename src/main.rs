@@ -15,15 +15,18 @@ use glium::{
 
 enum GlDisplay {
     Headless(glium::HeadlessRenderer),
-    Windowed(glium::Display),
+    Windowed(glium::Display, bool),
 }
 
 impl GlDisplay {
-    fn windowed(event_loop: &glutin::event_loop::EventLoop<()>) -> Self {
+    fn windowed(event_loop: &glutin::event_loop::EventLoop<()>, full_vram_display: bool) -> Self {
         let cb = glutin::ContextBuilder::new();
         let wb = glutin::window::WindowBuilder::new();
 
-        Self::Windowed(glium::Display::new(wb, cb, &event_loop).unwrap())
+        Self::Windowed(
+            glium::Display::new(wb, cb, &event_loop).unwrap(),
+            full_vram_display,
+        )
     }
 
     fn headless(event_loop: &glutin::event_loop::EventLoop<()>, width: u32, height: u32) -> Self {
@@ -37,10 +40,10 @@ impl GlDisplay {
 
     fn render_frame(&self, psx: &Psx) {
         match self {
-            GlDisplay::Windowed(display) => {
+            GlDisplay::Windowed(display, full_vram) => {
                 let mut frame = display.draw();
                 frame.clear_color(0.0, 0.0, 0.0, 0.0);
-                psx.blit_to_front(&frame);
+                psx.blit_to_front(&frame, *full_vram);
                 frame.finish().unwrap();
             }
             GlDisplay::Headless(_) => {}
@@ -52,7 +55,7 @@ impl glium::backend::Facade for GlDisplay {
     fn get_context(&self) -> &Rc<glium::backend::Context> {
         match self {
             GlDisplay::Headless(headless) => headless.get_context(),
-            GlDisplay::Windowed(display) => display.get_context(),
+            GlDisplay::Windowed(display, _) => display.get_context(),
         }
     }
 }
@@ -60,10 +63,17 @@ impl glium::backend::Facade for GlDisplay {
 #[derive(Clap, Debug)]
 #[clap(version = "0.1.0", author = "Amjad Alsharafi", about = "PSX emulator")]
 struct PsxEmuArgs {
+    /// The bios file to run
     bios: PathBuf,
+    /// The disk file to run, without this, it will run the bios only
     disk_file: Option<PathBuf>,
+    /// Turn on window display (without this, it will only print the
+    /// logs to the console, which can be useful for testing)
     #[clap(short, long)]
     windowed: bool,
+    /// Display the full vram
+    #[clap(short, long)]
+    vram: bool,
 }
 
 fn main() {
@@ -73,7 +83,7 @@ fn main() {
 
     let event_loop = glutin::event_loop::EventLoop::new();
     let display = if args.windowed {
-        GlDisplay::windowed(&event_loop)
+        GlDisplay::windowed(&event_loop, args.vram)
     } else {
         GlDisplay::headless(&event_loop, 800, 600)
     };
