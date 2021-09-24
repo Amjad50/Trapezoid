@@ -1,0 +1,7 @@
+# ignore every test folder
+*
+
+# except for these
+!.gitignore
+!downloader.sh
+!tests_data.csv
