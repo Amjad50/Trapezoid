@@ -40,7 +40,7 @@ bitflags::bitflags! {
 }
 
 impl GpuStat {
-    fn texture_page_coords(&self) -> (u32, u32) {
+    fn _texture_page_coords(&self) -> (u32, u32) {
         let x = (self.bits & Self::TEXTURE_PAGE_X_BASE.bits) * 64;
         let y = (self.intersects(Self::TEXTURE_PAGE_Y_BASE) as u32) * 256;
 
@@ -68,7 +68,7 @@ impl GpuStat {
         !self.intersects(Self::VIDEO_MODE)
     }
 
-    fn display_enabled(&self) -> bool {
+    fn _display_enabled(&self) -> bool {
         !self.intersects(Self::DISPLAY_DISABLED)
     }
 
@@ -279,20 +279,17 @@ impl Gpu {
                     self.command_fifo.len()
                 );
                 if let Some(cmd) = &mut self.current_command {
-                    match cmd.cmd_type() {
-                        Gp0CmdType::CpuToVramBlit => {
-                            // flush vram write
+                    if let Gp0CmdType::CpuToVramBlit = cmd.cmd_type() {
+                        // flush vram write
 
-                            // FIXME: close the write here and flush
-                            //  do not add more data
-                            while !cmd.exec_command(&mut self.gpu_context) {
-                                if cmd.still_need_params() {
-                                    cmd.add_param(0);
-                                }
+                        // FIXME: close the write here and flush
+                        //  do not add more data
+                        while !cmd.exec_command(&mut self.gpu_context) {
+                            if cmd.still_need_params() {
+                                cmd.add_param(0);
                             }
-                            self.current_command = None;
                         }
-                        _ => {}
+                        self.current_command = None;
                     }
                 }
                 self.command_fifo.clear();

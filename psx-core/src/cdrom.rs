@@ -187,7 +187,7 @@ impl Cdrom {
     }
 
     fn write_to_parameter_fifo(&mut self, data: u8) {
-        if self.parameter_fifo.len() == 0 {
+        if self.parameter_fifo.is_empty() {
             self.fifo_status.remove(FifosStatus::PARAMETER_FIFO_EMPTY);
         } else if self.parameter_fifo.len() == 15 {
             self.fifo_status
@@ -200,7 +200,7 @@ impl Cdrom {
 
     fn read_next_parameter(&mut self) -> Option<u8> {
         let out = self.parameter_fifo.pop_front();
-        if self.parameter_fifo.len() == 0 {
+        if self.parameter_fifo.is_empty() {
             self.fifo_status.insert(FifosStatus::PARAMETER_FIFO_EMPTY);
         } else if self.parameter_fifo.len() == 15 {
             self.fifo_status

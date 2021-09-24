@@ -389,7 +389,7 @@ impl BusLine for Dma {
                 if channel_index == 6 && addr & 0xF == 8 {
                     // keep only START_TRIGGER | START_BUSY | UNKNOWN2
                     // and hardwired the rest to zero
-                    data &= 0b01010001_00000000_00000000_00000000;
+                    data &= 0b0101_0001_0000_0000_0000_0000_0000_0000;
                     // hardware the address direction to backward
                     data |= 2;
                 }

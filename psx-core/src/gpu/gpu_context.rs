@@ -191,7 +191,7 @@ impl Vram {
         assert_eq!(block.len(), whole_size);
 
         let mut mapping = self.data.map_write();
-        let mut block_iter = block.into_iter();
+        let mut block_iter = block.iter();
 
         for y in y_range.clone() {
             let mut current_pixel_pos = (y * 1024 + x_range.start) as usize;
@@ -533,7 +533,7 @@ impl GpuContext {
         let width = x_range.len() as u32;
         let height = y_range.len() as u32;
 
-        let block = self.vram.read_block(&range, true);
+        let block = self.vram.read_block(range, true);
 
         self.drawing_texture.write(
             Rect {
@@ -596,7 +596,7 @@ impl GpuContext {
         if !self.ranges_in_rendering.contains(&new_range) {
             let mut overlapped_ranges = Vec::new();
             self.ranges_in_rendering.retain(|range| {
-                if range_overlap(&range, &new_range) {
+                if range_overlap(range, &new_range) {
                     overlapped_ranges.push(range.clone());
                     false
                 } else {
@@ -706,7 +706,7 @@ impl GpuContext {
         assert!(block_range.0.end <= 1024);
         assert!(block_range.1.end <= 512);
 
-        if self.is_block_in_rendering(&block_range) {
+        if self.is_block_in_rendering(block_range) {
             let (x_range, y_range) = block_range;
             let x_size = x_range.len() as u32;
             let y_size = y_range.len() as u32;

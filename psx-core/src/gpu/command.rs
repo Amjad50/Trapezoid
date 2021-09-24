@@ -4,7 +4,7 @@ use super::GpuContext;
 pub enum Gp0CmdType {
     Misc = 0,
     Polygon = 1,
-    Line = 2,
+    _Line = 2,
     Rectangle = 3,
     VramToVramBlit = 4,
     CpuToVramBlit = 5,
@@ -591,7 +591,8 @@ impl Gp0Command for VramToVramBlitCommand {
         let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
         let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
         ctx.write_vram_block((x_range, y_range), block.as_ref());
-        return true;
+
+        true
     }
 
     fn still_need_params(&mut self) -> bool {

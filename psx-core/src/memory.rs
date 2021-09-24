@@ -240,7 +240,7 @@ impl CpuBus {
         let mut initial_sp_fp;
         let mut data = Vec::new();
 
-        file.read(&mut magic).unwrap();
+        file.read_exact(&mut magic).unwrap();
         assert!(&magic == b"PS-X EXE");
         // bytes from 0x8 to 0xF
         assert!(file.read_u64::<LittleEndian>().unwrap() == 0);
@@ -267,63 +267,26 @@ impl CpuBus {
             .main_ram
             .put_at_address(&data, destination & 0x1FFFFF);
 
+        let sp_fp_mask = (initial_sp_fp != 0) as u32 * 0xFFFFFFFF;
+        let data = [
+            0x3C080000 | initial_pc >> 16,
+            0x35080000 | initial_pc & 0xFFFF,
+            0x3C1C0000 | initial_gp >> 16,
+            0x379C0000 | initial_gp & 0xFFFF,
+            // if sp_fp is zero, these will be NOP instructions
+            sp_fp_mask & (0x3C1D0000 | initial_sp_fp >> 16),
+            sp_fp_mask & (0x37BD0000 | initial_sp_fp & 0xFFFF),
+            sp_fp_mask & (0x3C1E0000 | initial_sp_fp >> 16),
+            sp_fp_mask & (0x37DE0000 | initial_sp_fp & 0xFFFF),
+            0x01000008,
+            0x00000000,
+        ];
+
         // patch the bios's `LoadRunShell` to run the exe instead
         // This patch method was taken from https://github.com/BluestormDNA/ProjectPSX
-        LittleEndian::write_u32(
-            &mut self.bios.data[0x6FF0 + 0..0x6FF0 + 0 + 4],
-            0x3C080000 | initial_pc >> 16,
-        );
-        LittleEndian::write_u32(
-            &mut self.bios.data[0x6FF0 + 4..0x6FF0 + 4 + 4],
-            0x35080000 | initial_pc & 0xFFFF,
-        );
-
-        LittleEndian::write_u32(
-            &mut self.bios.data[0x6FF0 + 8..0x6FF0 + 8 + 4],
-            0x3C1C0000 | initial_gp >> 16,
-        );
-        LittleEndian::write_u32(
-            &mut self.bios.data[0x6FF0 + 12..0x6FF0 + 12 + 4],
-            0x379C0000 | initial_gp & 0xFFFF,
-        );
-
-        // if sp/fp is zero, then it does not change
-        if initial_sp_fp != 0 {
-            LittleEndian::write_u32(
-                &mut self.bios.data[0x6FF0 + 16..0x6FF0 + 16 + 4],
-                0x3C1D0000 | initial_sp_fp >> 16,
-            );
-            LittleEndian::write_u32(
-                &mut self.bios.data[0x6FF0 + 20..0x6FF0 + 20 + 4],
-                0x37BD0000 | initial_sp_fp & 0xFFFF,
-            );
-
-            LittleEndian::write_u32(
-                &mut self.bios.data[0x6FF0 + 24..0x6FF0 + 24 + 4],
-                0x3C1E0000 | initial_sp_fp >> 16,
-            );
-            LittleEndian::write_u32(
-                &mut self.bios.data[0x6FF0 + 28..0x6FF0 + 28 + 4],
-                0x37DE0000 | initial_sp_fp & 0xFFFF,
-            );
-
-            LittleEndian::write_u32(
-                &mut self.bios.data[0x6FF0 + 32..0x6FF0 + 32 + 4],
-                0x01000008,
-            );
-            LittleEndian::write_u32(
-                &mut self.bios.data[0x6FF0 + 36..0x6FF0 + 36 + 4],
-                0x00000000,
-            );
-        } else {
-            LittleEndian::write_u32(
-                &mut self.bios.data[0x6FF0 + 16..0x6FF0 + 16 + 4],
-                0x01000008,
-            );
-            LittleEndian::write_u32(
-                &mut self.bios.data[0x6FF0 + 20..0x6FF0 + 20 + 4],
-                0x00000000,
-            );
+        for (i, &d) in data.iter().enumerate() {
+            let offset = i * 4;
+            LittleEndian::write_u32(&mut self.bios.data[0x6FF0 + offset..0x6FF0 + offset + 4], d);
         }
     }
 }

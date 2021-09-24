@@ -332,10 +332,10 @@ impl Timers {
     }
 
     // TODO: implement
-    pub fn clock_from_gpu_dot(&mut self) {}
+    pub fn _clock_from_gpu_dot(&mut self) {}
 
     // TODO: implement
-    pub fn clock_from_hblank(&mut self) {}
+    pub fn _clock_from_hblank(&mut self) {}
 
     /// Request interrupts if any are queued from the previous clocking
     pub fn handle_interrupts(&mut self, interrupt_requester: &mut impl InterruptRequester) {

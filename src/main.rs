@@ -24,7 +24,7 @@ impl GlDisplay {
         let wb = glutin::window::WindowBuilder::new();
 
         Self::Windowed(
-            glium::Display::new(wb, cb, &event_loop).unwrap(),
+            glium::Display::new(wb, cb, event_loop).unwrap(),
             full_vram_display,
         )
     }
@@ -91,8 +91,8 @@ fn main() {
     let mut psx = Psx::new(&args.bios, args.disk_file, &display).unwrap();
 
     event_loop.run(move |event, _target, control_flow| {
-        match event {
-            Event::WindowEvent { event, .. } => match event {
+        if let Event::WindowEvent { event, .. } = event {
+            match event {
                 WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
                     return;
@@ -106,8 +106,7 @@ fn main() {
                     }
                 }
                 _ => {}
-            },
-            _ => {}
+            }
         }
         *control_flow = ControlFlow::Poll;
 

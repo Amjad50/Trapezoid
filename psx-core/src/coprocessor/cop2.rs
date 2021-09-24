@@ -133,6 +133,14 @@ impl Flag {
     }
 }
 
+#[inline(always)]
+fn get_rgb(rgb: u32) -> (i64, i64, i64) {
+    let r = (rgb & 0xFF) as i64;
+    let g = ((rgb >> 8) & 0xFF) as i64;
+    let b = ((rgb >> 16) & 0xFF) as i64;
+    (r, g, b)
+}
+
 #[derive(Default)]
 pub struct Gte {
     vectors: [[i16; 3]; 3],
@@ -168,7 +176,7 @@ pub struct Gte {
 impl Gte {
     /// updates the ir 1, 2, 3 registers on any write/change to irgb
     fn update_ir123(&mut self) {
-        let r = (self.irgb >> 0) & 0x1F;
+        let r = (self.irgb) & 0x1F;
         let g = (self.irgb >> 5) & 0x1F;
         let b = (self.irgb >> 10) & 0x1F;
 
@@ -364,6 +372,7 @@ impl Gte {
         (mac1, mac2, mac3)
     }
 
+    #[allow(clippy::many_single_char_names)]
     fn rtp_unr_division(&mut self) -> i64 {
         let h = self.projection_plain_distance;
         let sz3 = self.sz[3];
@@ -535,9 +544,7 @@ impl Gte {
         // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
         // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
 
-        let r = ((self.rgbc >> 0) & 0xFF) as i64;
-        let g = ((self.rgbc >> 8) & 0xFF) as i64;
-        let b = ((self.rgbc >> 16) & 0xFF) as i64;
+        let (r, g, b) = get_rgb(self.rgbc);
 
         // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
         let vx = self.vectors[v_index];
@@ -570,9 +577,7 @@ impl Gte {
         // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
         // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
 
-        let r = ((self.rgbc >> 0) & 0xFF) as i64;
-        let g = ((self.rgbc >> 8) & 0xFF) as i64;
-        let b = ((self.rgbc >> 16) & 0xFF) as i64;
+        let (r, g, b) = get_rgb(self.rgbc);
 
         // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
         let vx = self.vectors[v_index];
@@ -913,9 +918,7 @@ impl Gte {
                     _ => unreachable!(),
                 }
 
-                if cmd.tx != 2 {
-                    self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
-                } else {
+                if cmd.tx == 2 {
                     // If far_color is selected, then a bug occured where we check
                     // for the flag with the calculation MAC1=(Tx1*1000h + Mx11*Vx1)
                     // but the values are not returned, so we use the calculation only
@@ -931,14 +934,14 @@ impl Gte {
                     // from the vx vector
                     tx = [0; 3];
                     vx[0] = 0;
-
-                    self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
                 }
+                // here, if `cmd.tx != 2`, mvmva will run only once,
+                // but if `cmd.tx == 2` it will run the previous if statement
+                // along with this mvmva
+                self.mvmva(&tx, &mx, &vx, cmd.sf, cmd.lm);
             }
             GteCommandOpcode::Dcpl => {
-                let r = ((self.rgbc >> 0) & 0xFF) as i64;
-                let g = ((self.rgbc >> 8) & 0xFF) as i64;
-                let b = ((self.rgbc >> 16) & 0xFF) as i64;
+                let (r, g, b) = get_rgb(self.rgbc);
 
                 // [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
                 let mac1 = (self.ir[1] as i64 * r) << 4;
@@ -952,9 +955,7 @@ impl Gte {
                 self.color_interpolation(mac1, mac2, mac3, cmd.sf, cmd.lm);
             }
             GteCommandOpcode::Dpcs => {
-                let r = ((self.rgbc >> 0) & 0xFF) as i64;
-                let g = ((self.rgbc >> 8) & 0xFF) as i64;
-                let b = ((self.rgbc >> 16) & 0xFF) as i64;
+                let (r, g, b) = get_rgb(self.rgbc);
 
                 // [MAC1,MAC2,MAC3] = [R,G,B] SHL 16
                 let mac1 = r << 16;
@@ -969,9 +970,7 @@ impl Gte {
             }
             GteCommandOpcode::Dpct => {
                 for _ in 0..3 {
-                    let r = ((self.rgb[0] >> 0) & 0xFF) as i64;
-                    let g = ((self.rgb[0] >> 8) & 0xFF) as i64;
-                    let b = ((self.rgb[0] >> 16) & 0xFF) as i64;
+                    let (r, g, b) = get_rgb(self.rgb[0]);
 
                     // [MAC1,MAC2,MAC3] = [R,G,B] SHL 16
                     let mac1 = r << 16;
@@ -1038,9 +1037,7 @@ impl Gte {
                 // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
                 // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
 
-                let r = ((self.rgbc >> 0) & 0xFF) as i64;
-                let g = ((self.rgbc >> 8) & 0xFF) as i64;
-                let b = ((self.rgbc >> 16) & 0xFF) as i64;
+                let (r, g, b) = get_rgb(self.rgbc);
 
                 // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
                 let vx = [self.ir[1], self.ir[2], self.ir[3]];
@@ -1065,9 +1062,7 @@ impl Gte {
                 // [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
                 // Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
 
-                let r = ((self.rgbc >> 0) & 0xFF) as i64;
-                let g = ((self.rgbc >> 8) & 0xFF) as i64;
-                let b = ((self.rgbc >> 16) & 0xFF) as i64;
+                let (r, g, b) = get_rgb(self.rgbc);
 
                 // [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
                 let vx = [self.ir[1], self.ir[2], self.ir[3]];

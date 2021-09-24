@@ -17,12 +17,12 @@ enum Exception {
     Interrupt = 0x00,
     AddressErrorLoad = 0x04,
     AddressErrorStore = 0x05,
-    BusErrorInstructionFetch = 0x06,
-    BusErrorDataLoadStore = 0x07,
+    _BusErrorInstructionFetch = 0x06,
+    _BusErrorDataLoadStore = 0x07,
     Syscall = 0x08,
     Breakpoint = 0x09,
     ReservedInstruction = 0x0A,
-    CoprocessorUnusable = 0x0B,
+    _CoprocessorUnusable = 0x0B,
     ArithmeticOverflow = 0x0C,
 }
 
@@ -463,13 +463,9 @@ impl Cpu {
 
                 // division by zero (overflow)
                 if rt == 0 {
-                    if rs >= 0 {
-                        self.regs.hi = rs as u32;
-                        self.regs.lo = 0xFFFFFFFF; // -1
-                    } else {
-                        self.regs.hi = rs as u32;
-                        self.regs.lo = 1;
-                    }
+                    self.regs.hi = rs as u32;
+                    // -1 or 1
+                    self.regs.lo = if rs >= 0 { 0xFFFFFFFF } else { 1 };
                 } else {
                     let div = (rs / rt) as u32;
                     let remainder = (rs % rt) as u32;
