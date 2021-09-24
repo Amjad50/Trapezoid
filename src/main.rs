@@ -98,11 +98,33 @@ fn main() {
                     return;
                 }
                 WindowEvent::KeyboardInput { input, .. } => {
-                    // TODO: handle all keys, this is just for testing temporary
-                    if let Some(VirtualKeyCode::Return) = input.virtual_keycode {
-                        let pressed = input.state == ElementState::Pressed;
+                    let pressed = input.state == ElementState::Pressed;
 
-                        psx.change_controller_key_state(DigitalControllerKey::Start, pressed);
+                    let digital_key = match input.virtual_keycode {
+                        Some(VirtualKeyCode::Return) => Some(DigitalControllerKey::Start),
+                        Some(VirtualKeyCode::Back) => Some(DigitalControllerKey::Select),
+
+                        Some(VirtualKeyCode::Key1) => Some(DigitalControllerKey::L1),
+                        Some(VirtualKeyCode::Key2) => Some(DigitalControllerKey::L2),
+                        Some(VirtualKeyCode::Key3) => Some(DigitalControllerKey::L3),
+                        Some(VirtualKeyCode::Key0) => Some(DigitalControllerKey::R1),
+                        Some(VirtualKeyCode::Key9) => Some(DigitalControllerKey::R2),
+                        Some(VirtualKeyCode::Key8) => Some(DigitalControllerKey::R3),
+
+                        Some(VirtualKeyCode::W) => Some(DigitalControllerKey::Up),
+                        Some(VirtualKeyCode::S) => Some(DigitalControllerKey::Down),
+                        Some(VirtualKeyCode::D) => Some(DigitalControllerKey::Right),
+                        Some(VirtualKeyCode::A) => Some(DigitalControllerKey::Left),
+
+                        Some(VirtualKeyCode::I) => Some(DigitalControllerKey::Triangle),
+                        Some(VirtualKeyCode::K) => Some(DigitalControllerKey::X),
+                        Some(VirtualKeyCode::L) => Some(DigitalControllerKey::Circle),
+                        Some(VirtualKeyCode::J) => Some(DigitalControllerKey::Square),
+
+                        _ => None,
+                    };
+                    if let Some(k) = digital_key {
+                        psx.change_controller_key_state(k, pressed);
                     }
                 }
                 _ => {}
