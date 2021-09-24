@@ -5,3 +5,4 @@
 !.gitignore
 !downloader.sh
 !tests_data.csv
+!bios.tar.gz.gpg
