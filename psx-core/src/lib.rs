@@ -7,6 +7,9 @@ mod memory;
 mod spu;
 mod timers;
 
+#[cfg(test)]
+mod tests;
+
 use std::path::Path;
 
 use cpu::Cpu;
