@@ -1,61 +1,218 @@
-use std::path::PathBuf;
-use std::rc::Rc;
+use std::{path::PathBuf, sync::Arc};
 
 use psx_core::{DigitalControllerKey, Psx};
 
 use clap::Clap;
-use glium::{
-    glutin::{
-        self,
-        event::{ElementState, Event, VirtualKeyCode, WindowEvent},
-        event_loop::ControlFlow,
+use vulkano::{
+    device::{
+        physical::{PhysicalDevice, PhysicalDeviceType},
+        Device, DeviceExtensions, Features, Queue,
     },
-    Surface,
+    image::{ImageUsage, SwapchainImage},
+    instance::{Instance, InstanceExtensions},
+    swapchain::{
+        self, AcquireError, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreationError,
+    },
+    Version,
+};
+use vulkano_win::VkSurfaceBuild;
+use winit::{
+    event::{ElementState, Event, VirtualKeyCode, WindowEvent},
+    event_loop::{ControlFlow, EventLoop},
+    window::{Window, WindowBuilder},
 };
 
-enum GlDisplay {
-    Headless(glium::HeadlessRenderer),
-    Windowed(glium::Display, bool),
+enum DisplayType {
+    Windowed {
+        surface: Arc<Surface<Window>>,
+        swapchain: Arc<Swapchain<Window>>,
+        images: Vec<Arc<SwapchainImage<Window>>>,
+        full_vram_display: bool,
+    },
+    Headless,
 }
 
-impl GlDisplay {
-    fn windowed(event_loop: &glutin::event_loop::EventLoop<()>, full_vram_display: bool) -> Self {
-        let cb = glutin::ContextBuilder::new();
-        let wb = glutin::window::WindowBuilder::new();
+struct VkDisplay {
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    display_type: DisplayType,
+}
 
-        Self::Windowed(
-            glium::Display::new(wb, cb, event_loop).unwrap(),
-            full_vram_display,
-        )
-    }
+impl VkDisplay {
+    fn windowed(event_loop: &EventLoop<()>, full_vram_display: bool) -> Self {
+        let required_extensions = vulkano_win::required_extensions();
 
-    fn headless(event_loop: &glutin::event_loop::EventLoop<()>, width: u32, height: u32) -> Self {
-        let cb = glutin::ContextBuilder::new();
-        let context = cb
-            .build_headless(event_loop, glutin::dpi::PhysicalSize::new(width, height))
+        let instance = Instance::new(None, Version::V1_1, &required_extensions, None).unwrap();
+
+        let surface = WindowBuilder::new()
+            .build_vk_surface(&event_loop, instance.clone())
             .unwrap();
 
-        Self::Headless(glium::HeadlessRenderer::new(context).unwrap())
+        let device_extensions = DeviceExtensions {
+            khr_swapchain: true,
+            ..DeviceExtensions::none()
+        };
+
+        let (physical_device, queue_family) = PhysicalDevice::enumerate(&instance)
+            .filter(|&p| p.supported_extensions().is_superset_of(&device_extensions))
+            .filter_map(|p| {
+                p.queue_families()
+                    .find(|&q| q.supports_graphics() && surface.is_supported(q).unwrap_or(false))
+                    .map(|q| (p, q))
+            })
+            .min_by_key(|(p, _)| match p.properties().device_type {
+                PhysicalDeviceType::DiscreteGpu => 0,
+                PhysicalDeviceType::IntegratedGpu => 1,
+                PhysicalDeviceType::VirtualGpu => 2,
+                PhysicalDeviceType::Cpu => 3,
+                PhysicalDeviceType::Other => 4,
+            })
+            .unwrap();
+
+        println!(
+            "Using device: {} (type: {:?})",
+            physical_device.properties().device_name,
+            physical_device.properties().device_type,
+        );
+
+        let (device, mut queues) = Device::new(
+            physical_device,
+            &Features::none(),
+            &physical_device
+                .required_extensions()
+                .union(&device_extensions),
+            [(queue_family, 0.5)].iter().cloned(),
+        )
+        .unwrap();
+
+        let queue = queues.next().unwrap();
+
+        let (swapchain, images) = {
+            let caps = surface.capabilities(physical_device).unwrap();
+
+            let format = caps.supported_formats[0].0;
+
+            let dimensions: [u32; 2] = surface.window().inner_size().into();
+
+            Swapchain::start(device.clone(), surface.clone())
+                .num_images(caps.min_image_count)
+                .format(format)
+                .dimensions(dimensions)
+                .usage(ImageUsage {
+                    transfer_destination: true,
+                    ..ImageUsage::none()
+                })
+                .sharing_mode(&queue)
+                .composite_alpha(CompositeAlpha::Opaque)
+                .present_mode(PresentMode::Immediate)
+                .build()
+                .unwrap()
+        };
+
+        Self {
+            device,
+            queue,
+            display_type: DisplayType::Windowed {
+                surface,
+                swapchain,
+                images,
+                full_vram_display,
+            },
+        }
+    }
+
+    fn headless() -> Self {
+        let instance =
+            Instance::new(None, Version::V1_1, &InstanceExtensions::none(), None).unwrap();
+
+        let (physical_device, queue_family) = PhysicalDevice::enumerate(&instance)
+            .filter_map(|p| {
+                p.queue_families()
+                    .find(|&q| q.supports_graphics())
+                    .map(|q| (p, q))
+            })
+            .min_by_key(|(p, _)| match p.properties().device_type {
+                PhysicalDeviceType::DiscreteGpu => 0,
+                PhysicalDeviceType::IntegratedGpu => 1,
+                PhysicalDeviceType::VirtualGpu => 2,
+                PhysicalDeviceType::Cpu => 3,
+                PhysicalDeviceType::Other => 4,
+            })
+            .unwrap();
+
+        println!(
+            "Using device: {} (type: {:?})",
+            physical_device.properties().device_name,
+            physical_device.properties().device_type,
+        );
+
+        let (device, mut queues) = Device::new(
+            physical_device,
+            &Features::none(),
+            &physical_device.required_extensions(),
+            [(queue_family, 0.5)].iter().cloned(),
+        )
+        .unwrap();
+
+        let queue = queues.next().unwrap();
+
+        Self {
+            device,
+            queue,
+            display_type: DisplayType::Headless,
+        }
+    }
+
+    fn window_resize(&mut self) {
+        match &mut self.display_type {
+            DisplayType::Windowed {
+                surface,
+                swapchain,
+                images,
+                ..
+            } => {
+                let dimensions: [u32; 2] = surface.window().inner_size().into();
+                let (new_swapchain, new_images) =
+                    match swapchain.recreate().dimensions(dimensions).build() {
+                        Ok(r) => r,
+                        Err(SwapchainCreationError::UnsupportedDimensions) => return,
+                        Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
+                    };
+
+                *swapchain = new_swapchain;
+                *images = new_images;
+            }
+            DisplayType::Headless => {}
+        }
     }
 
     fn render_frame(&self, psx: &Psx) {
-        match self {
-            GlDisplay::Windowed(display, full_vram) => {
-                let mut frame = display.draw();
-                frame.clear_color(0.0, 0.0, 0.0, 0.0);
-                psx.blit_to_front(&frame, *full_vram);
-                frame.finish().unwrap();
-            }
-            GlDisplay::Headless(_) => {}
-        }
-    }
-}
+        match &self.display_type {
+            DisplayType::Windowed {
+                swapchain,
+                images,
+                full_vram_display,
+                ..
+            } => {
+                let (image_num, suboptimal, acquire_future) =
+                    match swapchain::acquire_next_image(swapchain.clone(), None) {
+                        Ok(r) => r,
+                        Err(AcquireError::OutOfDate) => {
+                            panic!("recreate swapchain");
+                        }
+                        Err(e) => panic!("Failed to acquire next image: {:?}", e),
+                    };
 
-impl glium::backend::Facade for GlDisplay {
-    fn get_context(&self) -> &Rc<glium::backend::Context> {
-        match self {
-            GlDisplay::Headless(headless) => headless.get_context(),
-            GlDisplay::Windowed(display, _) => display.get_context(),
+                if suboptimal {
+                    panic!("recreate swapchain");
+                    //recreate_swapchain = true;
+                }
+
+                let current_image = images[image_num].clone();
+
+                psx.blit_to_front(current_image, *full_vram_display);
+            }
+            DisplayType::Headless => {}
         }
     }
 }
@@ -81,14 +238,14 @@ fn main() {
 
     let args = PsxEmuArgs::parse();
 
-    let event_loop = glutin::event_loop::EventLoop::new();
-    let display = if args.windowed {
-        GlDisplay::windowed(&event_loop, args.vram)
+    let event_loop = EventLoop::new();
+    let mut display = if args.windowed {
+        VkDisplay::windowed(&event_loop, args.vram)
     } else {
-        GlDisplay::headless(&event_loop, 800, 600)
+        VkDisplay::headless()
     };
 
-    let mut psx = Psx::new(&args.bios, args.disk_file, &display).unwrap();
+    let mut psx = Psx::new(&args.bios, args.disk_file, display.device.clone()).unwrap();
 
     event_loop.run(move |event, _target, control_flow| {
         if let Event::WindowEvent { event, .. } = event {
@@ -96,6 +253,9 @@ fn main() {
                 WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
                     return;
+                }
+                WindowEvent::Resized(_) => {
+                    display.window_resize();
                 }
                 WindowEvent::KeyboardInput { input, .. } => {
                     let pressed = input.state == ElementState::Pressed;
@@ -134,9 +294,9 @@ fn main() {
 
         // do several clocks in one time to reduce latency of the `event_loop.run` method.
         for _ in 0..100 {
-            if psx.clock() {
-                display.render_frame(&psx);
-            }
+            //if psx.clock() {
+            display.render_frame(&psx);
+            //}
         }
     });
 }

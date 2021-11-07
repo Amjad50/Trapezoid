@@ -10,13 +10,13 @@ mod timers;
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use cpu::Cpu;
-use gpu::GlContext;
 use memory::{Bios, CpuBus};
 
 pub use controller_mem_card::DigitalControllerKey;
+use vulkano::{device::Device, image::ImageAccess};
 
 pub struct Psx {
     bus: CpuBus,
@@ -25,16 +25,16 @@ pub struct Psx {
 
 impl Psx {
     // TODO: produce a valid `Error` struct
-    pub fn new<BiosPath: AsRef<Path>, DiskPath: AsRef<Path>, F: glium::backend::Facade>(
+    pub fn new<BiosPath: AsRef<Path>, DiskPath: AsRef<Path>>(
         bios_file_path: BiosPath,
         disk_file: Option<DiskPath>,
-        gl_facade: &F,
+        device: Arc<Device>,
     ) -> Result<Self, ()> {
         let bios = Bios::from_file(bios_file_path)?;
 
         Ok(Self {
             cpu: Cpu::new(),
-            bus: CpuBus::new(bios, disk_file, GlContext::new(gl_facade)),
+            bus: CpuBus::new(bios, disk_file, device),
         })
     }
 
@@ -52,7 +52,10 @@ impl Psx {
             .change_controller_key_state(key, pressed);
     }
 
-    pub fn blit_to_front<S: glium::Surface>(&self, s: &S, full_vram: bool) {
-        self.bus.gpu().blit_to_front(s, full_vram);
+    pub fn blit_to_front<D>(&self, dest_image: D, full_vram: bool)
+    where
+        D: ImageAccess + 'static,
+    {
+        self.bus.gpu().blit_to_front(dest_image, full_vram);
     }
 }

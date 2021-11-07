@@ -2,11 +2,11 @@ mod command;
 mod gpu_context;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
-pub use gpu_context::GlContext;
 use gpu_context::GpuContext;
+use vulkano::{device::Device, image::ImageAccess};
 
 bitflags::bitflags! {
     #[derive(Default)]
@@ -108,9 +108,9 @@ impl std::ops::DerefMut for Gpu {
 }
 
 impl Gpu {
-    pub fn new(gl_context: GlContext) -> Self {
+    pub fn new(device: Arc<Device>) -> Self {
         Self {
-            gpu_context: GpuContext::new(gl_context),
+            gpu_context: GpuContext::new(device),
             current_command: None,
             command_fifo: VecDeque::new(),
             scanline: 0,
@@ -129,8 +129,11 @@ impl Gpu {
         self.in_vblank
     }
 
-    pub fn blit_to_front<S: glium::Surface>(&self, s: &S, full_vram: bool) {
-        self.gpu_context.blit_to_front(s, full_vram);
+    pub fn blit_to_front<D>(&self, dest_image: D, full_vram: bool)
+    where
+        D: ImageAccess + 'static,
+    {
+        self.gpu_context.blit_to_front(dest_image, full_vram);
     }
 }
 
