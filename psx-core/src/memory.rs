@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
-use vulkano::device::Device;
+use vulkano::device::{Device, Queue};
 
 use crate::cdrom::Cdrom;
 use crate::controller_mem_card::ControllerAndMemoryCard;
@@ -171,6 +171,7 @@ impl CpuBus {
         bios: Bios,
         disk_file: Option<DiskPath>,
         device: Arc<Device>,
+        queue: Arc<Queue>,
     ) -> Self {
         let mut s = Self {
             bios,
@@ -190,7 +191,7 @@ impl CpuBus {
 
             dma_bus: DmaBus {
                 main_ram: MainRam::default(),
-                gpu: Gpu::new(device),
+                gpu: Gpu::new(device, queue),
             },
 
             scratchpad: Scratchpad::default(),
@@ -219,6 +220,10 @@ impl CpuBus {
 
     pub fn gpu(&self) -> &Gpu {
         &self.dma_bus.gpu
+    }
+
+    pub fn gpu_mut(&mut self) -> &mut Gpu {
+        &mut self.dma_bus.gpu
     }
 
     pub fn controller_mem_card_mut(&mut self) -> &mut ControllerAndMemoryCard {

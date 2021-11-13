@@ -13,6 +13,7 @@ use vulkano::{
     swapchain::{
         self, AcquireError, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreationError,
     },
+    sync::{self, GpuFuture},
     Version,
 };
 use vulkano_win::VkSurfaceBuild;
@@ -186,7 +187,7 @@ impl VkDisplay {
         }
     }
 
-    fn render_frame(&self, psx: &Psx) {
+    fn render_frame(&self, psx: &mut Psx) {
         match &self.display_type {
             DisplayType::Windowed {
                 swapchain,
@@ -210,7 +211,12 @@ impl VkDisplay {
 
                 let current_image = images[image_num].clone();
 
-                psx.blit_to_front(current_image, *full_vram_display);
+                psx.blit_to_front(current_image, *full_vram_display, acquire_future);
+
+                sync::now(self.device.clone())
+                    .then_swapchain_present(self.queue.clone(), swapchain.clone(), image_num)
+                    .flush()
+                    .unwrap();
             }
             DisplayType::Headless => {}
         }
@@ -245,7 +251,13 @@ fn main() {
         VkDisplay::headless()
     };
 
-    let mut psx = Psx::new(&args.bios, args.disk_file, display.device.clone()).unwrap();
+    let mut psx = Psx::new(
+        &args.bios,
+        args.disk_file,
+        display.device.clone(),
+        display.queue.clone(),
+    )
+    .unwrap();
 
     event_loop.run(move |event, _target, control_flow| {
         if let Event::WindowEvent { event, .. } = event {
@@ -294,9 +306,9 @@ fn main() {
 
         // do several clocks in one time to reduce latency of the `event_loop.run` method.
         for _ in 0..100 {
-            //if psx.clock() {
-            display.render_frame(&psx);
-            //}
+            if psx.clock() {
+                display.render_frame(&mut psx);
+            }
         }
     });
 }

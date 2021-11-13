@@ -233,20 +233,20 @@ impl Gp0Command for RectangleCommand {
             //  check if its true or not.
             self.vertices[1].set_position([top_left[0] + size[0], top_left[1]]);
             self.vertices[1].set_tex_coord([
-                (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u8,
+                (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u32,
                 top_left_tex[1],
             ]);
             // bottom left
             self.vertices[2].set_position([top_left[0], top_left[1] + size[1]]);
             self.vertices[2].set_tex_coord([
                 top_left_tex[0],
-                (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u8,
+                (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
             ]);
             // bottom right
             self.vertices[3].set_position([top_left[0] + size[0], top_left[1] + size[1]]);
             self.vertices[3].set_tex_coord([
-                (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u8,
-                (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u8,
+                (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u32,
+                (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
             ]);
 
             log::info!("RECTANGLE executing {:#?}", self);

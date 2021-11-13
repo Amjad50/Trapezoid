@@ -16,7 +16,11 @@ use cpu::Cpu;
 use memory::{Bios, CpuBus};
 
 pub use controller_mem_card::DigitalControllerKey;
-use vulkano::{device::Device, image::ImageAccess};
+use vulkano::{
+    device::{Device, Queue},
+    image::ImageAccess,
+    sync::GpuFuture,
+};
 
 pub struct Psx {
     bus: CpuBus,
@@ -29,12 +33,13 @@ impl Psx {
         bios_file_path: BiosPath,
         disk_file: Option<DiskPath>,
         device: Arc<Device>,
+        queue: Arc<Queue>,
     ) -> Result<Self, ()> {
         let bios = Bios::from_file(bios_file_path)?;
 
         Ok(Self {
             cpu: Cpu::new(),
-            bus: CpuBus::new(bios, disk_file, device),
+            bus: CpuBus::new(bios, disk_file, device, queue),
         })
     }
 
@@ -52,10 +57,13 @@ impl Psx {
             .change_controller_key_state(key, pressed);
     }
 
-    pub fn blit_to_front<D>(&self, dest_image: D, full_vram: bool)
+    pub fn blit_to_front<D, IF>(&mut self, dest_image: Arc<D>, full_vram: bool, in_future: IF)
     where
         D: ImageAccess + 'static,
+        IF: GpuFuture,
     {
-        self.bus.gpu().blit_to_front(dest_image, full_vram);
+        self.bus
+            .gpu_mut()
+            .blit_to_front(dest_image, full_vram, in_future);
     }
 }
