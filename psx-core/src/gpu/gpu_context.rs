@@ -41,12 +41,6 @@ fn gl_pixel_to_u16(pixel: &(u8, u8, u8, u8)) -> u16 {
         | (pixel.0 >> 3) as u16
 }
 
-/// helper in getting the correct value for bottom for gl drawing/coordinate stuff
-#[inline]
-fn to_gl_bottom(top: u32, height: u32) -> u32 {
-    512 - height - top
-}
-
 #[inline]
 pub fn vertex_position_from_u32(position: u32) -> [f32; 2] {
     let x = position & 0x7ff;
@@ -162,81 +156,11 @@ impl DrawingTextureParams {
     }
 }
 
-pub struct Vram {
-    data: Arc<CpuAccessibleBuffer<[u16]>>,
-}
-
-impl Vram {
-    #[inline]
-    fn new(device: Arc<Device>) -> Self {
-        let data = CpuAccessibleBuffer::from_iter(
-            device,
-            BufferUsage::all(),
-            false,
-            (0..1024 * 512 * 2).map(|_| 0),
-        )
-        .unwrap();
-
-        Self { data }
-    }
-
-    #[inline]
-    fn write_block(&mut self, block_range: &(Range<u32>, Range<u32>), block: &[u16]) {
-        todo!()
-        //let (x_range, y_range) = block_range;
-        //let whole_size = x_range.len() * y_range.len();
-        //assert_eq!(block.len(), whole_size);
-
-        //let mut mapping = self.data.map_write();
-        //let mut block_iter = block.iter();
-
-        //for y in y_range.clone() {
-        //    let mut current_pixel_pos = (y * 1024 + x_range.start) as usize;
-        //    for _ in 0..x_range.len() {
-        //        mapping.set(current_pixel_pos, *block_iter.next().unwrap());
-        //        current_pixel_pos += 1;
-        //    }
-        //}
-
-        //assert!(block_iter.next().is_none());
-    }
-
-    #[inline]
-    fn read_block(&mut self, block_range: &(Range<u32>, Range<u32>), reverse: bool) -> Vec<u16> {
-        todo!()
-        //let (x_range, y_range) = block_range;
-
-        //let row_size = x_range.len();
-        //let whole_size = row_size * y_range.len();
-        //let mut block = Vec::with_capacity(whole_size);
-
-        //let mapping = self.data.map_read();
-
-        //let y_range_iter: Box<dyn Iterator<Item = _>> = if reverse {
-        //    Box::new(y_range.clone().rev())
-        //} else {
-        //    Box::new(y_range.clone())
-        //};
-
-        //for y in y_range_iter {
-        //    let row_start_addr = y * 1024 + x_range.start;
-        //    block.extend_from_slice(
-        //        &mapping[(row_start_addr as usize)..(row_start_addr as usize + row_size)],
-        //    );
-        //}
-
-        //assert_eq!(block.len(), whole_size);
-
-        //block
-    }
-}
-
 pub struct GpuContext {
     pub(super) gpu_stat: GpuStat,
     pub(super) allow_texture_disable: bool,
     pub(super) textured_rect_flip: (bool, bool),
     pub(super) gpu_read: Option<u32>,
-    pub(super) _vram: Vram,
 
     pub(super) drawing_area_top_left: (u32, u32),
     pub(super) drawing_area_bottom_right: (u32, u32),
@@ -268,10 +192,6 @@ pub struct GpuContext {
     gpu_future: Option<Box<dyn GpuFuture>>,
     // /// Stores the VRAM content to be used for rendering in the shaders
     // texture_buffer: Texture2d,
-    // Ranges in the VRAM which are not resident in the VRAM at the moment but in the
-    // [drawing_texture], so if any byte in this range is read/written to, then
-    // we need to retrieve it from the texture and not the VRAM array
-    // ranges_in_rendering: Vec<(Range<u32>, Range<u32>)>
 }
 
 impl GpuContext {
@@ -296,7 +216,6 @@ impl GpuContext {
             )
             .unwrap();
 
-        // TODO: add blit commands
         builder
             .clear_color_image(
                 render_image.clone(),
@@ -530,7 +449,6 @@ impl GpuContext {
             allow_texture_disable: false,
             textured_rect_flip: (false, false),
             gpu_read: Default::default(),
-            _vram: Vram::new(device.clone()),
 
             drawing_area_top_left: (0, 0),
             drawing_area_bottom_right: (0, 0),
@@ -572,131 +490,6 @@ impl GpuContext {
         self.gpu_stat.bits |= (texture_params.texture_disable as u32) << 15;
     }
 
-    fn move_from_rendering_to_vram(&mut self, range: &(Range<u32>, Range<u32>)) {
-        //let width = range.0.end - range.0.start;
-        //let height = range.1.end - range.1.start;
-        //let tex =
-        //    Texture2d::empty_with_mipmaps(&self.gl_context, MipmapsOption::NoMipmap, width, height)
-        //        .unwrap();
-        //self.drawing_texture.as_surface().blit_color(
-        //    &Rect {
-        //        left: range.0.start,
-        //        bottom: to_gl_bottom(range.1.start, height),
-        //        width,
-        //        height,
-        //    },
-        //    &tex.as_surface(),
-        //    &BlitTarget {
-        //        left: 0,
-        //        bottom: 0,
-        //        width: width as i32,
-        //        height: height as i32,
-        //    },
-        //    MagnifySamplerFilter::Nearest,
-        //);
-
-        //let pixels: Vec<_> = tex
-        //    .read::<Vec<_>>()
-        //    .iter()
-        //    .rev()
-        //    .flatten()
-        //    .map(gl_pixel_to_u16)
-        //    .collect();
-        //self.vram.write_block(range, &pixels);
-        //self.update_texture_buffer();
-    }
-
-    fn move_from_vram_to_rendering(&mut self, range: &(Range<u32>, Range<u32>)) {
-        todo!()
-        //let (x_range, y_range) = range;
-        //let width = x_range.len() as u32;
-        //let height = y_range.len() as u32;
-
-        //let block = self.vram.read_block(range, true);
-
-        //self.drawing_texture.write(
-        //    Rect {
-        //        left: x_range.start,
-        //        bottom: to_gl_bottom(y_range.start, height),
-        //        width,
-        //        height,
-        //    },
-        //    RawImage2d {
-        //        data: Cow::Borrowed(block.as_ref()),
-        //        width,
-        //        height,
-        //        format: ClientFormat::U1U5U5U5Reversed,
-        //    },
-        //);
-    }
-
-    /// check if a whole block in rendering
-    fn is_block_in_rendering(&self, block_range: &(Range<u32>, Range<u32>)) -> bool {
-        todo!()
-        //let positions = [
-        //    (block_range.0.start, block_range.1.start),
-        //    (block_range.0.end - 1, block_range.1.end - 1),
-        //];
-
-        //for range in &self.ranges_in_rendering {
-        //    let contain_start =
-        //        range.0.contains(&positions[0].0) && range.1.contains(&positions[0].1);
-        //    let contain_end =
-        //        range.0.contains(&positions[1].0) && range.1.contains(&positions[1].1);
-
-        //    // we use or and then assert, to make sure both ends are in the rendering.
-        //    //  if only one of them are in the rendering, then this is a problem.
-        //    //
-        //    //  TODO: fix block half present in rendering.
-        //    if contain_start || contain_end {
-        //        assert!(contain_start && contain_end);
-
-        //        return true;
-        //    }
-        //}
-
-        //false
-    }
-
-    fn add_to_rendering_range(&mut self, new_range: (Range<u32>, Range<u32>)) {
-        todo!()
-        //fn range_overlap(r1: &(Range<u32>, Range<u32>), r2: &(Range<u32>, Range<u32>)) -> bool {
-        //    // they are left/right to each other
-        //    if r1.0.start >= r2.0.end || r2.0.start >= r1.0.end {
-        //        return false;
-        //    }
-
-        //    // they are on top of one another
-        //    if r1.1.start >= r2.1.end || r2.1.start >= r1.1.end {
-        //        return false;
-        //    }
-
-        //    true
-        //}
-
-        //if !self.ranges_in_rendering.contains(&new_range) {
-        //    let mut overlapped_ranges = Vec::new();
-        //    self.ranges_in_rendering.retain(|range| {
-        //        if range_overlap(range, &new_range) {
-        //            overlapped_ranges.push(range.clone());
-        //            false
-        //        } else {
-        //            true
-        //        }
-        //    });
-
-        //    // return the parts that we deleted into the Vram buffer
-        //    for range in overlapped_ranges {
-        //        self.move_from_rendering_to_vram(&range);
-        //    }
-        //    self.move_from_vram_to_rendering(&new_range);
-
-        //    self.ranges_in_rendering.push(new_range);
-
-        //    println!("ranges now {:?}", self.ranges_in_rendering);
-        //}
-    }
-
     fn get_semi_transparency_blending_params(&self, semi_transparecy_mode: u8) -> () {
         //let color_func = match semi_transparecy_mode & 3 {
         //    0 => BlendingFunction::Addition {
@@ -729,159 +522,152 @@ impl GpuContext {
 
 impl GpuContext {
     pub fn write_vram_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
-        // todo!()
-        // cannot write outside range
-        //assert!(block_range.0.end <= 1024);
-        //assert!(block_range.1.end <= 512);
+        let left = block_range.0.start;
+        let top = block_range.1.start;
+        let width = block_range.0.len() as u32;
+        let height = block_range.1.len() as u32;
 
-        //let whole_size = block_range.0.len() * block_range.1.len();
-        //assert_eq!(block.len(), whole_size);
+        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
+            AutoCommandBufferBuilder::primary(
+                self.device.clone(),
+                self.queue.family(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
 
-        //let (drawing_left, drawing_top) = self.drawing_area_top_left;
-        //let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
-        //let drawing_range = (
-        //    drawing_left..(drawing_right + 1),
-        //    drawing_top..(drawing_bottom + 1),
-        //);
+        let buffer = CpuAccessibleBuffer::from_iter(
+            self.device.clone(),
+            BufferUsage::transfer_source(),
+            false,
+            block.iter().cloned(),
+        )
+        .unwrap();
 
-        //// add the current drawing area to rendering range
-        ////
-        //// if we are copying a block into a rendering range, then just blit
-        //// directly into it
-        //self.add_to_rendering_range(drawing_range);
+        builder
+            .copy_buffer_to_image_dimensions(
+                buffer,
+                self.render_image.clone(),
+                [left, top, 0],
+                [width, height, 1],
+                0,
+                1,
+                0,
+            )
+            .unwrap();
 
-        //if self.is_block_in_rendering(&block_range) {
-        //    let (x_range, y_range) = block_range;
-        //    let width = x_range.len() as u32;
-        //    let height = y_range.len() as u32;
+        let command_buffer = builder.build().unwrap();
 
-        //    // reverse on y axis
-        //    let block: Vec<_> = block
-        //        .chunks(width as usize)
-        //        .rev()
-        //        .flat_map(|row| row.iter())
-        //        .cloned()
-        //        .collect();
-
-        //    self.drawing_texture.write(
-        //        Rect {
-        //            left: x_range.start,
-        //            bottom: to_gl_bottom(y_range.start, height),
-        //            width,
-        //            height,
-        //        },
-        //        RawImage2d {
-        //            data: Cow::Borrowed(block.as_ref()),
-        //            width,
-        //            height,
-        //            format: ClientFormat::U1U5U5U5Reversed,
-        //        },
-        //    );
-        //} else {
-        //    self.vram.write_block(&block_range, block);
-        //    self.update_texture_buffer();
-        //}
+        self.gpu_future = Some(
+            self.gpu_future
+                .take()
+                .unwrap()
+                .then_execute(self.queue.clone(), command_buffer)
+                .unwrap()
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .boxed(),
+        );
     }
 
     pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
-        vec![0; block_range.0.len() * block_range.1.len()]
-        //todo!()
-        // cannot read outside range
-        //assert!(block_range.0.end <= 1024);
-        //assert!(block_range.1.end <= 512);
+        let left = block_range.0.start;
+        let top = block_range.1.start;
+        let width = block_range.0.len() as u32;
+        let height = block_range.1.len() as u32;
 
-        //if self.is_block_in_rendering(block_range) {
-        //    let (x_range, y_range) = block_range;
-        //    let x_size = x_range.len() as u32;
-        //    let y_size = y_range.len() as u32;
+        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
+            AutoCommandBufferBuilder::primary(
+                self.device.clone(),
+                self.queue.family(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
 
-        //    let tex = Texture2d::empty_with_mipmaps(
-        //        &self.gl_context,
-        //        MipmapsOption::NoMipmap,
-        //        x_size,
-        //        y_size,
-        //    )
-        //    .unwrap();
-        //    self.drawing_texture.as_surface().blit_color(
-        //        &Rect {
-        //            left: x_range.start,
-        //            bottom: to_gl_bottom(y_range.start, y_size),
-        //            width: x_size,
-        //            height: y_size,
-        //        },
-        //        &tex.as_surface(),
-        //        &BlitTarget {
-        //            left: 0,
-        //            bottom: 0,
-        //            width: x_size as i32,
-        //            height: y_size as i32,
-        //        },
-        //        MagnifySamplerFilter::Nearest,
-        //    );
+        let buffer = CpuAccessibleBuffer::from_iter(
+            self.device.clone(),
+            BufferUsage::transfer_destination(),
+            false,
+            (0..width * height).map(|_| 0u16),
+        )
+        .unwrap();
 
-        //    let pixel_buffer: Vec<_> = tex.read();
+        builder
+            .copy_image_to_buffer_dimensions(
+                self.render_image.clone(),
+                buffer.clone(),
+                [left, top, 0],
+                [width, height, 1],
+                0,
+                1,
+                0,
+            )
+            .unwrap();
 
-        //    let block = pixel_buffer
-        //        .iter()
-        //        // reverse, as its from bottom to top
-        //        .rev()
-        //        .flatten()
-        //        .map(|pixel| gl_pixel_to_u16(pixel))
-        //        .collect::<Vec<_>>();
+        let command_buffer = builder.build().unwrap();
 
-        //    block
-        //} else {
-        //    self.vram.read_block(block_range, false)
-        //}
+        self.gpu_future
+            .take()
+            .unwrap()
+            .then_execute(self.queue.clone(), command_buffer)
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        self.gpu_future = Some(sync::now(self.device.clone()).boxed());
+
+        let buffer_read = buffer.read().unwrap();
+
+        buffer_read.to_vec()
     }
 
     pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
-        todo!()
-        //let mut x_range = (top_left.0)..(top_left.0 + size.0);
-        //let mut y_range = (top_left.1)..(top_left.1 + size.1);
+        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
+            AutoCommandBufferBuilder::primary(
+                self.device.clone(),
+                self.queue.family(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
 
-        //if x_range.end >= 1024 {
-        //    self.fill_color((0, top_left.1), (x_range.end - 1024 + 1, size.1), color);
-        //    x_range.end = 1023;
-        //}
-        //if y_range.end >= 512 {
-        //    self.fill_color((top_left.0, 0), (size.0, y_range.end - 512 + 1), color);
-        //    y_range.end = 511;
-        //}
+        // TODO: check that the gl color encoding works well with vulkano
+        let u16_color = gl_pixel_to_u16(&(color.0, color.1, color.2, 0));
 
-        //let block_range = (x_range, y_range);
+        // TODO: for now vulkano does not support clear rect, but later change this
 
-        //if self.is_block_in_rendering(&block_range) {
-        //    self.drawing_texture.as_surface().clear(
-        //        Some(&Rect {
-        //            left: top_left.0,
-        //            bottom: to_gl_bottom(top_left.1, size.1),
-        //            width: size.0,
-        //            height: size.1,
-        //        }),
-        //        Some((
-        //            color.0 as f32 / 255.0,
-        //            color.1 as f32 / 255.0,
-        //            color.2 as f32 / 255.0,
-        //            0.0,
-        //        )),
-        //        false,
-        //        None,
-        //        None,
-        //    );
-        //} else {
-        //    let color = gl_pixel_to_u16(&(color.0, color.1, color.2, 0));
-        //    let size = block_range.0.len() * block_range.1.len();
+        // Creates buffer of the desired color, then clear it
+        let buffer = CpuAccessibleBuffer::from_iter(
+            self.device.clone(),
+            BufferUsage::transfer_source(),
+            false,
+            (0..size.0 * size.1).map(|_| u16_color),
+        )
+        .unwrap();
 
-        //    self.vram.write_block(&block_range, &vec![color; size]);
-        //    self.update_texture_buffer();
-        //}
-    }
+        builder
+            .copy_buffer_to_image_dimensions(
+                buffer,
+                self.render_image.clone(),
+                [top_left.0, top_left.1, 0],
+                [size.0, size.1, 1],
+                0,
+                1,
+                0,
+            )
+            .unwrap();
 
-    pub fn update_texture_buffer(&mut self) {
-        //self.texture_buffer
-        //    .main_level()
-        //    .raw_upload_from_pixel_buffer(self.vram.data.as_slice(), 0..1024, 0..512, 0..1);
+        let command_buffer = builder.build().unwrap();
+
+        self.gpu_future = Some(
+            self.gpu_future
+                .take()
+                .unwrap()
+                .then_execute(self.queue.clone(), command_buffer)
+                .unwrap()
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .boxed(),
+        );
     }
 
     pub fn draw_polygon(
@@ -894,11 +680,6 @@ impl GpuContext {
     ) {
         assert!(!textured);
 
-        // copy vertecies
-        //{
-        //    let mut v_write = self.vertex_buffer.write().unwrap();
-        //    v_write.copy_from_slice(vertices);
-        //}
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
             self.device.clone(),
             BufferUsage::all(),
@@ -1083,7 +864,6 @@ impl GpuContext {
             )
             .unwrap();
 
-        // TODO: add blit commands
         builder
             .clear_color_image(dest_image.clone(), ClearValue::Float([0.0, 0.0, 0.0, 0.0]))
             .unwrap()
