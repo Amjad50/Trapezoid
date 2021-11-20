@@ -170,8 +170,8 @@ impl FrontBlit {
     {
         let sampler = Sampler::new(
             self.device.clone(),
-            Filter::Linear,
-            Filter::Linear,
+            Filter::Nearest,
+            Filter::Nearest,
             MipmapMode::Nearest,
             SamplerAddressMode::Repeat,
             SamplerAddressMode::Repeat,
