@@ -740,12 +740,17 @@ impl GpuContext {
 
         let push_constants = fs::ty::PushConstantData {
             offset: [self.drawing_offset.0, self.drawing_offset.1],
-            drawing_size: [width, height],
             drawing_top_left: [left, top],
+            drawing_size: [width, height],
 
             is_textured: textured as u32,
             is_texture_blended: texture_blending as u32,
             tex_page_color_mode: texture_params.tex_page_color_mode as u32,
+            texture_flip: [
+                texture_params.texture_flip.0 as u32,
+                texture_params.texture_flip.1 as u32,
+            ],
+            _dummy0: [0; 4],
         };
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =

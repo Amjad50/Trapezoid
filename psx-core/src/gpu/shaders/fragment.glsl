@@ -13,6 +13,7 @@ layout(push_constant) uniform PushConstantData {
     bool is_textured;
     bool is_texture_blended;
     uint tex_page_color_mode;
+    bvec2 texture_flip;
 } pc;
 
 layout(set = 0, binding = 0) buffer TextureData {
@@ -44,6 +45,14 @@ void main() {
 
         uint x = tex_coord.x / divider;
         uint y = tex_coord.y;
+
+        // texture flips
+        if (pc.texture_flip.x) {
+            x = (255u / divider) - x;
+        }
+        if (pc.texture_flip.y) {
+            y = 255u - y;
+        }
 
         // since this is u32 datatype, we need to manually extract
         // the u16 data

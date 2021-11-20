@@ -11,10 +11,6 @@ layout(push_constant) uniform PushConstantData {
     ivec2 offset;
     uvec2 drawing_top_left;
     uvec2 drawing_size;
-
-    bool is_textured;
-    bool is_texture_blended;
-    uint tex_page_color_mode;
 } pc;
 
 void main() {
