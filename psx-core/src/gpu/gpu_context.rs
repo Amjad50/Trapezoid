@@ -730,19 +730,23 @@ impl GpuContext {
         )
         .unwrap();
 
+        let (drawing_left, drawing_top) = self.drawing_area_top_left;
+        let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
+
+        let left = drawing_left;
+        let top = drawing_top;
+        let height = drawing_bottom - drawing_top + 1;
+        let width = drawing_right - drawing_left + 1;
+
         let push_constants = fs::ty::PushConstantData {
+            offset: [self.drawing_offset.0, self.drawing_offset.1],
+            drawing_size: [width, height],
+            drawing_top_left: [left, top],
+
             is_textured: textured as u32,
             is_texture_blended: texture_blending as u32,
             tex_page_color_mode: texture_params.tex_page_color_mode as u32,
         };
-
-        let (drawing_left, drawing_top) = self.drawing_area_top_left;
-        let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
-
-        let left = drawing_left as f32;
-        let top = drawing_top as f32;
-        let height = (drawing_bottom - drawing_top + 1) as f32;
-        let width = (drawing_right - drawing_left + 1) as f32;
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
@@ -809,8 +813,8 @@ impl GpuContext {
             .set_viewport(
                 0,
                 [Viewport {
-                    origin: [left, top],
-                    dimensions: [width, height],
+                    origin: [left as f32, top as f32],
+                    dimensions: [width as f32, height as f32],
                     depth_range: 0.0..1.0,
                 }],
             )

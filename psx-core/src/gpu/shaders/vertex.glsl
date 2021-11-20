@@ -7,11 +7,20 @@ layout(location = 2) in uvec2 tex_coord;
 layout(location = 0) out vec3 v_color;
 layout(location = 1) out vec2 v_tex_coord;
 
-void main() {
-    float posx = (position.x) / 640.0 * 2 - 1;
-    float posy = (position.y) / 480.0 * 2 - 1;
+layout(push_constant) uniform PushConstantData {
+    ivec2 offset;
+    uvec2 drawing_top_left;
+    uvec2 drawing_size;
 
-    gl_Position = vec4(posx, posy, 0.0, 1.0);
+    bool is_textured;
+    bool is_texture_blended;
+    uint tex_page_color_mode;
+} pc;
+
+void main() {
+    vec2 pos = ((position + pc.offset - pc.drawing_top_left) / pc.drawing_size) * 2 - 1;
+
+    gl_Position = vec4(pos, 0.0, 1.0);
     v_color = color;
     v_tex_coord = vec2(tex_coord);
 }
