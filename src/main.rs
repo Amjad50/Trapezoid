@@ -100,7 +100,7 @@ impl VkDisplay {
                 .format(format)
                 .dimensions(dimensions)
                 .usage(ImageUsage {
-                    transfer_destination: true,
+                    color_attachment: true,
                     ..ImageUsage::none()
                 })
                 .sharing_mode(&queue)

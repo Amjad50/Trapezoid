@@ -1,4 +1,5 @@
 mod command;
+mod front_blit;
 mod gpu_context;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine};

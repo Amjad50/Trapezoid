@@ -3,16 +3,17 @@ use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
     SubpassContents,
 };
+use vulkano::descriptor_set::PersistentDescriptorSet;
 use vulkano::device::{Device, Queue};
 use vulkano::format::{ClearValue, Format};
 use vulkano::image::view::ImageView;
 use vulkano::image::{ImageAccess, ImageDimensions, StorageImage};
 use vulkano::pipeline::viewport::Viewport;
-use vulkano::pipeline::GraphicsPipeline;
+use vulkano::pipeline::{GraphicsPipeline, PipelineBindPoint};
 use vulkano::render_pass::{Framebuffer, Subpass};
-use vulkano::sampler::Filter;
 use vulkano::sync::{self, GpuFuture};
 
+use super::front_blit::FrontBlit;
 use super::GpuStat;
 
 use std::ops::Range;
@@ -154,6 +155,26 @@ impl DrawingTextureParams {
     pub fn set_texture_flip(&mut self, flip: (bool, bool)) {
         self.texture_flip = flip;
     }
+
+    #[inline]
+    pub fn texture_width(&self) -> u32 {
+        // 0 => 64
+        // 1 => 128
+        // 1 << 256
+        1 << (6 + self.tex_page_color_mode)
+    }
+
+    #[inline]
+    pub fn does_need_clut(&self) -> bool {
+        self.tex_page_color_mode == 0 || self.tex_page_color_mode == 1
+    }
+
+    #[inline]
+    pub fn clut_width(&self) -> u32 {
+        // 0 => 16
+        // 1 => 256
+        1 << ((self.tex_page_color_mode + 1) * 4)
+    }
 }
 
 pub struct GpuContext {
@@ -182,12 +203,16 @@ pub struct GpuContext {
     device: Arc<Device>,
     queue: Arc<Queue>,
     render_image: Arc<StorageImage>,
+    texture_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
+    clut_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
     // TODO: fix this type
     render_image_framebuffer: Arc<Framebuffer<((), Arc<ImageView<Arc<StorageImage>>>)>>,
     pipeline: Arc<GraphicsPipeline>,
     // TODO: this buffer gives Gpu lock issues, so either we create
     //  buffer every time, we draw, or we create multiple buffers and loop through them
     _vertex_buffer: Arc<CpuAccessibleBuffer<[DrawingVertex]>>,
+
+    front_blit: FrontBlit,
 
     gpu_future: Option<Box<dyn GpuFuture>>,
     // /// Stores the VRAM content to be used for rendering in the shaders
@@ -203,8 +228,23 @@ impl GpuContext {
                 height: 512,
                 array_layers: 1,
             },
-            Format::R5G5B5A1_UNORM_PACK16,
+            Format::A1R5G5B5_UNORM_PACK16,
             [queue.family()],
+        )
+        .unwrap();
+
+        let texture_buffer = CpuAccessibleBuffer::from_iter(
+            device.clone(),
+            BufferUsage::all(),
+            false,
+            (0..256 * 256).map(|_| 0),
+        )
+        .unwrap();
+        let clut_buffer = CpuAccessibleBuffer::from_iter(
+            device.clone(),
+            BufferUsage::all(),
+            false,
+            (0..256).map(|_| 0),
         )
         .unwrap();
 
@@ -225,14 +265,7 @@ impl GpuContext {
         // add command to clear the render image, and keep the future
         // for stacking later
         let command_buffer = builder.build().unwrap();
-        let gpu_future = Some(
-            command_buffer
-                .execute(queue.clone())
-                .unwrap()
-                .then_signal_fence_and_flush()
-                .unwrap()
-                .boxed(),
-        );
+        let image_clear_future = command_buffer.execute(queue.clone()).unwrap();
 
         let vs = vs::Shader::load(device.clone()).unwrap();
         let fs = fs::Shader::load(device.clone()).unwrap();
@@ -244,7 +277,7 @@ impl GpuContext {
                     color: {
                         load: Load,
                         store: Store,
-                        format: Format::R5G5B5A1_UNORM_PACK16,
+                        format: Format::A1R5G5B5_UNORM_PACK16,
                         samples: 1,
                     }
                 },
@@ -283,6 +316,11 @@ impl GpuContext {
             [DrawingVertex::default(); 4].iter().cloned(),
         )
         .unwrap();
+
+        let (texture_blit, texture_blit_future) =
+            FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
+
+        let gpu_future = Some(image_clear_future.join(texture_blit_future).boxed());
 
         //let program = program!(&gl_context,
         //    140 => {
@@ -469,9 +507,15 @@ impl GpuContext {
             render_image,
             render_image_framebuffer,
 
+            texture_buffer,
+            clut_buffer,
+
             pipeline,
 
             _vertex_buffer: vertex_buffer,
+
+            front_blit: texture_blit,
+
             gpu_future,
         }
     }
@@ -673,13 +717,11 @@ impl GpuContext {
     pub fn draw_polygon(
         &mut self,
         vertices: &[DrawingVertex],
-        mut _texture_params: DrawingTextureParams,
+        texture_params: DrawingTextureParams,
         textured: bool,
-        _texture_blending: bool,
+        texture_blending: bool,
         _semi_transparent: bool,
     ) {
-        assert!(!textured);
-
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
             self.device.clone(),
             BufferUsage::all(),
@@ -687,6 +729,12 @@ impl GpuContext {
             vertices.into_iter().cloned(),
         )
         .unwrap();
+
+        let push_constants = fs::ty::PushConstantData {
+            is_textured: textured as u32,
+            is_texture_blended: texture_blending as u32,
+            tex_page_color_mode: texture_params.tex_page_color_mode as u32,
+        };
 
         let (drawing_left, drawing_top) = self.drawing_area_top_left;
         let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
@@ -704,6 +752,53 @@ impl GpuContext {
             )
             .unwrap();
 
+        if textured {
+            builder
+                .copy_image_to_buffer_dimensions(
+                    self.render_image.clone(),
+                    self.texture_buffer.clone(),
+                    [
+                        texture_params.tex_page_base[0],
+                        texture_params.tex_page_base[1],
+                        0,
+                    ],
+                    [texture_params.texture_width(), 256, 1],
+                    0,
+                    1,
+                    0,
+                )
+                .unwrap();
+            if texture_params.does_need_clut() {
+                builder
+                    .copy_image_to_buffer_dimensions(
+                        self.render_image.clone(),
+                        self.clut_buffer.clone(),
+                        [texture_params.clut_base[0], texture_params.clut_base[1], 0],
+                        [texture_params.clut_width(), 1, 1],
+                        0,
+                        1,
+                        0,
+                    )
+                    .unwrap();
+            }
+        };
+
+        let layout = self
+            .pipeline
+            .layout()
+            .descriptor_set_layouts()
+            .get(0)
+            .unwrap();
+        let mut set_builder = PersistentDescriptorSet::start(layout.clone());
+
+        set_builder
+            .add_buffer(self.texture_buffer.clone())
+            .unwrap()
+            .add_buffer(self.clut_buffer.clone())
+            .unwrap();
+
+        let set = Arc::new(set_builder.build().unwrap());
+
         builder
             .begin_render_pass(
                 self.render_image_framebuffer.clone(),
@@ -720,6 +815,13 @@ impl GpuContext {
                 }],
             )
             .bind_pipeline_graphics(self.pipeline.clone())
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                self.pipeline.layout().clone(),
+                0,
+                set.clone(),
+            )
+            .push_constants(self.pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, vertex_buffer.clone())
             .draw(vertices.len() as u32, 1, 0, 0)
             .unwrap()
@@ -845,59 +947,31 @@ impl GpuContext {
     {
         self.gpu_future.as_mut().unwrap().cleanup_finished();
 
-        let (left, top, width, height) = if full_vram {
-            (0, 0, 1024, 512)
+        let (topleft, size) = if full_vram {
+            ([0; 2], [1024, 512])
         } else {
             (
-                self.vram_display_area_start.0 as i32,
-                self.vram_display_area_start.1 as i32,
-                self.gpu_stat.horizontal_resolution() as i32,
-                self.gpu_stat.vertical_resolution() as i32,
+                [
+                    self.vram_display_area_start.0,
+                    self.vram_display_area_start.1,
+                ],
+                [
+                    self.gpu_stat.horizontal_resolution(),
+                    self.gpu_stat.vertical_resolution(),
+                ],
             )
         };
 
-        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
-            AutoCommandBufferBuilder::primary(
-                self.device.clone(),
-                self.queue.family(),
-                CommandBufferUsage::OneTimeSubmit,
+        // TODO: try to remove the `wait` from here
+        self.front_blit
+            .blit(
+                dest_image,
+                topleft,
+                size,
+                self.gpu_future.take().unwrap().join(in_future),
             )
-            .unwrap();
-
-        builder
-            .clear_color_image(dest_image.clone(), ClearValue::Float([0.0, 0.0, 0.0, 0.0]))
-            .unwrap()
-            .blit_image(
-                self.render_image.clone(),
-                [left, top, 0],
-                [width, height, 1],
-                0,
-                0,
-                dest_image.clone(),
-                [0, 0, 0],
-                [
-                    dest_image.dimensions().width() as i32,
-                    dest_image.dimensions().height() as i32,
-                    1,
-                ],
-                0,
-                0,
-                1,
-                Filter::Linear,
-            )
-            .unwrap();
-
-        let command_buffer = builder.build().unwrap();
-
-        self.gpu_future
-            .take()
-            .unwrap()
-            .join(in_future)
-            .then_execute(self.queue.clone(), command_buffer)
-            .unwrap()
             .then_signal_fence_and_flush()
             .unwrap()
-            // TODO: don't wait, make it all async
             .wait(None)
             .unwrap();
 
