@@ -584,6 +584,7 @@ impl Gp0Command for VramToVramBlitCommand {
             return false;
         }
 
+        // TODO: use vulkan image copy itself
         let x_range = (self.src.0)..(self.src.0 + self.size.0);
         let y_range = (self.src.1)..(self.src.1 + self.size.1);
         let block = ctx.read_vram_block(&(x_range, y_range));
