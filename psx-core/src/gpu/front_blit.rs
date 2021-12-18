@@ -13,7 +13,14 @@ use vulkano::{
         view::{ComponentMapping, ComponentSwizzle, ImageView},
         ImageAccess, StorageImage,
     },
-    pipeline::{viewport::Viewport, GraphicsPipeline, PipelineBindPoint},
+    pipeline::{
+        graphics::{
+            input_assembly::{InputAssemblyState, PrimitiveTopology},
+            vertex_input::BuffersDefinition,
+            viewport::{Viewport, ViewportState},
+        },
+        GraphicsPipeline, Pipeline, PipelineBindPoint,
+    },
     render_pass::{Framebuffer, RenderPass, Subpass},
     sampler::{Filter, MipmapMode, Sampler, SamplerAddressMode},
     sync::{GpuFuture, NowFuture},
@@ -90,39 +97,37 @@ impl FrontBlit {
         Self,
         CommandBufferExecFuture<NowFuture, PrimaryAutoCommandBuffer>,
     ) {
-        let vs = vs::Shader::load(device.clone()).unwrap();
-        let fs = fs::Shader::load(device.clone()).unwrap();
+        let vs = vs::load(device.clone()).unwrap();
+        let fs = fs::load(device.clone()).unwrap();
 
-        let render_pass = Arc::new(
-            vulkano::single_pass_renderpass!(
-                device.clone(),
-                attachments: {
-                    color: {
-                        load: DontCare,
-                        store: Store,
-                        format: Format::B8G8R8A8_UNORM,
-                        samples: 1,
-                    }
-                },
-                pass: {
-                    color: [color],
-                    depth_stencil: {}
+        let render_pass = vulkano::single_pass_renderpass!(
+            device.clone(),
+            attachments: {
+                color: {
+                    load: DontCare,
+                    store: Store,
+                    format: Format::B8G8R8A8_UNORM,
+                    samples: 1,
                 }
-            )
-            .unwrap(),
-        );
+            },
+            pass: {
+                color: [color],
+                depth_stencil: {}
+            }
+        )
+        .unwrap();
 
-        let pipeline = Arc::new(
-            GraphicsPipeline::start()
-                .vertex_input_single_buffer::<Vertex>()
-                .vertex_shader(vs.main_entry_point(), ())
-                .triangle_strip()
-                .viewports_dynamic_scissors_irrelevant(1)
-                .fragment_shader(fs.main_entry_point(), ())
-                .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-                .build(device.clone())
-                .unwrap(),
-        );
+        let pipeline = GraphicsPipeline::start()
+            .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
+            .vertex_shader(vs.entry_point("main").unwrap(), ())
+            .input_assembly_state(
+                InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
+            )
+            .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+            .fragment_shader(fs.entry_point("main").unwrap(), ())
+            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+            .build(device.clone())
+            .unwrap();
 
         let (vertex_buffer, immutable_buffer_future) = ImmutableBuffer::from_iter(
             [
@@ -198,25 +203,21 @@ impl FrontBlit {
         };
         set_builder
             .add_sampled_image(
-                Arc::new(
-                    ImageView::start(self.texture_image.clone())
-                        .with_component_mapping(component_mapping)
-                        .build()
-                        .unwrap(),
-                ),
+                ImageView::start(self.texture_image.clone())
+                    .with_component_mapping(component_mapping)
+                    .build()
+                    .unwrap(),
                 sampler.clone(),
             )
             .unwrap();
 
-        let set = Arc::new(set_builder.build().unwrap());
+        let set = set_builder.build().unwrap();
 
-        let framebuffer = Arc::new(
-            Framebuffer::start(self.render_pass.clone())
-                .add(ImageView::new(dest_image.clone()).unwrap())
-                .unwrap()
-                .build()
-                .unwrap(),
-        );
+        let framebuffer = Framebuffer::start(self.render_pass.clone())
+            .add(ImageView::new(dest_image.clone()).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
 
         let push_constants = vs::ty::PushConstantData { topleft, size };
 

@@ -8,8 +8,10 @@ use vulkano::device::{Device, Queue};
 use vulkano::format::{ClearValue, Format};
 use vulkano::image::view::ImageView;
 use vulkano::image::{ImageAccess, ImageDimensions, StorageImage};
-use vulkano::pipeline::viewport::Viewport;
-use vulkano::pipeline::{GraphicsPipeline, PipelineBindPoint};
+use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
+use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
+use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
+use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint};
 use vulkano::render_pass::{Framebuffer, Subpass};
 use vulkano::sync::{self, GpuFuture};
 
@@ -205,8 +207,8 @@ pub struct GpuContext {
     render_image: Arc<StorageImage>,
     texture_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
     clut_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
-    // TODO: fix this type
-    render_image_framebuffer: Arc<Framebuffer<((), Arc<ImageView<Arc<StorageImage>>>)>>,
+
+    render_image_framebuffer: Arc<Framebuffer>,
     pipeline: Arc<GraphicsPipeline>,
     // TODO: this buffer gives Gpu lock issues, so either we create
     //  buffer every time, we draw, or we create multiple buffers and loop through them
@@ -267,47 +269,43 @@ impl GpuContext {
         let command_buffer = builder.build().unwrap();
         let image_clear_future = command_buffer.execute(queue.clone()).unwrap();
 
-        let vs = vs::Shader::load(device.clone()).unwrap();
-        let fs = fs::Shader::load(device.clone()).unwrap();
+        let vs = vs::load(device.clone()).unwrap();
+        let fs = fs::load(device.clone()).unwrap();
 
-        let render_pass = Arc::new(
-            vulkano::single_pass_renderpass!(
-                device.clone(),
-                attachments: {
-                    color: {
-                        load: Load,
-                        store: Store,
-                        format: Format::A1R5G5B5_UNORM_PACK16,
-                        samples: 1,
-                    }
-                },
-                pass: {
-                    color: [color],
-                    depth_stencil: {}
+        let render_pass = vulkano::single_pass_renderpass!(
+            device.clone(),
+            attachments: {
+                color: {
+                    load: Load,
+                    store: Store,
+                    format: Format::A1R5G5B5_UNORM_PACK16,
+                    samples: 1,
                 }
+            },
+            pass: {
+                color: [color],
+                depth_stencil: {}
+            }
+        )
+        .unwrap();
+
+        let pipeline = GraphicsPipeline::start()
+            .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertex>())
+            .vertex_shader(vs.entry_point("main").unwrap(), ())
+            .input_assembly_state(
+                InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
             )
-            .unwrap(),
-        );
+            .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+            .fragment_shader(fs.entry_point("main").unwrap(), ())
+            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+            .build(device.clone())
+            .unwrap();
 
-        let pipeline = Arc::new(
-            GraphicsPipeline::start()
-                .vertex_input_single_buffer::<DrawingVertex>()
-                .vertex_shader(vs.main_entry_point(), ())
-                .triangle_strip()
-                .viewports_dynamic_scissors_irrelevant(1)
-                .fragment_shader(fs.main_entry_point(), ())
-                .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-                .build(device.clone())
-                .unwrap(),
-        );
-
-        let render_image_framebuffer = Arc::new(
-            Framebuffer::start(render_pass.clone())
-                .add(ImageView::new(render_image.clone()).unwrap())
-                .unwrap()
-                .build()
-                .unwrap(),
-        );
+        let render_image_framebuffer = Framebuffer::start(render_pass.clone())
+            .add(ImageView::new(render_image.clone()).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
 
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
             device.clone(),
@@ -855,7 +853,7 @@ impl GpuContext {
             .add_buffer(self.clut_buffer.clone())
             .unwrap();
 
-        let set = Arc::new(set_builder.build().unwrap());
+        let set = set_builder.build().unwrap();
 
         builder
             .begin_render_pass(

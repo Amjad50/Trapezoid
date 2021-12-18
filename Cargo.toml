@@ -11,9 +11,9 @@ psx-core = { path = "./psx-core", version = "*" }
 env_logger = "0.8.3"
 clap = "3.0.0-beta.2"
 
-vulkano = "0.26"
+vulkano = "0.27"
 winit = "0.25"
-vulkano-win = "0.26"
+vulkano-win = "0.27"
 
 [workspace]
 members = [
