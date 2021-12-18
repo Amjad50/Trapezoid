@@ -568,6 +568,8 @@ impl GpuContext {
     pub fn write_vram_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
         self.gpu_future.as_mut().unwrap().cleanup_finished();
 
+        // TODO: check for out-of-bound writes here
+
         let left = block_range.0.start;
         let top = block_range.1.start;
         let width = block_range.0.len() as u32;
@@ -616,6 +618,8 @@ impl GpuContext {
     }
 
     pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
+        // TODO: check for out-of-bound reads here
+
         let left = block_range.0.start;
         let top = block_range.1.start;
         let width = block_range.0.len() as u32;
@@ -755,21 +759,6 @@ impl GpuContext {
         let height = drawing_bottom - drawing_top + 1;
         let width = drawing_right - drawing_left + 1;
 
-        let push_constants = fs::ty::PushConstantData {
-            offset: [self.drawing_offset.0, self.drawing_offset.1],
-            drawing_top_left: [left, top],
-            drawing_size: [width, height],
-
-            is_textured: textured as u32,
-            is_texture_blended: texture_blending as u32,
-            tex_page_color_mode: texture_params.tex_page_color_mode as u32,
-            texture_flip: [
-                texture_params.texture_flip.0 as u32,
-                texture_params.texture_flip.1 as u32,
-            ],
-            _dummy0: [0; 4],
-        };
-
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
                 self.device.clone(),
@@ -778,7 +767,24 @@ impl GpuContext {
             )
             .unwrap();
 
+        let mut texture_width = 0;
         if textured {
+            texture_width = texture_params.texture_width();
+            let tex_base_x = texture_params.tex_page_base[0];
+            if tex_base_x + texture_width > 1024 {
+                // make sure that no tex_coords are not out of bounds
+                texture_width = 1024 - tex_base_x;
+                for &DrawingVertex {
+                    tex_coord: [x, _], ..
+                } in vertices
+                {
+                    assert!(
+                        x <= texture_width,
+                        "Using out-of-bound tex_coord in out-of-bound texture base_x={}, modified_width={}, coord_x={}",
+                        tex_base_x, texture_width, x
+                    );
+                }
+            }
             builder
                 .copy_image_to_buffer_dimensions(
                     self.render_image.clone(),
@@ -788,25 +794,51 @@ impl GpuContext {
                         texture_params.tex_page_base[1],
                         0,
                     ],
-                    [texture_params.texture_width(), 256, 1],
+                    [texture_width, 256, 1],
                     0,
                     1,
                     0,
                 )
                 .unwrap();
             if texture_params.does_need_clut() {
+                // TODO: if the clut is out of bound, then we only copy the
+                //       until bound, and leave the rest, this will result in
+                //       clut information from the previous buffer, hopefully
+                //       they are not used. Not sure if we need wrapping here or what.
+                let mut clut_width = texture_params.clut_width();
+                let clut_base_x = texture_params.clut_base[0];
+
+                if clut_base_x + clut_width > 1024 {
+                    clut_width = 1024 - clut_base_x;
+                }
+
                 builder
                     .copy_image_to_buffer_dimensions(
                         self.render_image.clone(),
                         self.clut_buffer.clone(),
-                        [texture_params.clut_base[0], texture_params.clut_base[1], 0],
-                        [texture_params.clut_width(), 1, 1],
+                        [clut_base_x, texture_params.clut_base[1], 0],
+                        [clut_width, 1, 1],
                         0,
                         1,
                         0,
                     )
                     .unwrap();
             }
+        };
+
+        let push_constants = fs::ty::PushConstantData {
+            offset: [self.drawing_offset.0, self.drawing_offset.1],
+            drawing_top_left: [left, top],
+            drawing_size: [width, height],
+
+            is_textured: textured as u32,
+            texture_width,
+            is_texture_blended: texture_blending as u32,
+            tex_page_color_mode: texture_params.tex_page_color_mode as u32,
+            texture_flip: [
+                texture_params.texture_flip.0 as u32,
+                texture_params.texture_flip.1 as u32,
+            ],
         };
 
         let layout = self

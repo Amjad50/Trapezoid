@@ -11,6 +11,7 @@ layout(push_constant) uniform PushConstantData {
     uvec2 drawing_size;
 
     bool is_textured;
+    uint texture_width;
     bool is_texture_blended;
     uint tex_page_color_mode;
     bvec2 texture_flip;
