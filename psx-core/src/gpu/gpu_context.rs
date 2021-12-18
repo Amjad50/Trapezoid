@@ -678,6 +678,17 @@ impl GpuContext {
             )
             .unwrap();
 
+        let mut width = size.0;
+        let mut height = size.1;
+        // TODO: I'm not sure if we should support wrapping, but for now
+        //       we do not, since we would need to do extra clean draws
+        if top_left.0 + width > 1024 {
+            width = 1024 - top_left.0;
+        }
+        if top_left.1 + height > 512 {
+            height = 512 - top_left.1;
+        }
+
         // TODO: check that the gl color encoding works well with vulkano
         let u16_color = gl_pixel_to_u16(&(color.0, color.1, color.2, 0));
 
@@ -697,7 +708,7 @@ impl GpuContext {
                 buffer,
                 self.render_image.clone(),
                 [top_left.0, top_left.1, 0],
-                [size.0, size.1, 1],
+                [width, height, 1],
                 0,
                 1,
                 0,
