@@ -173,6 +173,8 @@ impl FrontBlit {
         D: ImageAccess + 'static,
         IF: GpuFuture,
     {
+        let [width, height] = dest_image.dimensions().width_height();
+
         let sampler = Sampler::new(
             self.device.clone(),
             Filter::Nearest,
@@ -207,14 +209,14 @@ impl FrontBlit {
                     .with_component_mapping(component_mapping)
                     .build()
                     .unwrap(),
-                sampler.clone(),
+                sampler,
             )
             .unwrap();
 
         let set = set_builder.build().unwrap();
 
         let framebuffer = Framebuffer::start(self.render_pass.clone())
-            .add(ImageView::new(dest_image.clone()).unwrap())
+            .add(ImageView::new(dest_image).unwrap())
             .unwrap()
             .build()
             .unwrap();
@@ -228,8 +230,6 @@ impl FrontBlit {
                 CommandBufferUsage::OneTimeSubmit,
             )
             .unwrap();
-
-        let [width, height] = dest_image.clone().dimensions().width_height();
 
         builder
             .begin_render_pass(framebuffer, SubpassContents::Inline, [ClearValue::None])
@@ -247,7 +247,7 @@ impl FrontBlit {
                 PipelineBindPoint::Graphics,
                 self.pipeline.layout().clone(),
                 0,
-                set.clone(),
+                set,
             )
             .push_constants(self.pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, self.vertex_buffer.clone())

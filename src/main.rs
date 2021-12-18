@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use psx_core::{DigitalControllerKey, Psx};
 
-use clap::Clap;
+use clap::Parser;
 use vulkano::{
     device::{
         physical::{PhysicalDevice, PhysicalDeviceType},
@@ -223,7 +223,7 @@ impl VkDisplay {
     }
 }
 
-#[derive(Clap, Debug)]
+#[derive(Parser, Debug)]
 #[clap(version = "0.1.0", author = "Amjad Alsharafi", about = "PSX emulator")]
 struct PsxEmuArgs {
     /// The bios file to run

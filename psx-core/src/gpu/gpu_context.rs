@@ -219,8 +219,6 @@ pub struct GpuContext {
     front_blit: FrontBlit,
 
     gpu_future: Option<Box<dyn GpuFuture>>,
-    // /// Stores the VRAM content to be used for rendering in the shaders
-    // texture_buffer: Texture2d,
 }
 
 impl GpuContext {
@@ -315,7 +313,7 @@ impl GpuContext {
             .build(device.clone())
             .unwrap();
 
-        let render_image_framebuffer = Framebuffer::start(render_pass.clone())
+        let render_image_framebuffer = Framebuffer::start(render_pass)
             .add(ImageView::new(render_image.clone()).unwrap())
             .unwrap()
             .build()
@@ -385,35 +383,6 @@ impl GpuContext {
         self.gpu_stat.bits |= (texture_params.semi_transparency_mode as u32) << 5;
         self.gpu_stat.bits |= (texture_params.tex_page_color_mode as u32) << 7;
         self.gpu_stat.bits |= (texture_params.texture_disable as u32) << 15;
-    }
-
-    fn get_semi_transparency_blending_params(&self, semi_transparecy_mode: u8) -> () {
-        //let color_func = match semi_transparecy_mode & 3 {
-        //    0 => BlendingFunction::Addition {
-        //        source: LinearBlendingFactor::SourceAlpha,
-        //        destination: LinearBlendingFactor::OneMinusSourceAlpha,
-        //    },
-        //    1 => BlendingFunction::Addition {
-        //        source: LinearBlendingFactor::One,
-        //        destination: LinearBlendingFactor::SourceAlpha,
-        //    },
-        //    2 => BlendingFunction::ReverseSubtraction {
-        //        source: LinearBlendingFactor::One,
-        //        destination: LinearBlendingFactor::SourceAlpha,
-        //    },
-        //    3 => BlendingFunction::Addition {
-        //        source: LinearBlendingFactor::SourceAlpha,
-        //        destination: LinearBlendingFactor::OneMinusSourceAlpha,
-        //    },
-        //    _ => unreachable!(),
-        //};
-
-        //Blend {
-        //    color: color_func,
-        //    // TODO: handle alpha so that it takes the mask value
-        //    alpha: BlendingFunction::AlwaysReplace,
-        //    constant_value: (1.0, 1.0, 1.0, 1.0),
-        //}
     }
 }
 
@@ -589,7 +558,7 @@ impl GpuContext {
     pub fn draw_polygon(
         &mut self,
         vertices: &[DrawingVertex],
-        texture_params: DrawingTextureParams,
+        mut texture_params: DrawingTextureParams,
         textured: bool,
         texture_blending: bool,
         semi_transparent: bool,
@@ -600,7 +569,7 @@ impl GpuContext {
             self.device.clone(),
             BufferUsage::all(),
             false,
-            vertices.into_iter().cloned(),
+            vertices.iter().cloned(),
         )
         .unwrap();
 
@@ -622,6 +591,11 @@ impl GpuContext {
 
         let mut texture_width = 0;
         if textured {
+            if !self.allow_texture_disable {
+                texture_params.texture_disable = false;
+            }
+            self.update_gpu_stat_from_texture_params(&texture_params);
+
             texture_width = texture_params.texture_width();
             let tex_base_x = texture_params.tex_page_base[0];
             if tex_base_x + texture_width > 1024 {
@@ -775,10 +749,10 @@ impl GpuContext {
                 PipelineBindPoint::Graphics,
                 self.pipeline.layout().clone(),
                 0,
-                set.clone(),
+                set,
             )
             .push_constants(self.pipeline.layout().clone(), 0, push_constants)
-            .bind_vertex_buffers(0, vertex_buffer.clone())
+            .bind_vertex_buffers(0, vertex_buffer)
             .draw(vertices.len() as u32, 1, 0, 0)
             .unwrap()
             .end_render_pass()
@@ -796,104 +770,6 @@ impl GpuContext {
                 .unwrap()
                 .boxed(),
         );
-
-        //if textured {
-        //    if !self.allow_texture_disable {
-        //        texture_params.texture_disable = false;
-        //    }
-        //    self.update_gpu_stat_from_texture_params(&texture_params);
-
-        //    // if the texure we can using is inside `rendering`, bring it back
-        //    // to `vram` and `texture_buffer`
-        //    //
-        //    // 0 => 64,
-        //    // 1 => 128,
-        //    // 2 => 256,
-        //    let row_size = 64 * (1 << texture_params.tex_page_color_mode);
-        //    let texture_block = (
-        //        texture_params.tex_page_base[0]..texture_params.tex_page_base[0] + row_size,
-        //        texture_params.tex_page_base[1]..texture_params.tex_page_base[1] + 256,
-        //    );
-        //    if self.is_block_in_rendering(&texture_block) {
-        //        self.move_from_rendering_to_vram(&texture_block);
-        //    }
-        //}
-
-        //// TODO: if its textured, make sure the textures are not in rendering
-        ////  ranges and are updated in the texture buffer
-
-        //let (drawing_left, drawing_top) = self.drawing_area_top_left;
-        //let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
-
-        //let drawing_range = (
-        //    drawing_left..(drawing_right + 1),
-        //    drawing_top..(drawing_bottom + 1),
-        //);
-
-        //self.add_to_rendering_range(drawing_range);
-
-        //let left = drawing_left;
-        //let top = drawing_top;
-        //let height = drawing_bottom - drawing_top + 1;
-        //let width = drawing_right - drawing_left + 1;
-        //let bottom = to_gl_bottom(top, height);
-
-        //let semi_transparency_mode = if textured {
-        //    texture_params.semi_transparency_mode
-        //} else {
-        //    self.gpu_stat.semi_transparency_mode()
-        //};
-        //let blend = self.get_semi_transparency_blending_params(semi_transparency_mode);
-
-        //let draw_params = glium::DrawParameters {
-        //    viewport: Some(glium::Rect {
-        //        left,
-        //        bottom,
-        //        width,
-        //        height,
-        //    }),
-        //    blend,
-        //    color_mask: (true, true, true, false),
-        //    ..Default::default()
-        //};
-
-        //let full_index_list = &[0u16, 1, 2, 1, 2, 3];
-        //let index_list = if vertices.len() == 4 {
-        //    &full_index_list[..]
-        //} else {
-        //    &full_index_list[..3]
-        //};
-
-        //let vertex_buffer = VertexBuffer::new(&self.gl_context, vertices).unwrap();
-        //let index_buffer =
-        //    IndexBuffer::new(&self.gl_context, PrimitiveType::TrianglesList, index_list).unwrap();
-
-        //let uniforms = uniform! {
-        //    offset: self.drawing_offset,
-        //    texture_flip_x: texture_params.texture_flip.0,
-        //    texture_flip_y: texture_params.texture_flip.1,
-        //    is_textured: textured,
-        //    is_texture_blended: texture_blending,
-        //    semi_transparency_mode: semi_transparency_mode,
-        //    semi_transparent: semi_transparent,
-        //    tex: self.texture_buffer.sampled(),
-        //    tex_page_base: texture_params.tex_page_base,
-        //    tex_page_color_mode: texture_params.tex_page_color_mode,
-        //    clut_base: texture_params.clut_base,
-        //    drawing_top_left: [left, top],
-        //    drawing_size: [width, height],
-        //};
-
-        //let mut texture_target = self.drawing_texture.as_surface();
-        //texture_target
-        //    .draw(
-        //        &vertex_buffer,
-        //        &index_buffer,
-        //        &self.program,
-        //        &uniforms,
-        //        &draw_params,
-        //    )
-        //    .unwrap();
     }
 
     pub fn blit_to_front<D, IF>(&mut self, dest_image: Arc<D>, full_vram: bool, in_future: IF)
@@ -931,40 +807,5 @@ impl GpuContext {
 
         // reset future since we are waiting
         self.gpu_future = Some(sync::now(self.device.clone()).boxed());
-
-        //let (left, top) = self.vram_display_area_start;
-        //let width = self.gpu_stat.horizontal_resolution();
-        //let height = self.gpu_stat.vertical_resolution();
-        //let bottom = to_gl_bottom(top, height);
-
-        //let src_rect = if full_vram {
-        //    Rect {
-        //        left: 0,
-        //        bottom: 0,
-        //        width: 1024,
-        //        height: 512,
-        //    }
-        //} else {
-        //    Rect {
-        //        left,
-        //        bottom,
-        //        width,
-        //        height,
-        //    }
-        //};
-
-        //let (target_w, target_h) = s.get_dimensions();
-
-        //self.drawing_texture.as_surface().blit_color(
-        //    &src_rect,
-        //    s,
-        //    &BlitTarget {
-        //        left: 0,
-        //        bottom: 0,
-        //        width: target_w as i32,
-        //        height: target_h as i32,
-        //    },
-        //    MagnifySamplerFilter::Nearest,
-        //);
     }
 }
