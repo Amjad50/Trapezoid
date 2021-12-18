@@ -13,6 +13,7 @@ use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint};
 use vulkano::render_pass::{Framebuffer, Subpass};
+use vulkano::sampler::{Filter, MipmapMode, Sampler, SamplerAddressMode};
 use vulkano::sync::{self, GpuFuture};
 
 use super::front_blit::FrontBlit;
@@ -205,6 +206,7 @@ pub struct GpuContext {
     device: Arc<Device>,
     queue: Arc<Queue>,
     render_image: Arc<StorageImage>,
+    render_image_back_image: Arc<StorageImage>,
     texture_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
     clut_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
 
@@ -224,6 +226,18 @@ pub struct GpuContext {
 impl GpuContext {
     pub fn new(device: Arc<Device>, queue: Arc<Queue>) -> Self {
         let render_image = StorageImage::new(
+            device.clone(),
+            ImageDimensions::Dim2d {
+                width: 1024,
+                height: 512,
+                array_layers: 1,
+            },
+            Format::A1R5G5B5_UNORM_PACK16,
+            [queue.family()],
+        )
+        .unwrap();
+
+        let render_image_back_image = StorageImage::new(
             device.clone(),
             ImageDimensions::Dim2d {
                 width: 1024,
@@ -320,166 +334,6 @@ impl GpuContext {
 
         let gpu_future = Some(image_clear_future.join(texture_blit_future).boxed());
 
-        //let program = program!(&gl_context,
-        //    140 => {
-        //        vertex: "
-        //            #version 140
-        //            in vec2 position;
-        //            in vec3 color;
-        //            in uvec2 tex_coord;
-
-        //            out vec3 v_color;
-        //            out vec2 v_tex_coord;
-
-        //            uniform ivec2 offset;
-        //            uniform uvec2 drawing_top_left;
-        //            uniform uvec2 drawing_size;
-
-        //            void main() {
-        //                float posx = (position.x + offset.x - drawing_top_left.x) / drawing_size.x * 2 - 1;
-        //                float posy = (position.y + offset.y - drawing_top_left.x) / drawing_size.y * (-2) + 1;
-
-        //                gl_Position = vec4(posx, posy, 0.0, 1.0);
-        //                v_color = color;
-        //                v_tex_coord = vec2(tex_coord);
-        //            }
-        //        ",
-        //        fragment: "
-        //            #version 140
-
-        //            in vec3 v_color;
-        //            in vec2 v_tex_coord;
-
-        //            out vec4 out_color;
-
-        //            uniform bool texture_flip_x;
-        //            uniform bool texture_flip_y;
-        //            uniform bool is_textured;
-        //            uniform bool is_texture_blended;
-        //            uniform bool semi_transparent;
-        //            uniform uint semi_transparency_mode;
-        //            uniform sampler2D tex;
-        //            uniform uvec2 tex_page_base;
-        //            uniform uint tex_page_color_mode;
-        //            uniform uvec2 clut_base;
-
-        //            vec4 get_color_from_u16(uint color_texel) {
-        //                uint r = color_texel & 0x1Fu;
-        //                uint g = (color_texel >> 5) & 0x1Fu;
-        //                uint b = (color_texel >> 10) & 0x1Fu;
-        //                uint a = (color_texel >> 15) & 1u;
-
-        //                return vec4(float(r) / 31.0, float(g) / 31.0, float(b) / 31.0, float(a));
-        //            }
-
-        //            vec4 get_color_with_semi_transparency(vec3 color, float semi_transparency_param) {
-        //                float alpha;
-        //                if (semi_transparency_mode == 0u) {
-        //                    if (semi_transparency_param == 1.0) {
-        //                        alpha = 0.5;
-        //                    } else {
-        //                        alpha = 1.0;
-        //                    }
-        //                } else if (semi_transparency_mode == 1u) {
-        //                    alpha = semi_transparency_param;
-        //                } else if (semi_transparency_mode == 2u) {
-        //                    alpha = semi_transparency_param;
-        //                } else {
-        //                    // FIXME: inaccurate mode 3 semi transparency
-        //                    //
-        //                    // these numbers with the equation:
-        //                    // (source * source_alpha + dest * (1 - source_alpha)
-        //                    // Will result in the following cases:
-        //                    // if semi=1:
-        //                    //      s * 0.25 + d * 0.75
-        //                    // if semi=0:
-        //                    //      s * 1.0 + d * 0.0
-        //                    //
-        //                    // but we need
-        //                    // if semi=1:
-        //                    //      s * 0.25 + d * 1.00
-        //                    // if semi=0:
-        //                    //      s * 1.0 + d * 0.0
-        //                    //
-        //                    // Thus, this is not accurate, but temporary will keep
-        //                    // it like this until we find a new solution
-        //                    if (semi_transparency_param == 1.0) {
-        //                        alpha = 0.25;
-        //                    } else {
-        //                        alpha = 1.0;
-        //                    }
-        //                }
-
-        //                return vec4(color, alpha);
-        //            }
-
-        //            void main() {
-        //                // retrieve the interpolated value of `tex_coord`
-        //                uvec2 tex_coord = uvec2(round(v_tex_coord));
-
-        //                if (is_textured) {
-        //                    // how many pixels in 16 bit
-        //                    uint divider;
-        //                    if (tex_page_color_mode == 0u) {
-        //                        divider = 4u;
-        //                    } else if (tex_page_color_mode == 1u) {
-        //                        divider = 2u;
-        //                    } else {
-        //                        divider = 1u;
-        //                    };
-
-        //                    // offsetted position
-        //                    // FIXME: fix weird inconsistent types here (uint and int)
-        //                    int x;
-        //                    int y;
-        //                    if (texture_flip_x) {
-        //                        x = int(tex_page_base.x + (256u / divider)) - int(tex_coord.x / divider);
-        //                    } else {
-        //                        x = int(tex_page_base.x) + int(tex_coord.x / divider);
-        //                    }
-        //                    if (texture_flip_y) {
-        //                        y = int(tex_page_base.y + 256u) - int(tex_coord.y);
-        //                    } else {
-        //                        y = int(tex_page_base.y) + int(tex_coord.y);
-        //                    }
-
-        //                    uint color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
-
-        //                    // if we need clut, then compute it
-        //                    if (tex_page_color_mode == 0u || tex_page_color_mode == 1u) {
-        //                        uint mask = 0xFFFFu >> (16u - (16u / divider));
-        //                        uint clut_index_shift = (tex_coord.x % divider) * (16u / divider);
-        //                        if (texture_flip_x) {
-        //                            clut_index_shift = 12u - clut_index_shift;
-        //                        }
-        //                        uint clut_index = (color_value >> clut_index_shift) & mask;
-
-        //                        x = int(clut_base.x + clut_index);
-        //                        y = int(clut_base.y);
-        //                        color_value = uint(texelFetch(tex, ivec2(x, y), 0).r * 0xFFFF);
-        //                    }
-
-        //                    // if its all 0, then its transparent
-        //                    if (color_value == 0u){
-        //                        discard;
-        //                    }
-
-        //                    vec4 color_with_alpha = get_color_from_u16(color_value);
-        //                    vec3 color = vec3(color_with_alpha);
-
-        //                    if (is_texture_blended) {
-        //                        color *=  v_color * 2;
-        //                    }
-        //                    out_color = get_color_with_semi_transparency(color, color_with_alpha.a);
-        //                } else {
-        //                    out_color = get_color_with_semi_transparency(v_color, float(semi_transparent));
-        //                }
-        //            }
-        //        "
-        //    },
-        //)
-        //.unwrap();
-
         Self {
             gpu_stat: Default::default(),
             allow_texture_disable: false,
@@ -505,6 +359,7 @@ impl GpuContext {
             render_image,
             render_image_framebuffer,
 
+            render_image_back_image,
             texture_buffer,
             clut_buffer,
 
@@ -737,7 +592,7 @@ impl GpuContext {
         texture_params: DrawingTextureParams,
         textured: bool,
         texture_blending: bool,
-        _semi_transparent: bool,
+        semi_transparent: bool,
     ) {
         self.gpu_future.as_mut().unwrap().cleanup_finished();
 
@@ -824,10 +679,50 @@ impl GpuContext {
             }
         };
 
+        // copy to the back buffer
+        builder
+            .copy_image(
+                self.render_image.clone(),
+                [0, 0, 0],
+                0,
+                0,
+                self.render_image_back_image.clone(),
+                [0, 0, 0],
+                0,
+                0,
+                [1024, 512, 1],
+                1,
+            )
+            .unwrap();
+
+        let sampler = Sampler::new(
+            self.device.clone(),
+            Filter::Linear,
+            Filter::Linear,
+            MipmapMode::Nearest,
+            SamplerAddressMode::Repeat,
+            SamplerAddressMode::Repeat,
+            SamplerAddressMode::Repeat,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+
+        let semi_transparency_mode = if textured {
+            texture_params.semi_transparency_mode
+        } else {
+            self.gpu_stat.semi_transparency_mode()
+        };
+
         let push_constants = fs::ty::PushConstantData {
             offset: [self.drawing_offset.0, self.drawing_offset.1],
             drawing_top_left: [left, top],
             drawing_size: [width, height],
+
+            semi_transparent: semi_transparent as u32,
+            semi_transparency_mode: semi_transparency_mode as u32,
 
             is_textured: textured as u32,
             texture_width,
@@ -851,6 +746,11 @@ impl GpuContext {
             .add_buffer(self.texture_buffer.clone())
             .unwrap()
             .add_buffer(self.clut_buffer.clone())
+            .unwrap()
+            .add_sampled_image(
+                ImageView::new(self.render_image_back_image.clone()).unwrap(),
+                sampler,
+            )
             .unwrap();
 
         let set = set_builder.build().unwrap();

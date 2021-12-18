@@ -10,6 +10,9 @@ layout(push_constant) uniform PushConstantData {
     uvec2 drawing_top_left;
     uvec2 drawing_size;
 
+    bool semi_transparent;
+    uint semi_transparency_mode;
+
     bool is_textured;
     uint texture_width;
     bool is_texture_blended;
@@ -19,21 +22,50 @@ layout(push_constant) uniform PushConstantData {
 
 layout(set = 0, binding = 0) buffer TextureData {
     uint data[];
-} texture;
+} tex;
 layout(set = 0, binding = 1) buffer ClutData {
     uint data[];
 } clut;
+layout(set = 0, binding = 2) uniform sampler2D back_tex;
 
-vec4 get_color_from_u16(uint color_texel) {
+
+const vec2 screen_dim = vec2(1024, 512);
+
+const float transparency_factors[4][2] = {
+    // back factor, front factor
+    {0.5, 0.5},
+    {1.0, 1.0},
+    {1.0, -1.0},
+    {1.0, 0.25},
+};
+
+
+vec3 get_color_from_u16(uint color_texel) {
     uint r = color_texel & 0x1Fu;
     uint g = (color_texel >> 5) & 0x1Fu;
     uint b = (color_texel >> 10) & 0x1Fu;
-    uint a = (color_texel >> 15) & 1u;
 
-    return vec4(float(r) / 31.0, float(g) / 31.0, float(b) / 31.0, float(a));
+    return vec3(r, g, b) / 31.0;
+}
+
+bool alpha_from_u16(uint color_texel) {
+    return (color_texel & 0x8000u) != 0;
+}
+
+vec3 get_color_with_semi_transparency(vec3 color, bool semi_transparency_param) {
+    if (!semi_transparency_param) {
+        return color;
+    }
+
+    vec3 back_color = vec3(texture(back_tex, gl_FragCoord.xy / screen_dim));
+
+    float factors[] = transparency_factors[pc.semi_transparency_mode];
+
+    return (factors[0] * back_color) + (factors[1] * color);
 }
 
 void main() {
+    vec3 t_color;
     if (pc.is_textured) {
         uvec2 tex_coord = uvec2(round(v_tex_coord));
 
@@ -57,7 +89,7 @@ void main() {
 
         // since this is u32 datatype, we need to manually extract
         // the u16 data
-        uint color_value = texture.data[((y * texture_width) + x ) / 2];
+        uint color_value = tex.data[((y * texture_width) + x ) / 2];
         if (x % 2 == 0) {
             color_value = color_value & 0xFFFF;
         } else {
@@ -86,14 +118,15 @@ void main() {
             discard;
         }
 
-        vec4 color_with_alpha = get_color_from_u16(color_value);
-        vec3 color = vec3(color_with_alpha);
+        vec3 color = get_color_from_u16(color_value);
+        bool alpha = alpha_from_u16(color_value);
 
         if (pc.is_texture_blended) {
             color *=  v_color * 2;
         }
-        f_color = vec4(color.b, color.g, color.r, color_with_alpha.a);
+        t_color = get_color_with_semi_transparency(color, alpha);
     } else {
-        f_color = vec4(v_color.b, v_color.g, v_color.r, 0.0);
+        t_color = get_color_with_semi_transparency(v_color, pc.semi_transparent);
     }
+    f_color = vec4(t_color.b, t_color.g, t_color.r, 0.0);
 }
