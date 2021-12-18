@@ -9,8 +9,11 @@ edition = "2021"
 [dependencies]
 psx-core = { path = "./psx-core", version = "*" }
 env_logger = "0.8.3"
-glium = "0.30.2"
-clap = "3.0.0-beta.2"
+clap = { version = "3.0.0-beta.2", features = ["derive"] }
+
+vulkano = "0.27"
+winit = "0.25"
+vulkano-win = "0.27"
 
 [workspace]
 members = [
@@ -19,3 +22,6 @@ members = [
 
 [profile.dev]
 opt-level = 2
+
+[profile.release]
+debug = true

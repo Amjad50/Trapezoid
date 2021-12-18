@@ -7,13 +7,15 @@ mod ram;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::Arc;
 
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
+use vulkano::device::{Device, Queue};
 
 use crate::cdrom::Cdrom;
 use crate::controller_mem_card::ControllerAndMemoryCard;
 use crate::cpu::CpuBusProvider;
-use crate::gpu::{GlContext, Gpu};
+use crate::gpu::Gpu;
 use crate::spu::SpuRegisters;
 use crate::timers::Timers;
 
@@ -168,7 +170,8 @@ impl CpuBus {
     pub fn new<DiskPath: AsRef<Path>>(
         bios: Bios,
         disk_file: Option<DiskPath>,
-        gl_context: GlContext,
+        device: Arc<Device>,
+        queue: Arc<Queue>,
     ) -> Self {
         let mut s = Self {
             bios,
@@ -188,7 +191,7 @@ impl CpuBus {
 
             dma_bus: DmaBus {
                 main_ram: MainRam::default(),
-                gpu: Gpu::new(gl_context),
+                gpu: Gpu::new(device, queue),
             },
 
             scratchpad: Scratchpad::default(),
@@ -217,6 +220,10 @@ impl CpuBus {
 
     pub fn gpu(&self) -> &Gpu {
         &self.dma_bus.gpu
+    }
+
+    pub fn gpu_mut(&mut self) -> &mut Gpu {
+        &mut self.dma_bus.gpu
     }
 
     pub fn controller_mem_card_mut(&mut self) -> &mut ControllerAndMemoryCard {
