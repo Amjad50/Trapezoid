@@ -566,6 +566,8 @@ impl GpuContext {
 
 impl GpuContext {
     pub fn write_vram_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
+        self.gpu_future.as_mut().unwrap().cleanup_finished();
+
         let left = block_range.0.start;
         let top = block_range.1.start;
         let width = block_range.0.len() as u32;
@@ -666,6 +668,8 @@ impl GpuContext {
     }
 
     pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
+        self.gpu_future.as_mut().unwrap().cleanup_finished();
+
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
                 self.device.clone(),
@@ -722,6 +726,8 @@ impl GpuContext {
         texture_blending: bool,
         _semi_transparent: bool,
     ) {
+        self.gpu_future.as_mut().unwrap().cleanup_finished();
+
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
             self.device.clone(),
             BufferUsage::all(),
@@ -954,8 +960,6 @@ impl GpuContext {
         D: ImageAccess + 'static,
         IF: GpuFuture,
     {
-        self.gpu_future.as_mut().unwrap().cleanup_finished();
-
         let (topleft, size) = if full_vram {
             ([0; 2], [1024, 512])
         } else {
