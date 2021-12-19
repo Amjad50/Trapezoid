@@ -13,6 +13,8 @@ layout(push_constant) uniform PushConstantData {
     bool semi_transparent;
     uint semi_transparency_mode;
 
+    bool dither_enabled;
+
     bool is_textured;
     uint texture_width;
     bool is_texture_blended;
@@ -37,6 +39,13 @@ const float transparency_factors[4][2] = {
     {1.0, 1.0},
     {1.0, -1.0},
     {1.0, 0.25},
+};
+
+const float dither_table[16] = {
+    -4.0/255.0,  +0.0/255.0,  -3.0/255.0,  +1.0/255.0,   //\dither offsets for first two scanlines
+    +2.0/255.0,  -2.0/255.0,  +3.0/255.0,  -1.0/255.0,   ///
+    -3.0/255.0,  +1.0/255.0,  -4.0/255.0,  +0.0/255.0,   //\dither offsets for next two scanlines
+    +3.0/255.0,  -1.0/255.0,  +2.0/255.0,  -2.0/255.0    ///(same as above, but shifted two pixels horizontally)
 };
 
 
@@ -126,7 +135,17 @@ void main() {
         }
         t_color = get_color_with_semi_transparency(color, alpha);
     } else {
-        t_color = get_color_with_semi_transparency(v_color, pc.semi_transparent);
+        if (pc.dither_enabled) {
+            uint x = uint(gl_FragCoord.x) % 4;
+            uint y = uint(gl_FragCoord.y) % 4;
+
+            float change = dither_table[y * 4 + x];
+            t_color = v_color + change;
+        } else {
+            t_color = v_color;
+        }
+
+        t_color = get_color_with_semi_transparency(t_color, pc.semi_transparent);
     }
     f_color = vec4(t_color.b, t_color.g, t_color.r, 0.0);
 }

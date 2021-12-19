@@ -80,6 +80,10 @@ impl GpuStat {
     fn semi_transparency_mode(&self) -> u8 {
         ((self.bits & Self::SEMI_TRASPARENCY.bits) >> 5) as u8
     }
+
+    fn dither_enabled(&self) -> bool {
+        self.intersects(Self::DITHER_ENABLED)
+    }
 }
 
 pub struct Gpu {

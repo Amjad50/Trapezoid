@@ -698,6 +698,8 @@ impl GpuContext {
             semi_transparent: semi_transparent as u32,
             semi_transparency_mode: semi_transparency_mode as u32,
 
+            dither_enabled: self.gpu_stat.dither_enabled() as u32,
+
             is_textured: textured as u32,
             texture_width,
             is_texture_blended: texture_blending as u32,
@@ -706,6 +708,8 @@ impl GpuContext {
                 texture_params.texture_flip.0 as u32,
                 texture_params.texture_flip.1 as u32,
             ],
+
+            _dummy0: [0; 4],
         };
 
         let layout = self
