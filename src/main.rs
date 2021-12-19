@@ -46,7 +46,7 @@ impl VkDisplay {
         let instance = Instance::new(None, Version::V1_1, &required_extensions, None).unwrap();
 
         let surface = WindowBuilder::new()
-            .build_vk_surface(&event_loop, instance.clone())
+            .build_vk_surface(event_loop, instance.clone())
             .unwrap();
 
         let device_extensions = DeviceExtensions {
@@ -150,7 +150,7 @@ impl VkDisplay {
         let (device, mut queues) = Device::new(
             physical_device,
             &Features::none(),
-            &physical_device.required_extensions(),
+            physical_device.required_extensions(),
             [(queue_family, 0.5)].iter().cloned(),
         )
         .unwrap();
