@@ -4,7 +4,7 @@ use super::GpuContext;
 pub enum Gp0CmdType {
     Misc = 0,
     Polygon = 1,
-    _Line = 2,
+    Line = 2,
     Rectangle = 3,
     VramToVramBlit = 4,
     CpuToVramBlit = 5,
@@ -25,7 +25,7 @@ pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
             _ => Box::new(MiscCommand::new(data)),
         },
         1 => Box::new(PolygonCommand::new(data)),
-        2 => todo!(),
+        2 => Box::new(LineCommand::new(data)),
         3 => Box::new(RectangleCommand::new(data)),
         4 => Box::new(VramToVramBlitCommand::new(data)),
         5 => Box::new(CpuToVramBlitCommand::new(data)),
@@ -141,6 +141,85 @@ impl Gp0Command for PolygonCommand {
 
     fn cmd_type(&self) -> Gp0CmdType {
         Gp0CmdType::Polygon
+    }
+}
+
+#[derive(Debug)]
+struct LineCommand {
+    gouraud: bool,
+    polyline: bool,
+    semi_transparent: bool,
+    first_color: u32,
+    vertices: Vec<DrawingVertex>,
+    expecting_vertex: bool,
+    done_input: bool,
+}
+
+impl Gp0Command for LineCommand {
+    fn new(data0: u32) -> Self
+    where
+        Self: Sized,
+    {
+        let gouraud = (data0 >> 28) & 1 == 1;
+        let polyline = (data0 >> 27) & 1 == 1;
+        let vertices = if gouraud {
+            vec![DrawingVertex::new_with_color(data0)]
+        } else {
+            Vec::new()
+        };
+        Self {
+            gouraud,
+            polyline,
+            semi_transparent: (data0 >> 25) & 1 == 1,
+            first_color: data0 & 0xFFFFFF,
+            vertices,
+            expecting_vertex: true,
+            done_input: false,
+        }
+    }
+
+    fn add_param(&mut self, param: u32) {
+        if self.expecting_vertex {
+            // end of polyline
+            if self.polyline && self.vertices.len() >= 2 && (param & 0xF000F000) == 0x50005000 {
+                self.done_input = true;
+                return;
+            }
+            if self.gouraud {
+                self.vertices.last_mut().unwrap().position_from_u32(param);
+                self.expecting_vertex = false;
+            } else {
+                let mut vertex = DrawingVertex::new_with_color(self.first_color);
+                vertex.position_from_u32(param);
+                self.vertices.push(vertex);
+            }
+            if !self.polyline && self.vertices.len() == 2 {
+                self.done_input = true;
+            }
+        } else {
+            self.vertices.push(DrawingVertex::new_with_color(param));
+            self.expecting_vertex = true;
+        }
+    }
+
+    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
+        if !self.still_need_params() {
+            log::info!("LINE executing {:#?}", self);
+
+            ctx.draw_polyline(&self.vertices[..], self.semi_transparent);
+
+            true
+        } else {
+            false
+        }
+    }
+
+    fn still_need_params(&mut self) -> bool {
+        !self.done_input
+    }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::Line
     }
 }
 

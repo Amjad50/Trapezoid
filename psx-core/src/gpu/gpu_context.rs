@@ -211,7 +211,8 @@ pub struct GpuContext {
     clut_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
 
     render_image_framebuffer: Arc<Framebuffer>,
-    pipeline: Arc<GraphicsPipeline>,
+    polygon_pipeline: Arc<GraphicsPipeline>,
+    line_pipeline: Arc<GraphicsPipeline>,
     // TODO: this buffer gives Gpu lock issues, so either we create
     //  buffer every time, we draw, or we create multiple buffers and loop through them
     _vertex_buffer: Arc<CpuAccessibleBuffer<[DrawingVertex]>>,
@@ -301,12 +302,22 @@ impl GpuContext {
         )
         .unwrap();
 
-        let pipeline = GraphicsPipeline::start()
+        let polygon_pipeline = GraphicsPipeline::start()
             .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertex>())
             .vertex_shader(vs.entry_point("main").unwrap(), ())
             .input_assembly_state(
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
             )
+            .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+            .fragment_shader(fs.entry_point("main").unwrap(), ())
+            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+            .build(device.clone())
+            .unwrap();
+
+        let line_pipeline = GraphicsPipeline::start()
+            .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertex>())
+            .vertex_shader(vs.entry_point("main").unwrap(), ())
+            .input_assembly_state(InputAssemblyState::new().topology(PrimitiveTopology::LineStrip))
             .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
             .fragment_shader(fs.entry_point("main").unwrap(), ())
             .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
@@ -361,7 +372,8 @@ impl GpuContext {
             texture_buffer,
             clut_buffer,
 
-            pipeline,
+            polygon_pipeline,
+            line_pipeline,
 
             _vertex_buffer: vertex_buffer,
 
@@ -713,7 +725,7 @@ impl GpuContext {
         };
 
         let layout = self
-            .pipeline
+            .polygon_pipeline
             .layout()
             .descriptor_set_layouts()
             .get(0)
@@ -748,14 +760,157 @@ impl GpuContext {
                     depth_range: 0.0..1.0,
                 }],
             )
-            .bind_pipeline_graphics(self.pipeline.clone())
+            .bind_pipeline_graphics(self.polygon_pipeline.clone())
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
-                self.pipeline.layout().clone(),
+                self.polygon_pipeline.layout().clone(),
                 0,
                 set,
             )
-            .push_constants(self.pipeline.layout().clone(), 0, push_constants)
+            .push_constants(self.polygon_pipeline.layout().clone(), 0, push_constants)
+            .bind_vertex_buffers(0, vertex_buffer)
+            .draw(vertices.len() as u32, 1, 0, 0)
+            .unwrap()
+            .end_render_pass()
+            .unwrap();
+
+        let command_buffer = builder.build().unwrap();
+
+        self.gpu_future = Some(
+            self.gpu_future
+                .take()
+                .unwrap()
+                .then_execute(self.queue.clone(), command_buffer)
+                .unwrap()
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .boxed(),
+        );
+    }
+
+    pub fn draw_polyline(&mut self, vertices: &[DrawingVertex], semi_transparent: bool) {
+        self.gpu_future.as_mut().unwrap().cleanup_finished();
+
+        let vertex_buffer = CpuAccessibleBuffer::from_iter(
+            self.device.clone(),
+            BufferUsage::all(),
+            false,
+            vertices.iter().cloned(),
+        )
+        .unwrap();
+
+        let (drawing_left, drawing_top) = self.drawing_area_top_left;
+        let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
+
+        let left = drawing_left;
+        let top = drawing_top;
+        let height = drawing_bottom - drawing_top + 1;
+        let width = drawing_right - drawing_left + 1;
+
+        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
+            AutoCommandBufferBuilder::primary(
+                self.device.clone(),
+                self.queue.family(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
+
+        // copy to the back buffer
+        builder
+            .copy_image(
+                self.render_image.clone(),
+                [0, 0, 0],
+                0,
+                0,
+                self.render_image_back_image.clone(),
+                [0, 0, 0],
+                0,
+                0,
+                [1024, 512, 1],
+                1,
+            )
+            .unwrap();
+
+        let sampler = Sampler::new(
+            self.device.clone(),
+            Filter::Linear,
+            Filter::Linear,
+            MipmapMode::Nearest,
+            SamplerAddressMode::Repeat,
+            SamplerAddressMode::Repeat,
+            SamplerAddressMode::Repeat,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+
+        let semi_transparency_mode = self.gpu_stat.semi_transparency_mode();
+
+        let push_constants = fs::ty::PushConstantData {
+            offset: [self.drawing_offset.0, self.drawing_offset.1],
+            drawing_top_left: [left, top],
+            drawing_size: [width, height],
+
+            semi_transparent: semi_transparent as u32,
+            semi_transparency_mode: semi_transparency_mode as u32,
+
+            dither_enabled: self.gpu_stat.dither_enabled() as u32,
+
+            is_textured: false as u32,
+            texture_width: 0,
+            is_texture_blended: false as u32,
+            tex_page_color_mode: 0,
+            texture_flip: [0, 0],
+
+            _dummy0: [0; 4],
+        };
+
+        let layout = self
+            .line_pipeline
+            .layout()
+            .descriptor_set_layouts()
+            .get(0)
+            .unwrap();
+        let mut set_builder = PersistentDescriptorSet::start(layout.clone());
+
+        set_builder
+            .add_buffer(self.texture_buffer.clone())
+            .unwrap()
+            .add_buffer(self.clut_buffer.clone())
+            .unwrap()
+            .add_sampled_image(
+                ImageView::new(self.render_image_back_image.clone()).unwrap(),
+                sampler,
+            )
+            .unwrap();
+
+        let set = set_builder.build().unwrap();
+
+        builder
+            .begin_render_pass(
+                self.render_image_framebuffer.clone(),
+                SubpassContents::Inline,
+                [ClearValue::None],
+            )
+            .unwrap()
+            .set_viewport(
+                0,
+                [Viewport {
+                    origin: [left as f32, top as f32],
+                    dimensions: [width as f32, height as f32],
+                    depth_range: 0.0..1.0,
+                }],
+            )
+            .bind_pipeline_graphics(self.line_pipeline.clone())
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                self.line_pipeline.layout().clone(),
+                0,
+                set,
+            )
+            .push_constants(self.line_pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, vertex_buffer)
             .draw(vertices.len() as u32, 1, 0, 0)
             .unwrap()
