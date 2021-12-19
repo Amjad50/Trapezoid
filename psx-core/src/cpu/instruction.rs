@@ -135,20 +135,14 @@ impl Instruction {
         let imm26 = instruction & 0x3FFFFFF;
         let imm25 = instruction & 0x1FFFFFF;
 
-        let mut opcode = Self::get_opcode_from_primary(primary_identifier);
+        let opcode = Self::get_opcode_from_primary(primary_identifier);
 
-        // special
-        if let Opcode::Special = opcode {
-            opcode = Self::get_opcode_from_secondary(secondary_identifier);
-        }
-
-        if let Opcode::Cop(n) = opcode {
-            opcode = Self::get_cop_opcode(n, secondary_identifier, rt_raw, rs_raw);
-        }
-
-        if let Opcode::Bcondz = opcode {
-            opcode = Self::get_bcondz_opcode(rt_raw);
-        }
+        let opcode = match opcode {
+            Opcode::Special => Self::get_opcode_from_secondary(secondary_identifier),
+            Opcode::Cop(n) => Self::get_cop_opcode(n, secondary_identifier, rt_raw, rs_raw),
+            Opcode::Bcondz => Self::get_bcondz_opcode(rt_raw),
+            _ => opcode,
+        };
 
         Self {
             opcode,
@@ -180,8 +174,8 @@ impl Instruction {
             0x10 => Opcode::Bltzal,
             0x11 => Opcode::Bgezal,
             x if x & 1 == 0 => Opcode::Bltz,
-            x if x & 1 == 1 => Opcode::Bgez,
-            _ => unreachable!("rt_raw should be only 5 bits"),
+            // x if x & 1 == 1
+            _ => Opcode::Bgez,
         }
     }
 
