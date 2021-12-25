@@ -163,8 +163,13 @@ impl DrawingTextureParams {
     pub fn texture_width(&self) -> u32 {
         // 0 => 64
         // 1 => 128
-        // 1 << 256
-        1 << (6 + self.tex_page_color_mode)
+        // 2 => 256
+        let color_mode = if self.tex_page_color_mode == 3 {
+            2
+        } else {
+            self.tex_page_color_mode
+        };
+        1 << (6 + color_mode)
     }
 
     #[inline]
@@ -176,7 +181,12 @@ impl DrawingTextureParams {
     pub fn clut_width(&self) -> u32 {
         // 0 => 16
         // 1 => 256
-        1 << ((self.tex_page_color_mode + 1) * 4)
+        let color_mode = if self.tex_page_color_mode == 3 {
+            2
+        } else {
+            self.tex_page_color_mode
+        };
+        1 << ((color_mode + 1) * 4)
     }
 }
 
