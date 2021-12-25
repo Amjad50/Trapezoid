@@ -153,6 +153,7 @@ struct LineCommand {
     vertices: Vec<DrawingVertex>,
     expecting_vertex: bool,
     done_input: bool,
+    polyline_can_be_finished: bool,
 }
 
 impl Gp0Command for LineCommand {
@@ -175,16 +176,22 @@ impl Gp0Command for LineCommand {
             vertices,
             expecting_vertex: true,
             done_input: false,
+            polyline_can_be_finished: false,
         }
     }
 
     fn add_param(&mut self, param: u32) {
+        // end of polyline
+        if self.polyline
+            && self.polyline_can_be_finished
+            && self.vertices.len() >= 2
+            && (param & 0xF000F000) == 0x50005000
+        {
+            self.done_input = true;
+            return;
+        }
+
         if self.expecting_vertex {
-            // end of polyline
-            if self.polyline && self.vertices.len() >= 2 && (param & 0xF000F000) == 0x50005000 {
-                self.done_input = true;
-                return;
-            }
             if self.gouraud {
                 self.vertices.last_mut().unwrap().position_from_u32(param);
                 self.expecting_vertex = false;
@@ -193,12 +200,14 @@ impl Gp0Command for LineCommand {
                 vertex.position_from_u32(param);
                 self.vertices.push(vertex);
             }
+            self.polyline_can_be_finished = true;
             if !self.polyline && self.vertices.len() == 2 {
                 self.done_input = true;
             }
         } else {
             self.vertices.push(DrawingVertex::new_with_color(param));
             self.expecting_vertex = true;
+            self.polyline_can_be_finished = false;
         }
     }
 
