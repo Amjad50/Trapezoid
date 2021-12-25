@@ -6,7 +6,7 @@ use vulkano::command_buffer::{
 use vulkano::descriptor_set::PersistentDescriptorSet;
 use vulkano::device::{Device, Queue};
 use vulkano::format::{ClearValue, Format};
-use vulkano::image::view::ImageView;
+use vulkano::image::view::{ComponentMapping, ComponentSwizzle, ImageView};
 use vulkano::image::{ImageAccess, ImageDimensions, StorageImage};
 use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
@@ -158,36 +158,6 @@ impl DrawingTextureParams {
     pub fn set_texture_flip(&mut self, flip: (bool, bool)) {
         self.texture_flip = flip;
     }
-
-    #[inline]
-    pub fn texture_width(&self) -> u32 {
-        // 0 => 64
-        // 1 => 128
-        // 2 => 256
-        let color_mode = if self.tex_page_color_mode == 3 {
-            2
-        } else {
-            self.tex_page_color_mode
-        };
-        1 << (6 + color_mode)
-    }
-
-    #[inline]
-    pub fn does_need_clut(&self) -> bool {
-        self.tex_page_color_mode == 0 || self.tex_page_color_mode == 1
-    }
-
-    #[inline]
-    pub fn clut_width(&self) -> u32 {
-        // 0 => 16
-        // 1 => 256
-        let color_mode = if self.tex_page_color_mode == 3 {
-            2
-        } else {
-            self.tex_page_color_mode
-        };
-        1 << ((color_mode + 1) * 4)
-    }
 }
 
 pub struct GpuContext {
@@ -217,8 +187,6 @@ pub struct GpuContext {
     queue: Arc<Queue>,
     render_image: Arc<StorageImage>,
     render_image_back_image: Arc<StorageImage>,
-    texture_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
-    clut_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
 
     render_image_framebuffer: Arc<Framebuffer>,
     polygon_pipeline: Arc<GraphicsPipeline>,
@@ -255,21 +223,6 @@ impl GpuContext {
             },
             Format::A1R5G5B5_UNORM_PACK16,
             [queue.family()],
-        )
-        .unwrap();
-
-        let texture_buffer = CpuAccessibleBuffer::from_iter(
-            device.clone(),
-            BufferUsage::all(),
-            false,
-            (0..256 * 256).map(|_| 0),
-        )
-        .unwrap();
-        let clut_buffer = CpuAccessibleBuffer::from_iter(
-            device.clone(),
-            BufferUsage::all(),
-            false,
-            (0..256).map(|_| 0),
         )
         .unwrap();
 
@@ -379,8 +332,6 @@ impl GpuContext {
             render_image_framebuffer,
 
             render_image_back_image,
-            texture_buffer,
-            clut_buffer,
 
             polygon_pipeline,
             line_pipeline,
@@ -611,68 +562,11 @@ impl GpuContext {
             )
             .unwrap();
 
-        let mut texture_width = 0;
         if textured {
             if !self.allow_texture_disable {
                 texture_params.texture_disable = false;
             }
             self.update_gpu_stat_from_texture_params(&texture_params);
-
-            texture_width = texture_params.texture_width();
-            let tex_base_x = texture_params.tex_page_base[0];
-            if tex_base_x + texture_width > 1024 {
-                // make sure that no tex_coords are not out of bounds
-                texture_width = 1024 - tex_base_x;
-                for &DrawingVertex {
-                    tex_coord: [x, _], ..
-                } in vertices
-                {
-                    assert!(
-                        x <= texture_width,
-                        "Using out-of-bound tex_coord in out-of-bound texture base_x={}, modified_width={}, coord_x={}",
-                        tex_base_x, texture_width, x
-                    );
-                }
-            }
-            builder
-                .copy_image_to_buffer_dimensions(
-                    self.render_image.clone(),
-                    self.texture_buffer.clone(),
-                    [
-                        texture_params.tex_page_base[0],
-                        texture_params.tex_page_base[1],
-                        0,
-                    ],
-                    [texture_width, 256, 1],
-                    0,
-                    1,
-                    0,
-                )
-                .unwrap();
-            if texture_params.does_need_clut() {
-                // TODO: if the clut is out of bound, then we only copy the
-                //       until bound, and leave the rest, this will result in
-                //       clut information from the previous buffer, hopefully
-                //       they are not used. Not sure if we need wrapping here or what.
-                let mut clut_width = texture_params.clut_width();
-                let clut_base_x = texture_params.clut_base[0];
-
-                if clut_base_x + clut_width > 1024 {
-                    clut_width = 1024 - clut_base_x;
-                }
-
-                builder
-                    .copy_image_to_buffer_dimensions(
-                        self.render_image.clone(),
-                        self.clut_buffer.clone(),
-                        [clut_base_x, texture_params.clut_base[1], 0],
-                        [clut_width, 1, 1],
-                        0,
-                        1,
-                        0,
-                    )
-                    .unwrap();
-            }
         };
 
         // copy to the back buffer
@@ -693,8 +587,8 @@ impl GpuContext {
 
         let sampler = Sampler::new(
             self.device.clone(),
-            Filter::Linear,
-            Filter::Linear,
+            Filter::Nearest,
+            Filter::Nearest,
             MipmapMode::Nearest,
             SamplerAddressMode::Repeat,
             SamplerAddressMode::Repeat,
@@ -723,15 +617,14 @@ impl GpuContext {
             dither_enabled: self.gpu_stat.dither_enabled() as u32,
 
             is_textured: textured as u32,
-            texture_width,
+            clut_base: texture_params.clut_base,
+            tex_page_base: texture_params.tex_page_base,
             is_texture_blended: texture_blending as u32,
             tex_page_color_mode: texture_params.tex_page_color_mode as u32,
             texture_flip: [
                 texture_params.texture_flip.0 as u32,
                 texture_params.texture_flip.1 as u32,
             ],
-
-            _dummy0: [0; 4],
         };
 
         let layout = self
@@ -743,12 +636,15 @@ impl GpuContext {
         let mut set_builder = PersistentDescriptorSet::start(layout.clone());
 
         set_builder
-            .add_buffer(self.texture_buffer.clone())
-            .unwrap()
-            .add_buffer(self.clut_buffer.clone())
-            .unwrap()
             .add_sampled_image(
-                ImageView::new(self.render_image_back_image.clone()).unwrap(),
+                ImageView::start(self.render_image_back_image.clone())
+                    .with_component_mapping(ComponentMapping {
+                        r: ComponentSwizzle::Blue,
+                        b: ComponentSwizzle::Red,
+                        ..Default::default()
+                    })
+                    .build()
+                    .unwrap(),
                 sampler,
             )
             .unwrap();
@@ -843,8 +739,8 @@ impl GpuContext {
 
         let sampler = Sampler::new(
             self.device.clone(),
-            Filter::Linear,
-            Filter::Linear,
+            Filter::Nearest,
+            Filter::Nearest,
             MipmapMode::Nearest,
             SamplerAddressMode::Repeat,
             SamplerAddressMode::Repeat,
@@ -869,12 +765,11 @@ impl GpuContext {
             dither_enabled: self.gpu_stat.dither_enabled() as u32,
 
             is_textured: false as u32,
-            texture_width: 0,
+            tex_page_base: [0; 2],
+            clut_base: [0; 2],
             is_texture_blended: false as u32,
             tex_page_color_mode: 0,
             texture_flip: [0, 0],
-
-            _dummy0: [0; 4],
         };
 
         let layout = self
@@ -886,12 +781,15 @@ impl GpuContext {
         let mut set_builder = PersistentDescriptorSet::start(layout.clone());
 
         set_builder
-            .add_buffer(self.texture_buffer.clone())
-            .unwrap()
-            .add_buffer(self.clut_buffer.clone())
-            .unwrap()
             .add_sampled_image(
-                ImageView::new(self.render_image_back_image.clone()).unwrap(),
+                ImageView::start(self.render_image_back_image.clone())
+                    .with_component_mapping(ComponentMapping {
+                        r: ComponentSwizzle::Blue,
+                        b: ComponentSwizzle::Red,
+                        ..Default::default()
+                    })
+                    .build()
+                    .unwrap(),
                 sampler,
             )
             .unwrap();
