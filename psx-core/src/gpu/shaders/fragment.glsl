@@ -71,6 +71,17 @@ uint u16_from_color_with_alpha(vec4 raw_color_value) {
 
 void main() {
     vec3 t_color;
+
+    if (pc.dither_enabled) {
+        uint x = uint(gl_FragCoord.x) % 4;
+        uint y = uint(gl_FragCoord.y) % 4;
+
+        float change = dither_table[y * 4 + x];
+        t_color = v_color + change;
+    } else {
+        t_color = v_color;
+    }
+
     if (pc.is_textured) {
         uvec2 tex_coord = uvec2(round(v_tex_coord));
 
@@ -116,20 +127,10 @@ void main() {
         vec3 color = color_value.rgb;
 
         if (pc.is_texture_blended) {
-            color *= v_color * 2;
+            color *= t_color * 2;
         }
-        t_color = get_color_with_semi_transparency(color, color_value.a == 1.0);
+        t_color = get_color_with_semi_transparency(color, pc.semi_transparent && color_value.a == 1.0);
     } else {
-        if (pc.dither_enabled) {
-            uint x = uint(gl_FragCoord.x) % 4;
-            uint y = uint(gl_FragCoord.y) % 4;
-
-            float change = dither_table[y * 4 + x];
-            t_color = v_color + change;
-        } else {
-            t_color = v_color;
-        }
-
         t_color = get_color_with_semi_transparency(t_color, pc.semi_transparent);
     }
     f_color = vec4(t_color.b, t_color.g, t_color.r, 0.0);
