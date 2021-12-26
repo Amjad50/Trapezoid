@@ -68,7 +68,7 @@ impl Gp0Command for PolygonCommand {
             is_4_vertices: (data0 >> 27) & 1 == 1,
             textured: (data0 >> 26) & 1 == 1,
             semi_transparent: (data0 >> 25) & 1 == 1,
-            texture_blending: (data0 >> 24) & 1 == 1,
+            texture_blending: (data0 >> 24) & 1 == 0, // enabled with 0
             vertices: [
                 DrawingVertex::new_with_color(data0),
                 DrawingVertex::new_with_color(data0),
