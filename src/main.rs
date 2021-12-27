@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use psx_core::{DigitalControllerKey, Psx};
 
@@ -29,6 +29,7 @@ enum DisplayType {
         swapchain: Arc<Swapchain<Window>>,
         images: Vec<Arc<SwapchainImage<Window>>>,
         full_vram_display: bool,
+        last_frame_time: Instant,
     },
     Headless,
 }
@@ -118,6 +119,7 @@ impl VkDisplay {
                 swapchain,
                 images,
                 full_vram_display,
+                last_frame_time: Instant::now(),
             },
         }
     }
@@ -187,14 +189,23 @@ impl VkDisplay {
         }
     }
 
-    fn render_frame(&self, psx: &mut Psx) {
-        match &self.display_type {
+    fn render_frame(&mut self, psx: &mut Psx) {
+        match &mut self.display_type {
             DisplayType::Windowed {
                 swapchain,
                 images,
                 full_vram_display,
-                ..
+                surface,
+                last_frame_time,
             } => {
+                surface.window().set_title(&format!(
+                    "PSX - FPS: {}",
+                    (1. / last_frame_time.elapsed().as_secs_f32()).round()
+                ));
+
+                // reset timer
+                *last_frame_time = Instant::now();
+
                 let (image_num, suboptimal, acquire_future) =
                     match swapchain::acquire_next_image(swapchain.clone(), None) {
                         Ok(r) => r,
