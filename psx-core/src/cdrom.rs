@@ -126,8 +126,8 @@ impl Cdrom {
 
     fn execute_next_command(&mut self, interrupt_requester: &mut impl InterruptRequester) {
         if let Some(cmd) = self.command {
-            match (cmd, self.command_state) {
-                (0x01, None) => {
+            match cmd {
+                0x01 => {
                     // GetStat
                     // TODO: handle errors
                     assert!(self.status.bits & 0b101 == 0);
@@ -137,26 +137,24 @@ impl Cdrom {
 
                     self.reset_command();
                 }
-                (0x19, None) => {
+                0x19 => {
                     // Test
                     let test_code = self.read_next_parameter().unwrap();
                     self.execute_test(test_code);
 
                     self.reset_command();
                 }
-                (0x1A, None) => {
-                    // GetID FIRST
+                0x1A => {
+                    // GetID
 
-                    self.write_to_response_fifo(self.status.bits);
-                    self.request_interrupt_0_7(3);
-                    // any data for now, just to proceed to SECOND
-                    self.command_state = Some(0);
-                }
-                (0x1A, Some(_)) => {
-                    // GetID SECOND
+                    if self.command_state.is_none() {
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(3);
+                        // any data for now, just to proceed to SECOND
+                        self.command_state = Some(0);
 
                     // wait for acknowledge
-                    if self.interrupt_flag & 7 == 0 {
+                    } else if self.interrupt_flag & 7 == 0 {
                         // TODO: rewrite GetID implementation to fill
                         //       all the details correctly from the state of the cdrom
                         let (response, interrupt) = if self.cue_file.is_some() {
@@ -171,25 +169,21 @@ impl Cdrom {
                         };
 
                         self.write_slice_to_response_fifo(response);
-
                         self.request_interrupt_0_7(interrupt);
-
                         self.reset_command();
                     }
                 }
-                (0x1E, None) => {
-                    // GetToc FIRST
+                0x1E => {
+                    // GetToc
 
-                    self.write_to_response_fifo(self.status.bits);
-                    self.request_interrupt_0_7(3);
-                    // any data for now, just to proceed to SECOND
-                    self.command_state = Some(0);
-                }
-                (0x1E, Some(_)) => {
-                    // GetToc SECOND
+                    if self.command_state.is_none() {
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(3);
+                        // any data for now, just to proceed to SECOND
+                        self.command_state = Some(0);
 
                     // wait for acknowledge
-                    if self.interrupt_flag & 7 == 0 {
+                    } else if self.interrupt_flag & 7 == 0 {
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(2);
                         self.reset_command();
