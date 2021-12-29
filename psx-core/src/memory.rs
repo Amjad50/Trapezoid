@@ -201,17 +201,17 @@ impl CpuBus {
         if let Some(disk_file) = disk_file {
             let path = disk_file.as_ref().to_owned();
             // if this is an exe file
-            if path
+            match path
                 .extension()
                 .unwrap()
                 .to_str()
                 .unwrap()
                 .to_ascii_lowercase()
-                == "exe"
+                .as_str()
             {
-                s.load_exe_file(disk_file);
-            } else {
-                todo!("Only exe is supported now");
+                "exe" => s.load_exe_file(disk_file),
+                "cue" => s.cdrom.set_cue_file(disk_file),
+                _ => todo!("Only exe is supported now"),
             }
         }
 

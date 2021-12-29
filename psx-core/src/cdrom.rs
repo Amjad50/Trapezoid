@@ -1,7 +1,12 @@
 use crate::memory::{interrupts::InterruptRequester, BusLine};
 use bitflags::bitflags;
 
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 bitflags! {
     #[derive(Default)]
@@ -46,6 +51,10 @@ pub struct Cdrom {
     /// A way to be able to execute a command through more than one cycle,
     /// The type and design might change later
     command_state: Option<u8>,
+
+    cue_file: Option<PathBuf>,
+    cue_file_content: String,
+    bin_file_content: Vec<u8>,
 }
 
 impl Default for Cdrom {
@@ -60,10 +69,56 @@ impl Default for Cdrom {
             response_fifo: VecDeque::new(),
             command: None,
             command_state: None,
+            cue_file: None,
+            // empty vectors are not allocated
+            cue_file_content: String::new(),
+            bin_file_content: Vec::new(),
         }
     }
 }
 
+// file reading and handling
+impl Cdrom {
+    pub fn set_cue_file<P: AsRef<Path>>(&mut self, cue_file: P) {
+        let a = cue_file.as_ref().to_path_buf();
+        self.load_cue_file(&a);
+        self.cue_file = Some(a);
+    }
+
+    fn load_cue_file(&mut self, cue_file: &Path) {
+        // start motor
+        self.status.insert(CdromStatus::MOTOR_ON);
+
+        // read cue file
+        let mut file = fs::File::open(cue_file).unwrap();
+        let mut cue_content = String::new();
+        file.read_to_string(&mut cue_content).unwrap();
+        // parse cue format
+        let mut parts = cue_content.split_whitespace();
+        assert!(parts.next().unwrap() == "FILE");
+        // remove quotes
+        let bin_file_name = parts.next().unwrap().replace("\"", "");
+        assert!(parts.next().unwrap() == "BINARY");
+        assert!(parts.next().unwrap() == "TRACK");
+        assert!(parts.next().unwrap() == "01");
+        assert!(parts.next().unwrap() == "MODE2/2352");
+        assert!(parts.next().unwrap() == "INDEX");
+        assert!(parts.next().unwrap() == "01");
+        assert!(parts.next().unwrap() == "00:00:00");
+
+        // load bin file
+        let bin_file_path = cue_file.parent().unwrap().join(bin_file_name);
+        log::info!("Loading bin file: {:?}", bin_file_path);
+        let mut file = fs::File::open(bin_file_path).unwrap();
+        // read to new vector
+        let mut bin_file_content = Vec::new();
+        file.read_to_end(&mut bin_file_content).unwrap();
+        self.cue_file_content = cue_content;
+        self.bin_file_content = bin_file_content;
+    }
+}
+
+// clocking and commands
 impl Cdrom {
     pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester) {
         self.execute_next_command(interrupt_requester);
@@ -80,18 +135,16 @@ impl Cdrom {
                     self.write_to_response_fifo(self.status.bits);
                     self.request_interrupt_0_7(3);
                     interrupt_requester.request_cdrom();
-                    // not executing any more
-                    self.fifo_status.remove(FifosStatus::BUSY);
-                    self.command = None;
+
+                    self.reset_command();
                 }
                 (0x19, None) => {
                     // Test
                     let test_code = self.read_next_parameter().unwrap();
                     self.execute_test(test_code);
                     interrupt_requester.request_cdrom();
-                    // not executing any more
-                    self.fifo_status.remove(FifosStatus::BUSY);
-                    self.command = None;
+
+                    self.reset_command();
                 }
                 (0x1A, None) => {
                     // GetID FIRST
@@ -99,8 +152,6 @@ impl Cdrom {
                     self.write_to_response_fifo(self.status.bits);
                     self.request_interrupt_0_7(3);
                     interrupt_requester.request_cdrom();
-                    // not executing any more
-                    self.fifo_status.remove(FifosStatus::BUSY);
                     // any data for now, just to proceed to SECOND
                     self.command_state = Some(0);
                 }
@@ -109,17 +160,25 @@ impl Cdrom {
 
                     // wait for acknowledge
                     if self.interrupt_flag & 7 == 0 {
-                        // TODO: handle correct ID, for now we are sending
-                        //  status as if there is no CD present
-                        for byte in &[0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00] {
-                            self.write_to_response_fifo(*byte);
-                        }
+                        // TODO: rewrite GetID implementation to fill
+                        //       all the details correctly from the state of the cdrom
+                        let (response, interrupt) = if self.cue_file.is_some() {
+                            // last byte is the region code identifier
+                            // A(0x41): NTSC
+                            // E(0x45): PAL
+                            // I(0x49): JP
+                            (&[0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x41], 2)
+                        } else {
+                            //  5 interrupt means error
+                            (&[0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 5)
+                        };
 
-                        self.request_interrupt_0_7(5);
+                        self.write_slice_to_response_fifo(response);
+
+                        self.request_interrupt_0_7(interrupt);
                         interrupt_requester.request_cdrom();
 
-                        self.command_state = None;
-                        self.command = None;
+                        self.reset_command();
                     }
                 }
                 _ => todo!("cmd={:02X},state={:?}", cmd, self.command_state),
@@ -130,14 +189,23 @@ impl Cdrom {
     fn execute_test(&mut self, test_code: u8) {
         match test_code {
             0x20 => {
-                let data_version = &[0x99u8, 0x02, 0x01, 0xC3];
-                for v in data_version {
-                    self.write_to_response_fifo(*v);
-                }
+                self.write_slice_to_response_fifo(&[0x99u8, 0x02, 0x01, 0xC3]);
                 self.request_interrupt_0_7(3);
             }
             _ => todo!(),
         }
+    }
+
+    fn put_command(&mut self, cmd: u8) {
+        self.command = Some(cmd);
+        self.command_state = None;
+        self.fifo_status.insert(FifosStatus::BUSY);
+    }
+
+    fn reset_command(&mut self) {
+        self.command = None;
+        self.command_state = None;
+        self.fifo_status.remove(FifosStatus::BUSY);
     }
 }
 
@@ -174,9 +242,7 @@ impl Cdrom {
 
     fn write_command_register(&mut self, data: u8) {
         log::info!("1.0 writing to command register cmd={:02X}", data);
-        // set the status to busy as we are sending/executing a command now
-        self.fifo_status.insert(FifosStatus::BUSY);
-        self.command = Some(data);
+        self.put_command(data)
     }
 
     fn reset_parameter_fifo(&mut self) {
@@ -218,6 +284,16 @@ impl Cdrom {
         log::info!("writing to response fifo={:02X}", data);
 
         self.response_fifo.push_back(data);
+    }
+
+    fn write_slice_to_response_fifo(&mut self, data: &[u8]) {
+        if self.response_fifo.is_empty() {
+            self.fifo_status
+                .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
+        }
+        log::info!("writing to response fifo={:02X?}", data);
+
+        self.response_fifo.extend(data);
     }
 
     fn read_next_response(&mut self) -> u8 {
@@ -265,7 +341,7 @@ impl BusLine for Cdrom {
         match addr {
             0 => self.read_index_status(),
             1 => self.read_next_response(),
-            2 => todo!("read 2"),
+            2 => todo!("read 2 data fifo"),
             3 => match self.index & 1 {
                 0 => self.read_interrupt_enable_register(),
                 1 => self.read_interrupt_flag_register(),
@@ -283,8 +359,8 @@ impl BusLine for Cdrom {
             }
             1 => match self.index {
                 0 => self.write_command_register(data),
-                1 => todo!("write 1.1 (unknown/unused)"),
-                2 => todo!("write 1.2 (unknown/unused)"),
+                1 => todo!("write 1.1 Sound Map Data Out"),
+                2 => todo!("write 1.2 Sound Map Coding Info"),
                 3 => todo!("write 1.3 vol stuff"),
                 _ => unreachable!(),
             },
