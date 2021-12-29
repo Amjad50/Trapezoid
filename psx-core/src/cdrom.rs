@@ -134,7 +134,6 @@ impl Cdrom {
 
                     self.write_to_response_fifo(self.status.bits);
                     self.request_interrupt_0_7(3);
-                    interrupt_requester.request_cdrom();
 
                     self.reset_command();
                 }
@@ -142,7 +141,6 @@ impl Cdrom {
                     // Test
                     let test_code = self.read_next_parameter().unwrap();
                     self.execute_test(test_code);
-                    interrupt_requester.request_cdrom();
 
                     self.reset_command();
                 }
@@ -151,7 +149,6 @@ impl Cdrom {
 
                     self.write_to_response_fifo(self.status.bits);
                     self.request_interrupt_0_7(3);
-                    interrupt_requester.request_cdrom();
                     // any data for now, just to proceed to SECOND
                     self.command_state = Some(0);
                 }
@@ -176,12 +173,34 @@ impl Cdrom {
                         self.write_slice_to_response_fifo(response);
 
                         self.request_interrupt_0_7(interrupt);
-                        interrupt_requester.request_cdrom();
 
                         self.reset_command();
                     }
                 }
+                (0x1E, None) => {
+                    // GetToc FIRST
+
+                    self.write_to_response_fifo(self.status.bits);
+                    self.request_interrupt_0_7(3);
+                    // any data for now, just to proceed to SECOND
+                    self.command_state = Some(0);
+                }
+                (0x1E, Some(_)) => {
+                    // GetToc SECOND
+
+                    // wait for acknowledge
+                    if self.interrupt_flag & 7 == 0 {
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(2);
+                        self.reset_command();
+                    }
+                }
                 _ => todo!("cmd={:02X},state={:?}", cmd, self.command_state),
+            }
+
+            // fire irq only if the interrupt is enabled
+            if self.interrupt_flag & self.interrupt_enable != 0 {
+                interrupt_requester.request_cdrom();
             }
         }
     }
@@ -309,12 +328,8 @@ impl Cdrom {
     }
 
     fn request_interrupt_0_7(&mut self, int_value: u8) {
-        let int_value = int_value & 0x7;
-
-        if self.interrupt_enable & int_value == int_value {
-            self.interrupt_flag &= !7;
-            self.interrupt_flag |= int_value;
-        }
+        self.interrupt_flag &= !0x7;
+        self.interrupt_flag |= int_value & 0x7;
     }
 }
 
@@ -355,7 +370,6 @@ impl BusLine for Cdrom {
         match addr {
             0 => {
                 self.index = data & 3;
-                log::info!("set index {}", self.index);
             }
             1 => match self.index {
                 0 => self.write_command_register(data),
