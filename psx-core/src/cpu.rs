@@ -514,7 +514,7 @@ impl Cpu {
 
                 self.jump_dest_next = Some(base + offset);
 
-                self.regs.ra = self.regs.pc + 4;
+                self.regs.write_ra(self.regs.pc + 4);
             }
             Opcode::Jr => {
                 self.jump_dest_next = Some(self.regs.read_register(instruction.rs));
@@ -545,12 +545,12 @@ impl Cpu {
             Opcode::Bltzal => {
                 self.execute_branch(instruction, false, |rs, _| rs < 0);
                 // modify ra either way
-                self.regs.ra = self.regs.pc + 4;
+                self.regs.write_ra(self.regs.pc + 4);
             }
             Opcode::Bgezal => {
                 self.execute_branch(instruction, false, |rs, _| rs >= 0);
                 // modify ra either way
-                self.regs.ra = self.regs.pc + 4;
+                self.regs.write_ra(self.regs.pc + 4);
             }
             Opcode::Bcondz => unreachable!("bcondz should be converted"),
             Opcode::Syscall => {

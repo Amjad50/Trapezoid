@@ -1,5 +1,5 @@
 use super::instructions_table::{PRIMARY_OPCODES, SECONDARY_OPCODES};
-use super::register::RegisterType;
+use super::register::Register;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Opcode {
@@ -109,11 +109,11 @@ pub struct Instruction {
 
     pub imm5: u8,
     pub rd_raw: u8,
-    pub rd: RegisterType,
+    pub rd: Register,
     pub rt_raw: u8,
-    pub rt: RegisterType,
+    pub rt: Register,
     pub rs_raw: u8,
-    pub rs: RegisterType,
+    pub rs: Register,
     pub imm16: u16,
     pub imm25: u32,
     pub imm26: u32,
@@ -125,11 +125,11 @@ impl Instruction {
         let secondary_identifier = instruction as u8 & 0x3F;
         let imm5 = (instruction >> 6) as u8 & 0x1F;
         let rd_raw = (instruction >> 11) as u8 & 0x1F;
-        let rd = RegisterType::from_byte(rd_raw);
+        let rd = Register::from_byte(rd_raw);
         let rt_raw = (instruction >> 16) as u8 & 0x1F;
-        let rt = RegisterType::from_byte(rt_raw);
+        let rt = Register::from_byte(rt_raw);
         let rs_raw = (instruction >> 21) as u8 & 0x1F;
-        let rs = RegisterType::from_byte(rs_raw);
+        let rs = Register::from_byte(rs_raw);
         // combination of the above
         let imm16 = instruction as u16;
         let imm26 = instruction & 0x3FFFFFF;
