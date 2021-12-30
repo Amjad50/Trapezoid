@@ -39,6 +39,20 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Default)]
+    struct CdromMode: u8 {
+        const DOUBLE_SPEED            = 0b10000000;
+        const XA_ADPCM                = 0b01000000;
+        const USE_WHOLE_SECTOR        = 0b00100000;
+        const IGNORE_BIT              = 0b00010000;
+        const XA_FILTER               = 0b00001000;
+        const REPORT_INTERRUPT_ENABLE = 0b00000100;
+        const AUTO_PAUSE              = 0b00000010;
+        const CDDA                    = 0b00000001;
+    }
+}
+
 pub struct Cdrom {
     index: u8,
     fifo_status: FifosStatus,
@@ -54,7 +68,15 @@ pub struct Cdrom {
 
     cue_file: Option<PathBuf>,
     cue_file_content: String,
-    bin_file_content: Vec<u8>,
+    disk_data: Vec<u8>,
+
+    // commands save buffer
+    // params: minutes, seconds, sector (on entire disk)
+    set_loc_params: [u8; 3],
+    // the current position on the disk
+    cursor_sector_position: usize,
+
+    mode: CdromMode,
 }
 
 impl Default for Cdrom {
@@ -72,7 +94,12 @@ impl Default for Cdrom {
             cue_file: None,
             // empty vectors are not allocated
             cue_file_content: String::new(),
-            bin_file_content: Vec::new(),
+            disk_data: Vec::new(),
+
+            set_loc_params: [0; 3],
+            cursor_sector_position: 0,
+
+            mode: CdromMode::empty(),
         }
     }
 }
@@ -86,6 +113,8 @@ impl Cdrom {
     }
 
     fn load_cue_file(&mut self, cue_file: &Path) {
+        // TODO: support parsing and loading the data based on the cue file
+        // TODO: since some Cds can be large, try to do mmap
         // start motor
         self.status.insert(CdromStatus::MOTOR_ON);
 
@@ -114,7 +143,7 @@ impl Cdrom {
         let mut bin_file_content = Vec::new();
         file.read_to_end(&mut bin_file_content).unwrap();
         self.cue_file_content = cue_content;
-        self.bin_file_content = bin_file_content;
+        self.disk_data = bin_file_content;
     }
 }
 
@@ -129,6 +158,7 @@ impl Cdrom {
             match cmd {
                 0x01 => {
                     // GetStat
+                    log::info!("cdrom cmd: GetStat");
                     // TODO: handle errors
                     assert!(self.status.bits & 0b101 == 0);
 
@@ -137,9 +167,69 @@ impl Cdrom {
 
                     self.reset_command();
                 }
+                0x02 => {
+                    // SetLoc
+
+                    // minutes
+                    self.set_loc_params[0] = self.read_next_parameter().unwrap();
+                    // seconds
+                    self.set_loc_params[1] = self.read_next_parameter().unwrap();
+                    // sector
+                    self.set_loc_params[2] = self.read_next_parameter().unwrap();
+
+                    log::info!("cdrom cmd: SetLoc({:?})", self.set_loc_params);
+                    self.write_to_response_fifo(self.status.bits);
+                    self.request_interrupt_0_7(3);
+
+                    self.reset_command();
+                }
+                0x0E => {
+                    // Setmode
+
+                    self.mode = CdromMode::from_bits_truncate(self.read_next_parameter().unwrap());
+                    log::info!("cdrom cmd: Setmode({:?})", self.mode);
+
+                    self.write_to_response_fifo(self.status.bits);
+                    self.request_interrupt_0_7(3);
+
+                    self.reset_command();
+                }
+                0x15 => {
+                    // SeekL
+
+                    if self.command_state.is_none() {
+                        // setting the position from the setLoc data
+                        let minutes = self.set_loc_params[0] as usize;
+                        let mut seconds = self.set_loc_params[1] as usize;
+                        let sector = self.set_loc_params[2] as usize;
+
+                        if minutes == 0 {
+                            // there is an offset 2 seconds (for some reason)
+                            assert!(seconds >= 2);
+                            seconds -= 2;
+                        }
+                        self.cursor_sector_position = (minutes * 60 + seconds) * 75 + sector;
+                        log::info!(
+                            "cdrom cmd: SeekL: sector position: {}",
+                            self.cursor_sector_position
+                        );
+
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(3);
+                        // any data for now, just to proceed to SECOND
+                        self.command_state = Some(0);
+
+                    // wait for acknowledge
+                    } else if self.interrupt_flag & 7 == 0 {
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(2);
+                        self.reset_command();
+                    }
+                }
                 0x19 => {
                     // Test
                     let test_code = self.read_next_parameter().unwrap();
+                    log::info!("cdrom cmd: Test({:02x})", test_code);
                     self.execute_test(test_code);
 
                     self.reset_command();
@@ -148,6 +238,7 @@ impl Cdrom {
                     // GetID
 
                     if self.command_state.is_none() {
+                        log::info!("cdrom cmd: GetID");
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
@@ -177,6 +268,7 @@ impl Cdrom {
                     // GetToc
 
                     if self.command_state.is_none() {
+                        log::info!("cdrom cmd: GetToc");
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
