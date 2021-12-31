@@ -154,6 +154,10 @@ impl Cdrom {
     }
 
     fn execute_next_command(&mut self, interrupt_requester: &mut impl InterruptRequester) {
+        if self.interrupt_flag & 7 != 0 {
+            // pending interrupts, waiting for acknowledgement
+            return;
+        }
         if let Some(cmd) = self.command {
             match cmd {
                 0x01 => {
@@ -198,6 +202,7 @@ impl Cdrom {
                     // SeekL
 
                     if self.command_state.is_none() {
+                        // FIRST
                         // setting the position from the setLoc data
                         let minutes = self.set_loc_params[0] as usize;
                         let mut seconds = self.set_loc_params[1] as usize;
@@ -218,9 +223,8 @@ impl Cdrom {
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
-
-                    // wait for acknowledge
-                    } else if self.interrupt_flag & 7 == 0 {
+                    } else {
+                        // SECOND
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(2);
                         self.reset_command();
@@ -238,14 +242,14 @@ impl Cdrom {
                     // GetID
 
                     if self.command_state.is_none() {
+                        // FIRST
                         log::info!("cdrom cmd: GetID");
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
-
-                    // wait for acknowledge
-                    } else if self.interrupt_flag & 7 == 0 {
+                    } else {
+                        // SECOND
                         // TODO: rewrite GetID implementation to fill
                         //       all the details correctly from the state of the cdrom
                         let (response, interrupt) = if self.cue_file.is_some() {
@@ -268,14 +272,14 @@ impl Cdrom {
                     // GetToc
 
                     if self.command_state.is_none() {
+                        // FIRST
                         log::info!("cdrom cmd: GetToc");
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
-
-                    // wait for acknowledge
-                    } else if self.interrupt_flag & 7 == 0 {
+                    } else {
+                        // SECOND
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(2);
                         self.reset_command();
