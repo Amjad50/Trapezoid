@@ -1,10 +1,5 @@
 use super::BusLine;
 
-const MEMORY_CONTROL_1_DEFAULT_VALUES: &[u32; 9] = &[
-    0x1F000000, 0x1F802000, 0x0013243F, 0x00003022, 0x0013243F, 0x200931E1, 0x00020843, 0x00070777,
-    0x00031125,
-];
-
 #[derive(Default)]
 pub struct MemoryControl1 {
     data: [u32; 9],
@@ -33,13 +28,7 @@ impl BusLine for MemoryControl1 {
         let addr = addr & 0xFF;
         let index = (addr / 4) as usize;
 
-        let should = MEMORY_CONTROL_1_DEFAULT_VALUES[index];
-
-        assert_eq!(
-            data, should,
-            "mem_ctrl1 wrong value index = {}, should be {:08X}, got {:08X}",
-            index, should, data
-        );
+        println!("mem_ctrl1: index={}, data=0x{:08X}", index, data);
 
         self.data[index] = data;
     }
