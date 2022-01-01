@@ -141,6 +141,7 @@ impl Bios {
 /// to `Dma` without problems of double mut.
 struct DmaBus {
     pub main_ram: MainRam,
+    pub cdrom: Cdrom,
     pub gpu: Gpu,
 }
 
@@ -150,7 +151,6 @@ pub struct CpuBus {
     mem_ctrl_2: MemoryControl2,
     cache_control: CacheControl,
     interrupts: Interrupts,
-    cdrom: Cdrom,
     controller_mem_card: ControllerAndMemoryCard,
 
     spu_registers: SpuRegisters,
@@ -179,7 +179,6 @@ impl CpuBus {
             mem_ctrl_2: MemoryControl2::default(),
             cache_control: CacheControl::default(),
             interrupts: Interrupts::default(),
-            cdrom: Cdrom::default(),
             controller_mem_card: ControllerAndMemoryCard::default(),
 
             spu_registers: SpuRegisters::default(),
@@ -190,8 +189,9 @@ impl CpuBus {
             timers: Timers::default(),
 
             dma_bus: DmaBus {
-                main_ram: MainRam::default(),
+                cdrom: Cdrom::default(),
                 gpu: Gpu::new(device, queue),
+                main_ram: MainRam::default(),
             },
 
             scratchpad: Scratchpad::default(),
@@ -210,7 +210,7 @@ impl CpuBus {
                 .as_str()
             {
                 "exe" => s.load_exe_file(disk_file),
-                "cue" => s.cdrom.set_cue_file(disk_file),
+                "cue" => s.dma_bus.cdrom.set_cue_file(disk_file),
                 _ => todo!("Only exe is supported now"),
             }
         }
@@ -308,7 +308,7 @@ impl BusLine for CpuBus {
         self.dma_bus.gpu.clock(&mut self.interrupts);
         self.dma_bus.gpu.clock(&mut self.interrupts);
         // cdrom
-        self.cdrom.clock(&mut self.interrupts);
+        self.dma_bus.cdrom.clock(&mut self.interrupts);
         // controller and mem card
         self.controller_mem_card.clock(&mut self.interrupts);
         // timers
@@ -407,7 +407,7 @@ impl BusLine for CpuBus {
             0x1F800000..=0x1F8003FF => self.scratchpad.read_u8(addr & 0x3FF),
             0x1F801040 => self.controller_mem_card.read_u8(addr & 0xF),
             0x1F000000..=0x1F080000 => self.expansion_region_1.read_u8(addr & 0xFFFFF),
-            0x1F801800..=0x1F801803 => self.cdrom.read_u8(addr & 3),
+            0x1F801800..=0x1F801803 => self.dma_bus.cdrom.read_u8(addr & 3),
             0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
             _ => {
@@ -425,7 +425,7 @@ impl BusLine for CpuBus {
             0x1F800000..=0x1F8003FF => self.scratchpad.write_u8(addr & 0x3FF, data),
             0x1F801040 => self.controller_mem_card.write_u8(addr & 0xF, data),
             0x1F000000..=0x1F080000 => self.expansion_region_1.write_u8(addr & 0xFFFFF, data),
-            0x1F801800..=0x1F801803 => self.cdrom.write_u8(addr & 3, data),
+            0x1F801800..=0x1F801803 => self.dma_bus.cdrom.write_u8(addr & 3, data),
             0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),
             _ => {
                 todo!("u8 write to {:08X}", addr)

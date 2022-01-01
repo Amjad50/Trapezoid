@@ -77,6 +77,9 @@ pub struct Cdrom {
     cursor_sector_position: usize,
 
     mode: CdromMode,
+
+    data_fifo_buffer: Vec<u8>,
+    data_fifo_buffer_index: usize,
 }
 
 impl Default for Cdrom {
@@ -100,6 +103,9 @@ impl Default for Cdrom {
             cursor_sector_position: 0,
 
             mode: CdromMode::empty(),
+
+            data_fifo_buffer: Vec::new(),
+            data_fifo_buffer_index: 0,
         }
     }
 }
@@ -186,6 +192,74 @@ impl Cdrom {
                     self.request_interrupt_0_7(3);
 
                     self.reset_command();
+                }
+                0x06 => {
+                    // ReadN
+
+                    if self.command_state.is_none() {
+                        // FIRST
+                        log::info!("cdrom cmd: ReadN");
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(3);
+                        // any data for now, just to proceed to SECOND
+                        self.command_state = Some(0);
+                    } else {
+                        // SECOND
+
+                        // wait until the data fifo buffer is empty
+                        if self.data_fifo_buffer.is_empty() {
+                            log::info!(
+                                "cdrom cmd: ReadN: pushing sector {} to data fifo buffer",
+                                self.cursor_sector_position
+                            );
+                            self.data_fifo_buffer.clear();
+                            self.data_fifo_buffer_index = 0;
+
+                            let start;
+                            let end;
+                            if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
+                                // 12 to skip the sync patterns
+                                start = self.cursor_sector_position * 2352 + 12;
+                                end = start + 0x924;
+                            } else {
+                                // 12 + 3 + 1 + 8 to skip the sync patterns and the header
+                                start = self.cursor_sector_position * 2352 + 24;
+                                end = start + 0x800;
+                            }
+                            self.data_fifo_buffer
+                                .extend_from_slice(&self.disk_data[start..end]);
+
+                            // move to next sector
+                            self.cursor_sector_position += 1;
+
+                            self.write_to_response_fifo(self.status.bits);
+                            self.request_interrupt_0_7(1);
+                            //self.reset_command();
+                        }
+                    }
+                }
+                0x09 => {
+                    // Pause
+
+                    // TODO: not sure how to do pause else on pause
+                    //       since the buffer is cleared after every sector read
+                    if self.command_state.is_none() {
+                        // FIRST
+                        log::info!("cdrom cmd: Pause");
+
+                        self.data_fifo_buffer.clear();
+                        self.data_fifo_buffer_index = 0;
+
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(3);
+                        // any data for now, just to proceed to SECOND
+                        self.command_state = Some(0);
+                    } else {
+                        // SECOND
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(2);
+                        self.reset_command();
+                    }
                 }
                 0x0E => {
                     // Setmode
@@ -421,6 +495,37 @@ impl Cdrom {
         self.interrupt_flag &= !0x7;
         self.interrupt_flag |= int_value & 0x7;
     }
+
+    fn write_request_register(&mut self, data: u8) {
+        log::info!("3.0 writing to request register value={:02X}", data);
+        // TODO: implement command start interrupt on next command
+        assert!(data & 0x20 == 0);
+        if data & 0x80 != 0 {
+            // want data
+            // this should be set by Read commands
+            assert!(!self.data_fifo_buffer.is_empty());
+            assert!(self.data_fifo_buffer_index == 0);
+            self.fifo_status.insert(FifosStatus::DATA_FIFO_NOT_EMPTY);
+        } else {
+            // reset data fifo
+            // TODO: not sure what it should do here, should it abort read commands?
+        }
+    }
+
+    // TODO: dma should read a buffer directly from here
+    fn read_next_data_fifo(&mut self) -> u8 {
+        assert!(!self.data_fifo_buffer.is_empty());
+
+        let out = self.data_fifo_buffer[self.data_fifo_buffer_index];
+        self.data_fifo_buffer_index += 1;
+        //println!("read data fifo={:04X}", self.data_fifo_buffer_index);
+        if self.data_fifo_buffer_index == self.data_fifo_buffer.len() {
+            self.data_fifo_buffer.clear();
+            self.data_fifo_buffer_index = 0;
+            self.fifo_status.remove(FifosStatus::DATA_FIFO_NOT_EMPTY);
+        }
+        out
+    }
 }
 
 impl BusLine for Cdrom {
@@ -446,7 +551,7 @@ impl BusLine for Cdrom {
         match addr {
             0 => self.read_index_status(),
             1 => self.read_next_response(),
-            2 => todo!("read 2 data fifo"),
+            2 => self.read_next_data_fifo(),
             3 => match self.index & 1 {
                 0 => self.read_interrupt_enable_register(),
                 1 => self.read_interrupt_flag_register(),
@@ -476,7 +581,7 @@ impl BusLine for Cdrom {
                 _ => unreachable!(),
             },
             3 => match self.index {
-                0 => todo!("write 3.0 request register"),
+                0 => self.write_request_register(data),
                 1 => self.write_interrupt_flag_register(data),
                 2 => todo!("write 3.2 vol stuff"),
                 3 => todo!("write 3.3 vol stuff"),

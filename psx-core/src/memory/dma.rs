@@ -272,6 +272,62 @@ impl Dma {
         }
     }
 
+    fn perform_cdrom_channel3_dma(&mut self, dma_bus: &mut super::DmaBus) {
+        let channel = &mut self.channels[3];
+        // must be to main ram
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::DIRECTION));
+        // must be forward
+        assert!(channel.channel_control.address_step() == 4);
+        // must be sync mode 0
+        assert!(channel.channel_control.sync_mode() == 0);
+        // make sure there is no chopping, so we can finish this in one go
+        // TODO: implement chopping
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::CHOPPING_ENABLED));
+
+        // must be triggered manually
+        if !channel
+            .channel_control
+            .intersects(ChannelControl::START_TRIGGER)
+        {
+            channel.channel_control.finish_transfer();
+            self.interrupt.request_interrupt(3);
+            return;
+        }
+
+        let block_size = channel.block_control & 0xFFFF;
+        let blocks = channel.block_control >> 16;
+        log::info!("CD-ROM DMA: block size: {:04X}", block_size);
+        assert!(blocks == 1);
+
+        // word align
+        let mut address = channel.base_address & 0xFFFFFC;
+
+        for _ in 0..block_size {
+            // DATA FIFO
+            // read u32
+            let mut data = dma_bus.cdrom.read_u8(2) as u32;
+            data |= (dma_bus.cdrom.read_u8(2) as u32) << 8;
+            data |= (dma_bus.cdrom.read_u8(2) as u32) << 16;
+            data |= (dma_bus.cdrom.read_u8(2) as u32) << 24;
+
+            dma_bus.main_ram.write_u32(address, data);
+
+            // step
+            address += 4;
+        }
+
+        // TODO: is it ok to clear this?
+        channel.block_control = 0;
+        channel.base_address = address;
+
+        channel.channel_control.finish_transfer();
+        self.interrupt.request_interrupt(3);
+    }
+
     // Some control flags are ignored here like:
     // - From RAM (Direction)
     // - Forward address step
@@ -337,6 +393,7 @@ impl Dma {
 
                 match i {
                     2 => self.perform_gpu_channel2_dma(dma_bus),
+                    3 => self.perform_cdrom_channel3_dma(dma_bus),
                     6 => self.perform_otc_channel6_dma(dma_bus),
                     _ => todo!(),
                 }
