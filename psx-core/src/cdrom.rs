@@ -53,6 +53,11 @@ bitflags! {
     }
 }
 
+/// Utility function to convert value from bcd format to normal
+fn from_bcd(arg: u8) -> u8 {
+    ((arg & 0xF0) >> 4) * 10 + (arg & 0x0F)
+}
+
 pub struct Cdrom {
     index: u8,
     fifo_status: FifosStatus,
@@ -181,11 +186,11 @@ impl Cdrom {
                     // SetLoc
 
                     // minutes
-                    self.set_loc_params[0] = self.read_next_parameter().unwrap();
+                    self.set_loc_params[0] = from_bcd(self.read_next_parameter().unwrap());
                     // seconds
-                    self.set_loc_params[1] = self.read_next_parameter().unwrap();
+                    self.set_loc_params[1] = from_bcd(self.read_next_parameter().unwrap());
                     // sector
-                    self.set_loc_params[2] = self.read_next_parameter().unwrap();
+                    self.set_loc_params[2] = from_bcd(self.read_next_parameter().unwrap());
 
                     log::info!("cdrom cmd: SetLoc({:?})", self.set_loc_params);
                     self.write_to_response_fifo(self.status.bits);
