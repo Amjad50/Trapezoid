@@ -341,11 +341,9 @@ impl Cdrom {
                         let mut seconds = self.set_loc_params[1] as usize;
                         let sector = self.set_loc_params[2] as usize;
 
-                        if minutes == 0 {
-                            // there is an offset 2 seconds (for some reason)
-                            assert!(seconds >= 2);
-                            seconds -= 2;
-                        }
+                        // there is an offset 2 seconds (for some reason)
+                        assert!(seconds >= 2);
+                        seconds -= 2;
                         self.cursor_sector_position = (minutes * 60 + seconds) * 75 + sector;
                         log::info!(
                             "cdrom cmd: SeekL: sector position: {}",
