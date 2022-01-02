@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const CDROM_COMMAND_DEFAULT_DELAY: u32 = 255;
+
 bitflags! {
     #[derive(Default)]
     struct FifosStatus: u8 {
@@ -67,6 +69,10 @@ pub struct Cdrom {
     parameter_fifo: VecDeque<u8>,
     response_fifo: VecDeque<u8>,
     command: Option<u8>,
+    /// A timer to delay execution of cdrom commands, in clock unit.
+    /// This is needed because the bios is not designed to receive interrupt
+    /// immediately after the command starts, so this is just a mitigation.
+    command_delay_timer: u32,
     /// A way to be able to execute a command through more than one cycle,
     /// The type and design might change later
     command_state: Option<u8>,
@@ -98,6 +104,7 @@ impl Default for Cdrom {
             parameter_fifo: VecDeque::new(),
             response_fifo: VecDeque::new(),
             command: None,
+            command_delay_timer: 0,
             command_state: None,
             cue_file: None,
             // empty vectors are not allocated
@@ -170,6 +177,15 @@ impl Cdrom {
             return;
         }
         if let Some(cmd) = self.command {
+            // delay (this applies for all parts of the command)
+            // If no delay is needed, it can be reset from the command itself
+            if self.command_delay_timer > 0 {
+                self.command_delay_timer -= 1;
+                return;
+            }
+            // reset the timer here, so that if a command needs to change the value
+            // it can do so
+            self.command_delay_timer = CDROM_COMMAND_DEFAULT_DELAY;
             match cmd {
                 0x01 => {
                     // GetStat
@@ -386,12 +402,14 @@ impl Cdrom {
 
     fn put_command(&mut self, cmd: u8) {
         self.command = Some(cmd);
+        self.command_delay_timer = CDROM_COMMAND_DEFAULT_DELAY;
         self.command_state = None;
         self.fifo_status.insert(FifosStatus::BUSY);
     }
 
     fn reset_command(&mut self) {
         self.command = None;
+        self.command_delay_timer = 0;
         self.command_state = None;
         self.fifo_status.remove(FifosStatus::BUSY);
     }
