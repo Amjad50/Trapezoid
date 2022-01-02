@@ -143,8 +143,15 @@ impl Cdrom {
         // parse cue format
         let mut parts = cue_content.split_whitespace();
         assert!(parts.next().unwrap() == "FILE");
+        let mut bin_file_name = parts.next().unwrap().to_string();
+        // must be in quotes
+        assert!(bin_file_name.starts_with('"'));
+        while !bin_file_name.ends_with('"') {
+            bin_file_name.push_str(" ");
+            bin_file_name.push_str(parts.next().unwrap());
+        }
         // remove quotes
-        let bin_file_name = parts.next().unwrap().replace("\"", "");
+        bin_file_name = bin_file_name.trim_matches('"').to_string();
         assert!(parts.next().unwrap() == "BINARY");
         assert!(parts.next().unwrap() == "TRACK");
         assert!(parts.next().unwrap() == "01");
