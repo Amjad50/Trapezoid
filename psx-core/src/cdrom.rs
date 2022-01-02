@@ -282,6 +282,44 @@ impl Cdrom {
                         self.reset_command();
                     }
                 }
+                0x0A => {
+                    // Init
+
+                    if self.command_state.is_none() {
+                        // FIRST
+                        log::info!("cdrom cmd: Init");
+
+                        // TODO: check what exactly needs to be reset
+                        //       do we reset all fifos?
+                        //       do we reset setloc params and cursor position?
+
+                        self.mode = CdromMode::empty();
+                        // reset the status and run the motor
+                        self.status = CdromStatus::MOTOR_ON;
+                        // reset fifos
+                        self.data_fifo_buffer.clear();
+                        self.data_fifo_buffer_index = 0;
+                        self.reset_parameter_fifo();
+                        self.response_fifo.clear();
+                        self.fifo_status
+                            .remove(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
+
+                        // reset cursor and set_loc positions
+                        self.set_loc_params = [0; 3];
+                        self.cursor_sector_position = 0;
+
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(3);
+                        // any data for now, just to proceed to SECOND
+                        self.command_state = Some(0);
+                    } else {
+                        // SECOND
+
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(2);
+                        self.reset_command();
+                    }
+                }
                 0x0E => {
                     // Setmode
 
