@@ -1,6 +1,6 @@
 use std::fmt;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum RegisterType {
     Zero,
     At,
@@ -68,6 +68,16 @@ impl From<Register> for RegisterType {
     #[inline]
     fn from(v: Register) -> Self {
         REG_TYPES[v.idx as usize]
+    }
+}
+
+impl From<RegisterType> for Register {
+    #[inline]
+    fn from(v: RegisterType) -> Self {
+        // This is used for debugging only, so its just simple and slow
+        Register {
+            idx: REG_TYPES.iter().position(|x| *x == v).unwrap() as u8,
+        }
     }
 }
 
