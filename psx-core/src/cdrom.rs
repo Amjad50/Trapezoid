@@ -335,6 +335,15 @@ impl Cdrom {
                         self.reset_command();
                     }
                 }
+                0x0C => {
+                    // Demute
+
+                    log::info!("cdrom cmd: Demute");
+                    self.write_to_response_fifo(self.status.bits);
+                    self.request_interrupt_0_7(3);
+
+                    self.reset_command();
+                }
                 0x0E => {
                     // Setmode
 
