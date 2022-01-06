@@ -669,23 +669,37 @@ impl BusLine for Cdrom {
             }
             1 => match self.index {
                 0 => self.write_command_register(data),
-                1 => todo!("write 1.1 Sound Map Data Out"),
-                2 => todo!("write 1.2 Sound Map Coding Info"),
-                3 => todo!("write 1.3 vol stuff"),
+                1 => {
+                    // write 1.1 Sound Map Data Out
+                }
+                2 => {
+                    // write 1.2 Sound Map Coding Info
+                }
+                3 => {
+                    // write 1.3 Right-CD to Right-SPU Volume
+                }
                 _ => unreachable!(),
             },
             2 => match self.index {
                 0 => self.write_to_parameter_fifo(data),
                 1 => self.write_interrupt_enable_register(data),
-                2 => todo!("write 2.2 vol stuff"),
-                3 => todo!("write 2.3 vol stuff"),
+                2 => {
+                    // write 2.2 Left-CD to Left-SPU Volume
+                }
+                3 => {
+                    // write 2.3 Right-CD to Left-SPU Volume
+                }
                 _ => unreachable!(),
             },
             3 => match self.index {
                 0 => self.write_request_register(data),
                 1 => self.write_interrupt_flag_register(data),
-                2 => todo!("write 3.2 vol stuff"),
-                3 => todo!("write 3.3 vol stuff"),
+                2 => {
+                    // write 3.2 Left-CD to Right-SPU Volume
+                }
+                3 => {
+                    // write 3.3 Audio Volume Apply Changes
+                }
                 _ => unreachable!(),
             },
             _ => unreachable!(),
