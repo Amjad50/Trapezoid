@@ -83,7 +83,7 @@ pub struct Cdrom {
 
     // commands save buffer
     // params: minutes, seconds, sector (on entire disk)
-    set_loc_params: [u8; 3],
+    set_loc_params: Option<[u8; 3]>,
     // the current position on the disk
     cursor_sector_position: usize,
 
@@ -111,7 +111,7 @@ impl Default for Cdrom {
             cue_file_content: String::new(),
             disk_data: Vec::new(),
 
-            set_loc_params: [0; 3],
+            set_loc_params: None,
             cursor_sector_position: 0,
 
             mode: CdromMode::empty(),
@@ -208,14 +208,17 @@ impl Cdrom {
                 0x02 => {
                     // SetLoc
 
+                    let mut params = [0; 3];
                     // minutes
-                    self.set_loc_params[0] = from_bcd(self.read_next_parameter().unwrap());
+                    params[0] = from_bcd(self.read_next_parameter().unwrap());
                     // seconds
-                    self.set_loc_params[1] = from_bcd(self.read_next_parameter().unwrap());
+                    params[1] = from_bcd(self.read_next_parameter().unwrap());
                     // sector
-                    self.set_loc_params[2] = from_bcd(self.read_next_parameter().unwrap());
+                    params[2] = from_bcd(self.read_next_parameter().unwrap());
 
-                    log::info!("cdrom cmd: SetLoc({:?})", self.set_loc_params);
+                    self.set_loc_params = Some(params);
+
+                    log::info!("cdrom cmd: SetLoc({:?})", params);
                     self.write_to_response_fifo(self.status.bits);
                     self.request_interrupt_0_7(3);
 
@@ -226,7 +229,10 @@ impl Cdrom {
 
                     if self.command_state.is_none() {
                         // FIRST
+
                         log::info!("cdrom cmd: ReadN");
+                        self.do_seek();
+
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
@@ -312,7 +318,7 @@ impl Cdrom {
                             .remove(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
 
                         // reset cursor and set_loc positions
-                        self.set_loc_params = [0; 3];
+                        self.set_loc_params = None;
                         self.cursor_sector_position = 0;
 
                         self.write_to_response_fifo(self.status.bits);
@@ -343,19 +349,9 @@ impl Cdrom {
 
                     if self.command_state.is_none() {
                         // FIRST
-                        // setting the position from the setLoc data
-                        let minutes = self.set_loc_params[0] as usize;
-                        let mut seconds = self.set_loc_params[1] as usize;
-                        let sector = self.set_loc_params[2] as usize;
+                        log::info!("cdrom cmd: SeekL");
 
-                        // there is an offset 2 seconds (for some reason)
-                        assert!(seconds >= 2);
-                        seconds -= 2;
-                        self.cursor_sector_position = (minutes * 60 + seconds) * 75 + sector;
-                        log::info!(
-                            "cdrom cmd: SeekL: sector position: {}",
-                            self.cursor_sector_position
-                        );
+                        self.do_seek();
 
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(3);
@@ -440,6 +436,30 @@ impl Cdrom {
                 self.request_interrupt_0_7(3);
             }
             _ => todo!(),
+        }
+    }
+
+    #[inline]
+    fn do_seek(&mut self) {
+        if let Some(params) = self.set_loc_params {
+            // setting the position from the setLoc data
+            let minutes = params[0] as usize;
+            let seconds = params[1] as usize;
+            let sector = params[2] as usize;
+
+            // there is an offset 2 seconds (for some reason)
+            assert!(seconds >= 2);
+            self.cursor_sector_position = (minutes * 60 + (seconds - 2)) * 75 + sector;
+
+            log::info!(
+                "cdrom seek: ({:02X}:{:02X}:{:02X}) => {:08X}",
+                minutes,
+                seconds,
+                sector,
+                self.cursor_sector_position
+            );
+
+            self.set_loc_params = None;
         }
     }
 
