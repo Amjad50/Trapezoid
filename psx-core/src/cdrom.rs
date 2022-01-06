@@ -90,6 +90,7 @@ pub struct Cdrom {
     mode: CdromMode,
 
     data_fifo_buffer: Vec<u8>,
+    read_data_buffer: Vec<u8>,
     data_fifo_buffer_index: usize,
 }
 
@@ -117,6 +118,7 @@ impl Default for Cdrom {
             mode: CdromMode::empty(),
 
             data_fifo_buffer: Vec::new(),
+            read_data_buffer: Vec::new(),
             data_fifo_buffer_index: 0,
         }
     }
@@ -241,35 +243,30 @@ impl Cdrom {
                         // SECOND
 
                         // wait until the data fifo buffer is empty
-                        if self.data_fifo_buffer.is_empty() {
-                            log::info!(
-                                "cdrom cmd: ReadN: pushing sector {} to data fifo buffer",
-                                self.cursor_sector_position
-                            );
-                            self.data_fifo_buffer.clear();
-                            self.data_fifo_buffer_index = 0;
+                        log::info!(
+                            "cdrom cmd: ReadN: pushing sector {} to data fifo buffer",
+                            self.cursor_sector_position
+                        );
 
-                            let start;
-                            let end;
-                            if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
-                                // 12 to skip the sync patterns
-                                start = self.cursor_sector_position * 2352 + 12;
-                                end = start + 0x924;
-                            } else {
-                                // 12 + 3 + 1 + 8 to skip the sync patterns and the header
-                                start = self.cursor_sector_position * 2352 + 24;
-                                end = start + 0x800;
-                            }
-                            self.data_fifo_buffer
-                                .extend_from_slice(&self.disk_data[start..end]);
-
-                            // move to next sector
-                            self.cursor_sector_position += 1;
-
-                            self.write_to_response_fifo(self.status.bits);
-                            self.request_interrupt_0_7(1);
-                            //self.reset_command();
+                        let start;
+                        let end;
+                        if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
+                            // 12 to skip the sync patterns
+                            start = self.cursor_sector_position * 2352 + 12;
+                            end = start + 0x924;
+                        } else {
+                            // 12 + 3 + 1 + 8 to skip the sync patterns and the header
+                            start = self.cursor_sector_position * 2352 + 24;
+                            end = start + 0x800;
                         }
+                        self.read_data_buffer
+                            .extend_from_slice(&self.disk_data[start..end]);
+
+                        // move to next sector
+                        self.cursor_sector_position += 1;
+
+                        self.write_to_response_fifo(self.status.bits);
+                        self.request_interrupt_0_7(1);
                     }
                 }
                 0x09 => {
@@ -280,9 +277,6 @@ impl Cdrom {
                     if self.command_state.is_none() {
                         // FIRST
                         log::info!("cdrom cmd: Pause");
-
-                        self.data_fifo_buffer.clear();
-                        self.data_fifo_buffer_index = 0;
 
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(3);
@@ -312,6 +306,8 @@ impl Cdrom {
                         // reset fifos
                         self.data_fifo_buffer.clear();
                         self.data_fifo_buffer_index = 0;
+                        self.read_data_buffer.clear();
+                        self.fifo_status.remove(FifosStatus::DATA_FIFO_NOT_EMPTY);
                         self.reset_parameter_fifo();
                         self.response_fifo.clear();
                         self.fifo_status
@@ -588,13 +584,17 @@ impl Cdrom {
         assert!(data & 0x20 == 0);
         if data & 0x80 != 0 {
             // want data
-            // this should be set by Read commands
-            assert!(!self.data_fifo_buffer.is_empty());
-            assert!(self.data_fifo_buffer_index == 0);
-            self.fifo_status.insert(FifosStatus::DATA_FIFO_NOT_EMPTY);
+            // this buffer should be set by Read commands
+            if !self.read_data_buffer.is_empty() {
+                self.data_fifo_buffer
+                    .extend_from_slice(&self.read_data_buffer);
+                self.read_data_buffer.clear();
+                self.fifo_status.insert(FifosStatus::DATA_FIFO_NOT_EMPTY);
+            }
         } else {
-            // reset data fifo
-            // TODO: not sure what it should do here, should it abort read commands?
+            self.data_fifo_buffer_index = 0;
+            self.data_fifo_buffer.clear();
+            self.fifo_status.remove(FifosStatus::DATA_FIFO_NOT_EMPTY);
         }
     }
 
