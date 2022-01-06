@@ -8,7 +8,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const CDROM_COMMAND_DEFAULT_DELAY: u32 = 255;
+// These delay is still very fast even for double speed, but 255 delay
+// between read sectors is very fast, and the software cannot handle it.
+const CDROM_COMMAND_DEFAULT_DELAY: u32 = 10000;
+const CDROM_READ_COMMAND_DELAY: u32 = 20000;
 
 bitflags! {
     #[derive(Default)]
@@ -239,6 +242,8 @@ impl Cdrom {
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
+
+                        self.command_delay_timer += CDROM_READ_COMMAND_DELAY;
                     } else {
                         // SECOND
 
@@ -267,6 +272,7 @@ impl Cdrom {
 
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(1);
+                        self.command_delay_timer += CDROM_READ_COMMAND_DELAY;
                     }
                 }
                 0x09 => {
