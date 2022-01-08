@@ -59,9 +59,38 @@ impl GpuStat {
             // HORIZONTAL_RESOLUTION1 is two bits:
             // 0  (if set, Add 64 to the 256 original resoltion)
             // 1  (if set, Multiply the current resolution by 2)
+            //
+            // result:
+            // 0: 256
+            // 1: 320
+            // 2: 512
+            // 3: 640
             let resolution_multiplier = (self.bits & Self::HORIZONTAL_RESOLUTION1.bits) >> 17;
             let resoltion = 0x100 | ((resolution_multiplier & 1) << 6);
             resoltion << (resolution_multiplier >> 1)
+        }
+    }
+
+    // divider to get the dots per scanline
+    // dots_per_line = cycles_per_line / divider
+    fn horizontal_dots_divider(&self) -> u32 {
+        if self.intersects(Self::HORIZONTAL_RESOLUTION2) {
+            7
+        } else {
+            // we want the result to be:
+            // 0: 8
+            // 1: 10
+            // 2: 4
+            // 3: 5
+            //
+            // The second two numbers are half the first two, so we can use the
+            // second bit to divide by 2.
+            let resolution_bits = (self.bits & Self::HORIZONTAL_RESOLUTION1.bits) >> 17;
+
+            // add 2 if the first bit is set
+            let base = 8 + ((resolution_bits & 1) * 2);
+            // divide by 2 if the second bit is set
+            base >> (resolution_bits >> 1)
         }
     }
 
@@ -129,9 +158,9 @@ impl Gpu {
         }
     }
 
-    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester) {
-        self.drawing_clock(interrupt_requester);
+    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester) -> (bool, bool) {
         self.clock_gp0_command();
+        self.drawing_clock(interrupt_requester)
     }
 
     pub fn in_vblank(&self) -> bool {
@@ -170,7 +199,9 @@ impl Gpu {
         out
     }
 
-    fn drawing_clock(&mut self, interrupt_requester: &mut impl InterruptRequester) {
+    /// returns if a (dot_clock, hblank_clock) occurred in the current GPU cycle
+    /// This is used for timers.
+    fn drawing_clock(&mut self, interrupt_requester: &mut impl InterruptRequester) -> (bool, bool) {
         let max_dots = if self.gpu_stat.is_ntsc_video_mode() {
             3413
         } else {
@@ -181,11 +212,15 @@ impl Gpu {
         } else {
             314
         };
+        let horizontal_dots_divider = self.gpu_stat.horizontal_dots_divider();
         let vertical_resolution = self.gpu_stat.vertical_resolution();
         let is_interlace = self.gpu_stat.intersects(GpuStat::VERTICAL_INTERLACE);
 
         self.dot += 1;
+        let dot_clock = self.dot % horizontal_dots_divider == 0;
+        let mut hblank_clock = false;
         if self.dot >= max_dots {
+            hblank_clock = true;
             self.dot = 0;
             self.scanline += 1;
 
@@ -207,6 +242,8 @@ impl Gpu {
                 self.in_vblank = true;
             }
         }
+
+        (dot_clock, hblank_clock)
     }
 
     fn clock_gp0_command(&mut self) {

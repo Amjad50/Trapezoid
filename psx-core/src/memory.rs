@@ -296,26 +296,37 @@ impl CpuBus {
             LittleEndian::write_u32(&mut self.bios.data[0x6FF0 + offset..0x6FF0 + offset + 4], d);
         }
     }
-}
 
-impl BusLine for CpuBus {
-    fn read_u32(&mut self, addr: u32) -> u32 {
-        assert!(addr % 4 == 0, "unalligned u32 read");
+    fn clock_components(&mut self) {
         // TODO: handle Cpu timing better (this should clock for at least once
         //  for every instruction)
         self.dma.clock_dma(&mut self.dma_bus, &mut self.interrupts);
         // almost 2 GPU clocks per 1 CPU
-        self.dma_bus.gpu.clock(&mut self.interrupts);
-        self.dma_bus.gpu.clock(&mut self.interrupts);
+        let (dot_clock1, hblank_clock1) = self.dma_bus.gpu.clock(&mut self.interrupts);
+        let (dot_clock2, hblank_clock2) = self.dma_bus.gpu.clock(&mut self.interrupts);
         // cdrom
         self.dma_bus.cdrom.clock(&mut self.interrupts);
         // controller and mem card
         self.controller_mem_card.clock(&mut self.interrupts);
         // timers
         self.timers.clock_from_system();
+        if hblank_clock1 || hblank_clock2 {
+            self.timers.clock_from_hblank();
+        }
+        if dot_clock1 || dot_clock2 {
+            self.timers.clock_from_gpu_dot();
+        }
         // interrupts for the timers
         self.timers.handle_interrupts(&mut self.interrupts);
+    }
+}
 
+impl BusLine for CpuBus {
+    fn read_u32(&mut self, addr: u32) -> u32 {
+        // clock for every CPU cycle
+        self.clock_components();
+
+        assert!(addr % 4 == 0, "unalligned u32 read");
         match addr {
             // TODO: implement I-cache isolation properly
             0x00000000..=0x00200000 => self.dma_bus.main_ram.read_u32(addr),

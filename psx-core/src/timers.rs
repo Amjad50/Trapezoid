@@ -223,13 +223,29 @@ impl Timer0 {
 
     fn write(&mut self, index: u32, data: u16) {
         self.base.write(index, data);
-        if self.base.mode.intersects(CounterMode::SYNC_ENABLE) {
-            todo!("sync enable on timer0")
-        }
     }
 
     fn get_irq_requested(&mut self) -> bool {
         self.base.get_irq_requested()
+    }
+}
+
+impl Timer0 {
+    fn increment_counter(&mut self) {
+        let sync_mode = self.mode().sync_mode();
+        if self.mode().sync_enable() {
+            // TODO: fix
+            self.base.increment_counter();
+            match sync_mode {
+                0 => {}
+                1 => {}
+                2 => {}
+                3 => {}
+                _ => unreachable!(),
+            }
+        } else {
+            self.base.increment_counter();
+        }
     }
 }
 
@@ -249,14 +265,29 @@ impl Timer1 {
 
     fn write(&mut self, index: u32, data: u16) {
         self.base.write(index, data);
-
-        if self.base.mode.intersects(CounterMode::SYNC_ENABLE) {
-            todo!("sync enable on timer1")
-        }
     }
 
     fn get_irq_requested(&mut self) -> bool {
         self.base.get_irq_requested()
+    }
+}
+
+impl Timer1 {
+    fn increment_counter(&mut self) {
+        let sync_mode = self.mode().sync_mode();
+        if self.mode().sync_enable() {
+            // TODO: fix
+            self.base.increment_counter();
+            match sync_mode {
+                0 => {}
+                1 => {}
+                2 => {}
+                3 => {}
+                _ => unreachable!(),
+            }
+        } else {
+            self.base.increment_counter();
+        }
     }
 }
 
@@ -296,7 +327,7 @@ impl Timer2 {
 
     fn clock_from_system(&mut self) {
         // 0 or 1
-        // free mode
+        // system clock
         if self.mode().clk_source() & 2 == 0 {
             self.increment_counter();
         } else {
@@ -320,22 +351,28 @@ impl Timers {
     pub fn clock_from_system(&mut self) {
         // 0 or 2
         if self.timer0.mode().clk_source() & 1 == 0 {
-            //todo!();
+            self.timer0.increment_counter();
         }
 
         // 0 or 2
         if self.timer1.mode().clk_source() & 1 == 0 {
-            //todo!();
+            self.timer1.increment_counter();
         }
 
         self.timer2.clock_from_system();
     }
 
-    // TODO: implement
-    pub fn _clock_from_gpu_dot(&mut self) {}
+    pub fn clock_from_gpu_dot(&mut self) {
+        if self.timer0.mode().clk_source() & 1 == 1 {
+            self.timer0.increment_counter();
+        }
+    }
 
-    // TODO: implement
-    pub fn _clock_from_hblank(&mut self) {}
+    pub fn clock_from_hblank(&mut self) {
+        if self.timer1.mode().clk_source() & 1 == 1 {
+            self.timer1.increment_counter();
+        }
+    }
 
     /// Request interrupts if any are queued from the previous clocking
     pub fn handle_interrupts(&mut self, interrupt_requester: &mut impl InterruptRequester) {
