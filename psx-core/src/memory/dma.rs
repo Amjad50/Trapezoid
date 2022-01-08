@@ -328,6 +328,42 @@ impl Dma {
         self.interrupt.request_interrupt(3);
     }
 
+    // TODO: implement this, now its just an empty handler that trigger interrupt
+    fn perform_spu_channel4_dma(&mut self, _dma_bus: &mut super::DmaBus) {
+        let channel = &mut self.channels[4];
+        // must be sync mode 1
+        assert!(channel.channel_control.sync_mode() == 1);
+        // must be from main ram (for now, TODO: fix this)
+        assert!(channel
+            .channel_control
+            .intersects(ChannelControl::DIRECTION));
+        // must be forward
+        assert!(channel.channel_control.address_step() == 4);
+        // TODO: implement chopping
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::CHOPPING_ENABLED));
+
+        // TODO: check if the max is 16 or not
+        let block_size = channel.block_control & 0xFFFF;
+        let blocks = channel.block_control >> 16;
+
+        let mut address = channel.base_address & 0xFFFFFC;
+
+        // transfer one block only
+        address += 4 * block_size;
+
+        let blocks = blocks - 1;
+
+        channel.block_control &= 0xFFFF;
+        channel.block_control |= blocks << 16;
+        channel.base_address = address;
+        if blocks == 0 {
+            channel.channel_control.finish_transfer();
+            self.interrupt.request_interrupt(4);
+        }
+    }
+
     // Some control flags are ignored here like:
     // - From RAM (Direction)
     // - Forward address step
@@ -394,8 +430,9 @@ impl Dma {
                 match i {
                     2 => self.perform_gpu_channel2_dma(dma_bus),
                     3 => self.perform_cdrom_channel3_dma(dma_bus),
+                    4 => self.perform_spu_channel4_dma(dma_bus),
                     6 => self.perform_otc_channel6_dma(dma_bus),
-                    _ => todo!(),
+                    _ => todo!("DMA channel {}", i),
                 }
 
                 // remove trigger afterwards, since some handlers might check
