@@ -458,9 +458,10 @@ impl Cdrom {
             let seconds = params[1] as usize;
             let sector = params[2] as usize;
 
-            // there is an offset 2 seconds (for some reason)
-            assert!(seconds >= 2);
-            self.cursor_sector_position = (minutes * 60 + (seconds - 2)) * 75 + sector;
+            let total_seconds = minutes * 60 + seconds;
+            // there is an missing 2 seconds offset (for some reason)
+            assert!(total_seconds >= 2);
+            self.cursor_sector_position = (total_seconds - 2) * 75 + sector;
 
             log::info!(
                 "cdrom seek: ({:02X}:{:02X}:{:02X}) => {:08X}",
