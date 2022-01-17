@@ -202,6 +202,8 @@ pub struct GpuContext {
     front_blit: FrontBlit,
 
     gpu_future: Option<Box<dyn GpuFuture>>,
+
+    command_builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
 }
 
 impl GpuContext {
@@ -316,6 +318,13 @@ impl GpuContext {
 
         let gpu_future = Some(image_clear_future.join(texture_blit_future).boxed());
 
+        let command_buffer = AutoCommandBufferBuilder::primary(
+            device.clone(),
+            queue.family(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
         Self {
             gpu_stat,
             gpu_read_sender,
@@ -353,6 +362,8 @@ impl GpuContext {
             front_blit: texture_blit,
 
             gpu_future,
+
+            command_builder: command_buffer,
         }
     }
 
@@ -399,14 +410,6 @@ impl GpuContext {
         let width = block_range.0.len() as u32;
         let height = block_range.1.len() as u32;
 
-        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
-            AutoCommandBufferBuilder::primary(
-                self.device.clone(),
-                self.queue.family(),
-                CommandBufferUsage::OneTimeSubmit,
-            )
-            .unwrap();
-
         let buffer = CpuAccessibleBuffer::from_iter(
             self.device.clone(),
             BufferUsage::transfer_source(),
@@ -415,7 +418,7 @@ impl GpuContext {
         )
         .unwrap();
 
-        builder
+        self.command_builder
             .copy_buffer_to_image_dimensions(
                 buffer,
                 self.render_image.clone(),
@@ -426,23 +429,12 @@ impl GpuContext {
                 0,
             )
             .unwrap();
-
-        let command_buffer = builder.build().unwrap();
-
-        self.gpu_future = Some(
-            self.gpu_future
-                .take()
-                .unwrap()
-                .then_execute(self.queue.clone(), command_buffer)
-                .unwrap()
-                .then_signal_fence_and_flush()
-                .unwrap()
-                .boxed(),
-        );
     }
 
     pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
         // TODO: check for out-of-bound reads here
+
+        self.flush_command_builder();
 
         let left = block_range.0.start;
         let top = block_range.1.start;
@@ -498,14 +490,6 @@ impl GpuContext {
     pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
         self.gpu_future.as_mut().unwrap().cleanup_finished();
 
-        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
-            AutoCommandBufferBuilder::primary(
-                self.device.clone(),
-                self.queue.family(),
-                CommandBufferUsage::OneTimeSubmit,
-            )
-            .unwrap();
-
         let mut width = size.0;
         let mut height = size.1;
         // TODO: I'm not sure if we should support wrapping, but for now
@@ -531,7 +515,7 @@ impl GpuContext {
         )
         .unwrap();
 
-        builder
+        self.command_builder
             .copy_buffer_to_image_dimensions(
                 buffer,
                 self.render_image.clone(),
@@ -542,8 +526,89 @@ impl GpuContext {
                 0,
             )
             .unwrap();
+    }
 
-        let command_buffer = builder.build().unwrap();
+    fn new_command_buffer_builder(&mut self) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
+        let mut builder = AutoCommandBufferBuilder::primary(
+            self.device.clone(),
+            self.queue.family(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
+        // copy to the back buffer
+        builder
+            .copy_image(
+                self.render_image.clone(),
+                [0, 0, 0],
+                0,
+                0,
+                self.render_image_back_image.clone(),
+                [0, 0, 0],
+                0,
+                0,
+                [1024, 512, 1],
+                1,
+            )
+            .unwrap();
+
+        let sampler = Sampler::new(
+            self.device.clone(),
+            Filter::Nearest,
+            Filter::Nearest,
+            MipmapMode::Nearest,
+            SamplerAddressMode::Repeat,
+            SamplerAddressMode::Repeat,
+            SamplerAddressMode::Repeat,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+
+        // even though, we are using the layout from the `polygon_pipeline`
+        // it still works without issues with `polyline_pipeline` since its the
+        // same layout taken from the same shader.
+        let layout = self
+            .polygon_pipeline
+            .layout()
+            .descriptor_set_layouts()
+            .get(0)
+            .unwrap();
+        let mut set_builder = PersistentDescriptorSet::start(layout.clone());
+
+        set_builder
+            .add_sampled_image(
+                ImageView::start(self.render_image_back_image.clone())
+                    .with_component_mapping(ComponentMapping {
+                        r: ComponentSwizzle::Blue,
+                        b: ComponentSwizzle::Red,
+                        ..Default::default()
+                    })
+                    .build()
+                    .unwrap(),
+                sampler,
+            )
+            .unwrap();
+
+        let set = set_builder.build().unwrap();
+
+        builder.bind_descriptor_sets(
+            PipelineBindPoint::Graphics,
+            self.polygon_pipeline.layout().clone(),
+            0,
+            set,
+        );
+
+        builder
+    }
+
+    fn flush_command_builder(&mut self) {
+        let new_builder = self.new_command_buffer_builder();
+        let command_buffer_builder = std::mem::replace(&mut self.command_builder, new_builder);
+
+        let command_buffer = command_buffer_builder.build().unwrap();
 
         self.gpu_future = Some(
             self.gpu_future
@@ -585,13 +650,9 @@ impl GpuContext {
         let height = drawing_bottom - drawing_top + 1;
         let width = drawing_right - drawing_left + 1;
 
-        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
-            AutoCommandBufferBuilder::primary(
-                self.device.clone(),
-                self.queue.family(),
-                CommandBufferUsage::OneTimeSubmit,
-            )
-            .unwrap();
+        if textured || semi_transparent {
+            self.flush_command_builder();
+        }
 
         if textured {
             if !self.allow_texture_disable {
@@ -599,37 +660,6 @@ impl GpuContext {
             }
             self.update_gpu_stat_from_texture_params(&texture_params);
         };
-
-        // copy to the back buffer
-        builder
-            .copy_image(
-                self.render_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                self.render_image_back_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                [1024, 512, 1],
-                1,
-            )
-            .unwrap();
-
-        let sampler = Sampler::new(
-            self.device.clone(),
-            Filter::Nearest,
-            Filter::Nearest,
-            MipmapMode::Nearest,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-        )
-        .unwrap();
 
         let semi_transparency_mode = if textured {
             texture_params.semi_transparency_mode
@@ -658,31 +688,7 @@ impl GpuContext {
             ],
         };
 
-        let layout = self
-            .polygon_pipeline
-            .layout()
-            .descriptor_set_layouts()
-            .get(0)
-            .unwrap();
-        let mut set_builder = PersistentDescriptorSet::start(layout.clone());
-
-        set_builder
-            .add_sampled_image(
-                ImageView::start(self.render_image_back_image.clone())
-                    .with_component_mapping(ComponentMapping {
-                        r: ComponentSwizzle::Blue,
-                        b: ComponentSwizzle::Red,
-                        ..Default::default()
-                    })
-                    .build()
-                    .unwrap(),
-                sampler,
-            )
-            .unwrap();
-
-        let set = set_builder.build().unwrap();
-
-        builder
+        self.command_builder
             .begin_render_pass(
                 self.render_image_framebuffer.clone(),
                 SubpassContents::Inline,
@@ -698,36 +704,16 @@ impl GpuContext {
                 }],
             )
             .bind_pipeline_graphics(self.polygon_pipeline.clone())
-            .bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                self.polygon_pipeline.layout().clone(),
-                0,
-                set,
-            )
             .push_constants(self.polygon_pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, vertex_buffer)
             .draw(vertices.len() as u32, 1, 0, 0)
             .unwrap()
             .end_render_pass()
             .unwrap();
-
-        let command_buffer = builder.build().unwrap();
-
-        self.gpu_future = Some(
-            self.gpu_future
-                .take()
-                .unwrap()
-                .then_execute(self.queue.clone(), command_buffer)
-                .unwrap()
-                .then_signal_fence_and_flush()
-                .unwrap()
-                .boxed(),
-        );
     }
 
     pub fn draw_polyline(&mut self, vertices: &[DrawingVertex], semi_transparent: bool) {
         self.gpu_future.as_mut().unwrap().cleanup_finished();
-
         let gpu_stat = self.read_gpu_stat();
 
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
@@ -746,44 +732,9 @@ impl GpuContext {
         let height = drawing_bottom - drawing_top + 1;
         let width = drawing_right - drawing_left + 1;
 
-        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
-            AutoCommandBufferBuilder::primary(
-                self.device.clone(),
-                self.queue.family(),
-                CommandBufferUsage::OneTimeSubmit,
-            )
-            .unwrap();
-
-        // copy to the back buffer
-        builder
-            .copy_image(
-                self.render_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                self.render_image_back_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                [1024, 512, 1],
-                1,
-            )
-            .unwrap();
-
-        let sampler = Sampler::new(
-            self.device.clone(),
-            Filter::Nearest,
-            Filter::Nearest,
-            MipmapMode::Nearest,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-        )
-        .unwrap();
+        if semi_transparent {
+            self.flush_command_builder();
+        }
 
         let semi_transparency_mode = gpu_stat.semi_transparency_mode();
 
@@ -805,31 +756,7 @@ impl GpuContext {
             texture_flip: [0, 0],
         };
 
-        let layout = self
-            .line_pipeline
-            .layout()
-            .descriptor_set_layouts()
-            .get(0)
-            .unwrap();
-        let mut set_builder = PersistentDescriptorSet::start(layout.clone());
-
-        set_builder
-            .add_sampled_image(
-                ImageView::start(self.render_image_back_image.clone())
-                    .with_component_mapping(ComponentMapping {
-                        r: ComponentSwizzle::Blue,
-                        b: ComponentSwizzle::Red,
-                        ..Default::default()
-                    })
-                    .build()
-                    .unwrap(),
-                sampler,
-            )
-            .unwrap();
-
-        let set = set_builder.build().unwrap();
-
-        builder
+        self.command_builder
             .begin_render_pass(
                 self.render_image_framebuffer.clone(),
                 SubpassContents::Inline,
@@ -845,35 +772,17 @@ impl GpuContext {
                 }],
             )
             .bind_pipeline_graphics(self.line_pipeline.clone())
-            .bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                self.line_pipeline.layout().clone(),
-                0,
-                set,
-            )
             .push_constants(self.line_pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, vertex_buffer)
             .draw(vertices.len() as u32, 1, 0, 0)
             .unwrap()
             .end_render_pass()
             .unwrap();
-
-        let command_buffer = builder.build().unwrap();
-
-        self.gpu_future = Some(
-            self.gpu_future
-                .take()
-                .unwrap()
-                .then_execute(self.queue.clone(), command_buffer)
-                .unwrap()
-                .then_signal_fence_and_flush()
-                .unwrap()
-                .boxed(),
-        );
     }
 
     pub fn blit_to_front(&mut self, full_vram: bool) {
         let gpu_stat = self.read_gpu_stat();
+        self.flush_command_builder();
 
         let (topleft, size) = if full_vram {
             ([0; 2], [1024, 512])
