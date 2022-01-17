@@ -936,6 +936,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "byteorder",
+ "crossbeam",
  "log",
  "vulkano",
  "vulkano-shaders",

@@ -341,7 +341,8 @@ impl Gp0Command for RectangleCommand {
             if self.textured {
                 // it will just take what is needed from the stat, which include the tex page
                 // to use and color mode
-                self.texture_params.tex_page_from_gpustat(ctx.gpu_stat.bits);
+                self.texture_params
+                    .tex_page_from_gpustat(ctx.read_gpu_stat().bits);
                 self.texture_params.set_texture_flip(ctx.textured_rect_flip);
             }
 
@@ -404,11 +405,16 @@ impl Gp0Command for EnvironmentCommand {
                 let textured_rect_y_flip = (data >> 13) & 1 == 1;
                 ctx.textured_rect_flip = (textured_rect_x_flip, textured_rect_y_flip);
 
-                ctx.gpu_stat.bits &= !0x87FF;
-                ctx.gpu_stat.bits |= stat_lower_11_bits;
-                if stat_bit_15_texture_disable && ctx.allow_texture_disable {
-                    ctx.gpu_stat.bits |= 1 << 15;
-                }
+                ctx.gpu_stat
+                    .fetch_update(|mut s| {
+                        s.bits &= !0x87FF;
+                        s.bits |= stat_lower_11_bits;
+                        if stat_bit_15_texture_disable && ctx.allow_texture_disable {
+                            s.bits |= 1 << 15;
+                        }
+                        Some(s)
+                    })
+                    .unwrap();
             }
             0xe2 => {
                 ctx.cached_gp0_e2 = data;
@@ -469,8 +475,14 @@ impl Gp0Command for EnvironmentCommand {
                 //  11    Set mask while drawing (0=TextureBit15, 1=ForceBit15=1)
                 //  12    Check mask before draw (0=Draw Always, 1=Draw if Bit15=0)
                 let stat_bits_11_12 = data & 3;
-                ctx.gpu_stat.bits &= !(3 << 11);
-                ctx.gpu_stat.bits |= stat_bits_11_12;
+
+                ctx.gpu_stat
+                    .fetch_update(|mut s| {
+                        s.bits &= !(3 << 11);
+                        s.bits |= stat_bits_11_12;
+                        Some(s)
+                    })
+                    .unwrap();
             }
             _ => todo!("gp0 environment command {:02X}", cmd),
         }
@@ -736,41 +748,38 @@ impl Gp0Command for VramToCpuBlitCommand {
     }
 
     fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
-        if self.input_state != 2 || ctx.gpu_read.is_some() {
+        if self.input_state != 2 {
             return false;
         }
-        if self.block.is_empty() {
-            let x_range = (self.src.0)..(self.src.0 + self.size.0);
-            let y_range = (self.src.1)..(self.src.1 + self.size.1);
+        assert!(self.block.is_empty());
 
-            self.block = ctx.read_vram_block(&(x_range, y_range));
+        let x_range = (self.src.0)..(self.src.0 + self.size.0);
+        let y_range = (self.src.1)..(self.src.1 + self.size.1);
+
+        self.block = ctx.read_vram_block(&(x_range, y_range));
+
+        while self.block_counter < self.block.len() {
+            // used for debugging only
+            let vram_pos = (
+                (self.block_counter as u32 % self.size.0) + self.src.0,
+                (self.block_counter as u32 / self.size.0) + self.src.1,
+            );
+            let d1 = self.block[self.block_counter];
+            let d2 = if self.block_counter + 1 < self.block.len() {
+                self.block[self.block_counter + 1]
+            } else {
+                0
+            };
+            self.block_counter += 2;
+
+            let data = ((d2 as u32) << 16) | d1 as u32;
+            log::info!("IN TRANSFERE, src={:?}, data={:08X}", vram_pos, data);
+
+            // TODO: send full block
+            ctx.send_to_gpu_read(data);
         }
-
-        // used for debugging only
-        let vram_pos = (
-            (self.block_counter as u32 % self.size.0) + self.src.0,
-            (self.block_counter as u32 / self.size.0) + self.src.1,
-        );
-        let d1 = self.block[self.block_counter];
-        let d2 = if self.block_counter + 1 < self.block.len() {
-            self.block[self.block_counter + 1]
-        } else {
-            0
-        };
-        self.block_counter += 2;
-
-        let data = ((d2 as u32) << 16) | d1 as u32;
-        log::info!("IN TRANSFERE, src={:?}, data={:08X}", vram_pos, data);
-
-        ctx.gpu_read = Some(data);
-
-        if self.block_counter >= self.block.len() {
-            // finish transfer
-            log::info!("DONE TRANSFERE");
-            true
-        } else {
-            false
-        }
+        log::info!("DONE TRANSFERE");
+        true
     }
 
     fn still_need_params(&mut self) -> bool {
