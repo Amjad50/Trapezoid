@@ -28,7 +28,7 @@ impl BusLine for MemoryControl1 {
         let addr = addr & 0xFF;
         let index = (addr / 4) as usize;
 
-        println!("mem_ctrl1: index={}, data=0x{:08X}", index, data);
+        log::trace!("mem_ctrl1: index={}, data=0x{:08X}", index, data);
 
         self.data[index] = data;
     }

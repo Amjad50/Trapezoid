@@ -620,8 +620,8 @@ impl Cdrom {
 
         let out = self.data_fifo_buffer[self.data_fifo_buffer_index];
         self.data_fifo_buffer_index += 1;
-        //println!("read data fifo={:04X}", self.data_fifo_buffer_index);
         if self.data_fifo_buffer_index == self.data_fifo_buffer.len() {
+            log::info!("data fifo buffer finished");
             self.data_fifo_buffer.clear();
             self.data_fifo_buffer_index = 0;
             self.fifo_status.remove(FifosStatus::DATA_FIFO_NOT_EMPTY);
