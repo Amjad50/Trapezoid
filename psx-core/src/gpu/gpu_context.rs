@@ -1,3 +1,5 @@
+use crossbeam::atomic::AtomicCell;
+use crossbeam::channel::Sender;
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
@@ -7,7 +9,7 @@ use vulkano::descriptor_set::PersistentDescriptorSet;
 use vulkano::device::{Device, Queue};
 use vulkano::format::{ClearValue, Format};
 use vulkano::image::view::{ComponentMapping, ComponentSwizzle, ImageView};
-use vulkano::image::{ImageAccess, ImageDimensions, StorageImage};
+use vulkano::image::{ImageDimensions, StorageImage};
 use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
@@ -161,10 +163,12 @@ impl DrawingTextureParams {
 }
 
 pub struct GpuContext {
-    pub(super) gpu_stat: GpuStat,
+    pub(super) gpu_stat: Arc<AtomicCell<GpuStat>>,
+    pub(super) gpu_front_image_sender: Sender<Arc<StorageImage>>,
+    gpu_read_sender: Sender<u32>,
+
     pub(super) allow_texture_disable: bool,
     pub(super) textured_rect_flip: (bool, bool),
-    pub(super) gpu_read: Option<u32>,
 
     pub(super) drawing_area_top_left: (u32, u32),
     pub(super) drawing_area_bottom_right: (u32, u32),
@@ -183,7 +187,7 @@ pub struct GpuContext {
     pub(super) cached_gp0_e4: u32,
     pub(super) cached_gp0_e5: u32,
 
-    device: Arc<Device>,
+    pub(super) device: Arc<Device>,
     queue: Arc<Queue>,
     render_image: Arc<StorageImage>,
     render_image_back_image: Arc<StorageImage>,
@@ -201,7 +205,13 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    pub fn new(device: Arc<Device>, queue: Arc<Queue>) -> Self {
+    pub(super) fn new(
+        device: Arc<Device>,
+        queue: Arc<Queue>,
+        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        gpu_read_sender: Sender<u32>,
+        gpu_front_image_sender: Sender<Arc<StorageImage>>,
+    ) -> Self {
         let render_image = StorageImage::new(
             device.clone(),
             ImageDimensions::Dim2d {
@@ -307,10 +317,12 @@ impl GpuContext {
         let gpu_future = Some(image_clear_future.join(texture_blit_future).boxed());
 
         Self {
-            gpu_stat: Default::default(),
+            gpu_stat,
+            gpu_read_sender,
+            gpu_front_image_sender,
+
             allow_texture_disable: false,
             textured_rect_flip: (false, false),
-            gpu_read: Default::default(),
 
             drawing_area_top_left: (0, 0),
             drawing_area_bottom_right: (0, 0),
@@ -343,6 +355,18 @@ impl GpuContext {
             gpu_future,
         }
     }
+
+    pub(super) fn read_gpu_stat(&self) -> GpuStat {
+        self.gpu_stat.load()
+    }
+
+    pub(super) fn write_gpu_stat(&self, stat: GpuStat) {
+        self.gpu_stat.store(stat);
+    }
+
+    pub(super) fn send_to_gpu_read(&self, value: u32) {
+        self.gpu_read_sender.send(value).unwrap();
+    }
 }
 
 impl GpuContext {
@@ -350,12 +374,17 @@ impl GpuContext {
     fn update_gpu_stat_from_texture_params(&mut self, texture_params: &DrawingTextureParams) {
         let x = (texture_params.tex_page_base[0] / 64) & 0xF;
         let y = (texture_params.tex_page_base[1] / 256) & 1;
-        self.gpu_stat.bits &= !0x81FF;
-        self.gpu_stat.bits |= x;
-        self.gpu_stat.bits |= y << 4;
-        self.gpu_stat.bits |= (texture_params.semi_transparency_mode as u32) << 5;
-        self.gpu_stat.bits |= (texture_params.tex_page_color_mode as u32) << 7;
-        self.gpu_stat.bits |= (texture_params.texture_disable as u32) << 15;
+        self.gpu_stat
+            .fetch_update(|mut s| {
+                s.bits &= !0x81FF;
+                s.bits |= x;
+                s.bits |= y << 4;
+                s.bits |= (texture_params.semi_transparency_mode as u32) << 5;
+                s.bits |= (texture_params.tex_page_color_mode as u32) << 7;
+                s.bits |= (texture_params.texture_disable as u32) << 15;
+                Some(s)
+            })
+            .unwrap();
     }
 }
 
@@ -538,6 +567,8 @@ impl GpuContext {
     ) {
         self.gpu_future.as_mut().unwrap().cleanup_finished();
 
+        let gpu_stat = self.read_gpu_stat();
+
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
             self.device.clone(),
             BufferUsage::all(),
@@ -603,7 +634,7 @@ impl GpuContext {
         let semi_transparency_mode = if textured {
             texture_params.semi_transparency_mode
         } else {
-            self.gpu_stat.semi_transparency_mode()
+            gpu_stat.semi_transparency_mode()
         };
 
         let push_constants = fs::ty::PushConstantData {
@@ -614,7 +645,7 @@ impl GpuContext {
             semi_transparent: semi_transparent as u32,
             semi_transparency_mode: semi_transparency_mode as u32,
 
-            dither_enabled: self.gpu_stat.dither_enabled() as u32,
+            dither_enabled: gpu_stat.dither_enabled() as u32,
 
             is_textured: textured as u32,
             clut_base: texture_params.clut_base,
@@ -697,6 +728,8 @@ impl GpuContext {
     pub fn draw_polyline(&mut self, vertices: &[DrawingVertex], semi_transparent: bool) {
         self.gpu_future.as_mut().unwrap().cleanup_finished();
 
+        let gpu_stat = self.read_gpu_stat();
+
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
             self.device.clone(),
             BufferUsage::all(),
@@ -752,7 +785,7 @@ impl GpuContext {
         )
         .unwrap();
 
-        let semi_transparency_mode = self.gpu_stat.semi_transparency_mode();
+        let semi_transparency_mode = gpu_stat.semi_transparency_mode();
 
         let push_constants = fs::ty::PushConstantData {
             offset: [self.drawing_offset.0, self.drawing_offset.1],
@@ -762,7 +795,7 @@ impl GpuContext {
             semi_transparent: semi_transparent as u32,
             semi_transparency_mode: semi_transparency_mode as u32,
 
-            dither_enabled: self.gpu_stat.dither_enabled() as u32,
+            dither_enabled: gpu_stat.dither_enabled() as u32,
 
             is_textured: false as u32,
             tex_page_base: [0; 2],
@@ -839,11 +872,9 @@ impl GpuContext {
         );
     }
 
-    pub fn blit_to_front<D, IF>(&mut self, dest_image: Arc<D>, full_vram: bool, in_future: IF)
-    where
-        D: ImageAccess + 'static,
-        IF: GpuFuture,
-    {
+    pub fn blit_to_front(&mut self, full_vram: bool) {
+        let gpu_stat = self.read_gpu_stat();
+
         let (topleft, size) = if full_vram {
             ([0; 2], [1024, 512])
         } else {
@@ -853,24 +884,39 @@ impl GpuContext {
                     self.vram_display_area_start.1,
                 ],
                 [
-                    self.gpu_stat.horizontal_resolution(),
-                    self.gpu_stat.vertical_resolution(),
+                    gpu_stat.horizontal_resolution(),
+                    gpu_stat.vertical_resolution(),
                 ],
             )
         };
 
+        let front_image = StorageImage::new(
+            self.device.clone(),
+            ImageDimensions::Dim2d {
+                width: size[0],
+                height: size[1],
+                array_layers: 1,
+            },
+            Format::B8G8R8A8_UNORM,
+            Some(self.queue.family()),
+        )
+        .unwrap();
+
         // TODO: try to remove the `wait` from here
         self.front_blit
             .blit(
-                dest_image,
+                front_image.clone(),
                 topleft,
                 size,
-                self.gpu_future.take().unwrap().join(in_future),
+                self.gpu_future.take().unwrap(),
             )
             .then_signal_fence_and_flush()
             .unwrap()
             .wait(None)
             .unwrap();
+
+        // send the front buffer
+        self.gpu_front_image_sender.send(front_image).unwrap();
 
         // reset future since we are waiting
         self.gpu_future = Some(sync::now(self.device.clone()).boxed());
