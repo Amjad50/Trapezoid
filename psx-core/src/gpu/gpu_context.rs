@@ -1,6 +1,6 @@
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::Sender;
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
+use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, CpuBufferPool};
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
     SubpassContents,
@@ -195,9 +195,8 @@ pub struct GpuContext {
     render_image_framebuffer: Arc<Framebuffer>,
     polygon_pipeline: Arc<GraphicsPipeline>,
     line_pipeline: Arc<GraphicsPipeline>,
-    // TODO: this buffer gives Gpu lock issues, so either we create
-    //  buffer every time, we draw, or we create multiple buffers and loop through them
-    _vertex_buffer: Arc<CpuAccessibleBuffer<[DrawingVertex]>>,
+
+    vertex_buffer_pool: CpuBufferPool<DrawingVertex>,
 
     front_blit: FrontBlit,
 
@@ -306,13 +305,7 @@ impl GpuContext {
             .build()
             .unwrap();
 
-        let vertex_buffer = CpuAccessibleBuffer::from_iter(
-            device.clone(),
-            BufferUsage::all(),
-            false,
-            [DrawingVertex::default(); 4].iter().cloned(),
-        )
-        .unwrap();
+        let vertex_buffer_pool = CpuBufferPool::vertex_buffer(device.clone());
 
         let (texture_blit, texture_blit_future) =
             FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
@@ -358,7 +351,7 @@ impl GpuContext {
             polygon_pipeline,
             line_pipeline,
 
-            _vertex_buffer: vertex_buffer,
+            vertex_buffer_pool,
 
             front_blit: texture_blit,
 
@@ -665,13 +658,7 @@ impl GpuContext {
     ) {
         let gpu_stat = self.read_gpu_stat();
 
-        let vertex_buffer = CpuAccessibleBuffer::from_iter(
-            self.device.clone(),
-            BufferUsage::all(),
-            false,
-            vertices.iter().cloned(),
-        )
-        .unwrap();
+        let vertex_buffer = self.vertex_buffer_pool.chunk(vertices.to_vec()).unwrap();
 
         let (drawing_left, drawing_top) = self.drawing_area_top_left;
         let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
@@ -748,13 +735,7 @@ impl GpuContext {
     pub fn draw_polyline(&mut self, vertices: &[DrawingVertex], semi_transparent: bool) {
         let gpu_stat = self.read_gpu_stat();
 
-        let vertex_buffer = CpuAccessibleBuffer::from_iter(
-            self.device.clone(),
-            BufferUsage::all(),
-            false,
-            vertices.iter().cloned(),
-        )
-        .unwrap();
+        let vertex_buffer = self.vertex_buffer_pool.chunk(vertices.to_vec()).unwrap();
 
         let (drawing_left, drawing_top) = self.drawing_area_top_left;
         let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
