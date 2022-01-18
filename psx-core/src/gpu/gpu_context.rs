@@ -204,6 +204,7 @@ pub struct GpuContext {
     gpu_future: Option<Box<dyn GpuFuture>>,
 
     command_builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    buffered_draws: u32,
 }
 
 impl GpuContext {
@@ -318,7 +319,7 @@ impl GpuContext {
 
         let gpu_future = Some(image_clear_future.join(texture_blit_future).boxed());
 
-        let command_buffer = AutoCommandBufferBuilder::primary(
+        let command_builder = AutoCommandBufferBuilder::primary(
             device.clone(),
             queue.family(),
             CommandBufferUsage::OneTimeSubmit,
@@ -363,7 +364,8 @@ impl GpuContext {
 
             gpu_future,
 
-            command_builder: command_buffer,
+            command_builder,
+            buffered_draws: 0,
         }
     }
 
@@ -401,8 +403,6 @@ impl GpuContext {
 
 impl GpuContext {
     pub fn write_vram_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
-        self.gpu_future.as_mut().unwrap().cleanup_finished();
-
         // TODO: check for out-of-bound writes here
 
         let left = block_range.0.start;
@@ -488,8 +488,6 @@ impl GpuContext {
     }
 
     pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
-        self.gpu_future.as_mut().unwrap().cleanup_finished();
-
         let mut width = size.0;
         let mut height = size.1;
         // TODO: I'm not sure if we should support wrapping, but for now
@@ -537,6 +535,9 @@ impl GpuContext {
         .unwrap();
 
         // copy to the back buffer
+        // NOTE: For some reason, removing this results in conflict error from vulkano
+        //       not sure, if there is a bug with the conflict checker or not, but
+        //       for now, we add this command in the beginning before binding the image as texture.
         builder
             .copy_image(
                 self.render_image.clone(),
@@ -604,9 +605,28 @@ impl GpuContext {
         builder
     }
 
+    fn update_back_image(&mut self) {
+        // copy to the back buffer
+        self.command_builder
+            .copy_image(
+                self.render_image.clone(),
+                [0, 0, 0],
+                0,
+                0,
+                self.render_image_back_image.clone(),
+                [0, 0, 0],
+                0,
+                0,
+                [1024, 512, 1],
+                1,
+            )
+            .unwrap();
+    }
+
     fn flush_command_builder(&mut self) {
         let new_builder = self.new_command_buffer_builder();
         let command_buffer_builder = std::mem::replace(&mut self.command_builder, new_builder);
+        self.buffered_draws = 0;
 
         let command_buffer = command_buffer_builder.build().unwrap();
 
@@ -622,6 +642,19 @@ impl GpuContext {
         );
     }
 
+    /// Adds to the buffered commands counter and flushes the command builder if needed exceeded a
+    /// specific threshold.
+    fn increment_buffered_draws_and_cleanup(&mut self) {
+        // NOTE: this number is arbitrary, it should be tested later or maybe
+        //       make it dynamic
+        const MAX_BUFFERED_COMMANDS: u32 = 40;
+
+        self.buffered_draws += 1;
+        if self.buffered_draws > MAX_BUFFERED_COMMANDS {
+            self.flush_command_builder();
+        }
+    }
+
     pub fn draw_polygon(
         &mut self,
         vertices: &[DrawingVertex],
@@ -630,8 +663,6 @@ impl GpuContext {
         texture_blending: bool,
         semi_transparent: bool,
     ) {
-        self.gpu_future.as_mut().unwrap().cleanup_finished();
-
         let gpu_stat = self.read_gpu_stat();
 
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
@@ -651,7 +682,7 @@ impl GpuContext {
         let width = drawing_right - drawing_left + 1;
 
         if textured || semi_transparent {
-            self.flush_command_builder();
+            self.update_back_image();
         }
 
         if textured {
@@ -710,10 +741,11 @@ impl GpuContext {
             .unwrap()
             .end_render_pass()
             .unwrap();
+
+        self.increment_buffered_draws_and_cleanup();
     }
 
     pub fn draw_polyline(&mut self, vertices: &[DrawingVertex], semi_transparent: bool) {
-        self.gpu_future.as_mut().unwrap().cleanup_finished();
         let gpu_stat = self.read_gpu_stat();
 
         let vertex_buffer = CpuAccessibleBuffer::from_iter(
@@ -733,7 +765,7 @@ impl GpuContext {
         let width = drawing_right - drawing_left + 1;
 
         if semi_transparent {
-            self.flush_command_builder();
+            self.update_back_image();
         }
 
         let semi_transparency_mode = gpu_stat.semi_transparency_mode();
@@ -778,6 +810,8 @@ impl GpuContext {
             .unwrap()
             .end_render_pass()
             .unwrap();
+
+        self.increment_buffered_draws_and_cleanup();
     }
 
     pub fn blit_to_front(&mut self, full_vram: bool) {
