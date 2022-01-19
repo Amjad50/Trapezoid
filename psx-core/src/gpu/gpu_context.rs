@@ -195,6 +195,7 @@ pub struct GpuContext {
     render_image_framebuffer: Arc<Framebuffer>,
     polygon_pipeline: Arc<GraphicsPipeline>,
     line_pipeline: Arc<GraphicsPipeline>,
+    descriptor_set: Arc<PersistentDescriptorSet>,
 
     vertex_buffer_pool: CpuBufferPool<DrawingVertex>,
 
@@ -299,6 +300,47 @@ impl GpuContext {
             .build(device.clone())
             .unwrap();
 
+        let sampler = Sampler::new(
+            device.clone(),
+            Filter::Nearest,
+            Filter::Nearest,
+            MipmapMode::Nearest,
+            SamplerAddressMode::Repeat,
+            SamplerAddressMode::Repeat,
+            SamplerAddressMode::Repeat,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+        )
+        .unwrap();
+
+        // even though, we are using the layout from the `polygon_pipeline`
+        // it still works without issues with `line_pipeline` since its the
+        // same layout taken from the same shader.
+        let layout = polygon_pipeline
+            .layout()
+            .descriptor_set_layouts()
+            .get(0)
+            .unwrap();
+        let mut set_builder = PersistentDescriptorSet::start(layout.clone());
+
+        set_builder
+            .add_sampled_image(
+                ImageView::start(render_image_back_image.clone())
+                    .with_component_mapping(ComponentMapping {
+                        r: ComponentSwizzle::Blue,
+                        b: ComponentSwizzle::Red,
+                        ..Default::default()
+                    })
+                    .build()
+                    .unwrap(),
+                sampler,
+            )
+            .unwrap();
+
+        let descriptor_set = set_builder.build().unwrap();
+
         let render_image_framebuffer = Framebuffer::start(render_pass)
             .add(ImageView::new(render_image.clone()).unwrap())
             .unwrap()
@@ -350,6 +392,7 @@ impl GpuContext {
 
             polygon_pipeline,
             line_pipeline,
+            descriptor_set,
 
             vertex_buffer_pool,
 
@@ -546,55 +589,6 @@ impl GpuContext {
             )
             .unwrap();
 
-        let sampler = Sampler::new(
-            self.device.clone(),
-            Filter::Nearest,
-            Filter::Nearest,
-            MipmapMode::Nearest,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-        )
-        .unwrap();
-
-        // even though, we are using the layout from the `polygon_pipeline`
-        // it still works without issues with `polyline_pipeline` since its the
-        // same layout taken from the same shader.
-        let layout = self
-            .polygon_pipeline
-            .layout()
-            .descriptor_set_layouts()
-            .get(0)
-            .unwrap();
-        let mut set_builder = PersistentDescriptorSet::start(layout.clone());
-
-        set_builder
-            .add_sampled_image(
-                ImageView::start(self.render_image_back_image.clone())
-                    .with_component_mapping(ComponentMapping {
-                        r: ComponentSwizzle::Blue,
-                        b: ComponentSwizzle::Red,
-                        ..Default::default()
-                    })
-                    .build()
-                    .unwrap(),
-                sampler,
-            )
-            .unwrap();
-
-        let set = set_builder.build().unwrap();
-
-        builder.bind_descriptor_sets(
-            PipelineBindPoint::Graphics,
-            self.polygon_pipeline.layout().clone(),
-            0,
-            set,
-        );
-
         builder
     }
 
@@ -706,13 +700,15 @@ impl GpuContext {
             ],
         };
 
-        self.command_builder
-            .begin_render_pass(
-                self.render_image_framebuffer.clone(),
-                SubpassContents::Inline,
-                [ClearValue::None],
-            )
-            .unwrap()
+        let mut secondary_buffer = AutoCommandBufferBuilder::secondary_graphics(
+            self.device.clone(),
+            self.queue.family(),
+            CommandBufferUsage::OneTimeSubmit,
+            self.polygon_pipeline.subpass().clone(),
+        )
+        .unwrap();
+
+        secondary_buffer
             .set_viewport(
                 0,
                 [Viewport {
@@ -721,10 +717,26 @@ impl GpuContext {
                     depth_range: 0.0..1.0,
                 }],
             )
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                self.polygon_pipeline.layout().clone(),
+                0,
+                self.descriptor_set.clone(),
+            )
             .bind_pipeline_graphics(self.polygon_pipeline.clone())
             .push_constants(self.polygon_pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, vertex_buffer)
             .draw(vertices.len() as u32, 1, 0, 0)
+            .unwrap();
+
+        self.command_builder
+            .begin_render_pass(
+                self.render_image_framebuffer.clone(),
+                SubpassContents::SecondaryCommandBuffers,
+                [ClearValue::None],
+            )
+            .unwrap()
+            .execute_commands(secondary_buffer.build().unwrap())
             .unwrap()
             .end_render_pass()
             .unwrap();
@@ -769,13 +781,15 @@ impl GpuContext {
             texture_flip: [0, 0],
         };
 
-        self.command_builder
-            .begin_render_pass(
-                self.render_image_framebuffer.clone(),
-                SubpassContents::Inline,
-                [ClearValue::None],
-            )
-            .unwrap()
+        let mut secondary_buffer = AutoCommandBufferBuilder::secondary_graphics(
+            self.device.clone(),
+            self.queue.family(),
+            CommandBufferUsage::OneTimeSubmit,
+            self.line_pipeline.subpass().clone(),
+        )
+        .unwrap();
+
+        secondary_buffer
             .set_viewport(
                 0,
                 [Viewport {
@@ -784,10 +798,26 @@ impl GpuContext {
                     depth_range: 0.0..1.0,
                 }],
             )
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                self.line_pipeline.layout().clone(),
+                0,
+                self.descriptor_set.clone(),
+            )
             .bind_pipeline_graphics(self.line_pipeline.clone())
             .push_constants(self.line_pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, vertex_buffer)
             .draw(vertices.len() as u32, 1, 0, 0)
+            .unwrap();
+
+        self.command_builder
+            .begin_render_pass(
+                self.render_image_framebuffer.clone(),
+                SubpassContents::SecondaryCommandBuffers,
+                [ClearValue::None],
+            )
+            .unwrap()
+            .execute_commands(secondary_buffer.build().unwrap())
             .unwrap()
             .end_render_pass()
             .unwrap();
