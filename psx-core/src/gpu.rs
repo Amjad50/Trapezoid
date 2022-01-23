@@ -160,7 +160,9 @@ impl Gpu {
         let (gpu_backend_sender, gpu_backend_receiver) = crossbeam::channel::unbounded();
         let (gpu_front_image_sender, gpu_front_image_receiver) = crossbeam::channel::unbounded();
 
-        let gpu_stat = Arc::new(AtomicCell::new(GpuStat::empty()));
+        let gpu_stat = Arc::new(AtomicCell::new(
+            GpuStat::READY_FOR_CMD_RECV | GpuStat::READY_FOR_DMA_RECV,
+        ));
 
         let _gpu_backend_thread_handle = GpuBackend::start(
             device.clone(),
@@ -263,10 +265,8 @@ impl Gpu {
     fn read_gpu_stat(&self) -> u32 {
         // Ready to receive Cmd Word
         // Ready to receive DMA Block
-        let out = self.gpu_stat.load().bits
-            | (0b101 << 26)
-            | ((!self.gpu_read_receiver.is_empty() as u32) << 27)
-            | (((self.drawing_odd && !self.in_vblank) as u32) << 31);
+        let out =
+            self.gpu_stat.load().bits | (((self.drawing_odd && !self.in_vblank) as u32) << 31);
 
         log::trace!("GPUSTAT = {:08X}", out);
         log::trace!("GPUSTAT = {:?}", self.gpu_stat);
@@ -274,10 +274,14 @@ impl Gpu {
     }
 
     fn gpu_read(&mut self) -> u32 {
-        // FIXME: added delay to make the backend catch up and send the remaining data
-        let out = self
-            .gpu_read_receiver
-            .recv_timeout(std::time::Duration::from_millis(500));
+        let out = self.gpu_read_receiver.try_recv();
+
+        if self.gpu_read_receiver.is_empty() {
+            self.gpu_stat
+                .fetch_update(|s| Some(s - GpuStat::READY_FOR_TO_SEND_VRAM))
+                .unwrap();
+        }
+
         log::trace!("GPUREAD = {:08X?}", out);
         out.unwrap_or(0)
     }
