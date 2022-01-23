@@ -9,7 +9,6 @@ use crossbeam::{
     channel::{Receiver, Sender},
 };
 use std::{
-    collections::VecDeque,
     sync::Arc,
     thread::{self, JoinHandle},
 };
@@ -23,8 +22,6 @@ pub struct GpuBackend {
     /// holds commands that needs extra parameter and complex, like sending
     /// to/from VRAM, and rendering
     current_command: Option<Box<dyn Gp0Command>>,
-    // TODO: replace by fixed vec deque to not exceed the limited size
-    command_fifo: VecDeque<u32>,
 
     gpu_backend_receiver: Receiver<BackendCommand>,
 }
@@ -64,7 +61,6 @@ impl GpuBackend {
                     gpu_front_image_sender,
                 ),
                 current_command: None,
-                command_fifo: VecDeque::new(),
                 gpu_backend_receiver,
             };
             b.run();
@@ -81,73 +77,55 @@ impl GpuBackend {
                 }
                 Err(_) => {}
             }
-            self.clock_gp0_command();
         }
     }
 }
 
 impl GpuBackend {
-    fn clock_gp0_command(&mut self) {
-        // try to empty the fifo
-        while let Some(gp0_data) = self.command_fifo.pop_front() {
-            log::info!("fifo len {}", self.command_fifo.len() + 1);
-            if let Some(cmd) = self.current_command.as_mut() {
-                // add the new data we received
-                if cmd.still_need_params() {
-                    log::info!("gp0 extra param {:08X}", gp0_data);
-                    cmd.add_param(gp0_data);
-                    if cmd.exec_command(&mut self.gpu_context) {
-                        self.current_command = None;
-                    }
-                } else {
-                    // put the data back
-                    self.command_fifo.push_front(gp0_data);
-                    break;
-                }
-            } else {
-                log::info!("gp0 command {:08X} init", gp0_data);
-                let mut cmd = instantiate_gp0_command(gp0_data);
-
-                // if its not finished yet
-                if !cmd.exec_command(&mut self.gpu_context) {
-                    self.current_command = Some(cmd);
-                }
-            }
-        }
-        // clock the command even if no fifo is present
-        if let Some(cmd) = self.current_command.as_mut() {
-            if cmd.exec_command(&mut self.gpu_context) {
-                self.current_command = None;
-            }
-        }
-    }
-
-    /// Some gp0 commands are executing even if the fifo is not empty, so we
-    /// should bypass the fifo and execute them here
-    fn execute_gp0_or_add_to_fifo(&mut self, data: u32) {
-        let cmd = data >> 24;
-        log::info!("gp0 command {:02X} data: {:08X}", cmd, data);
-        // TODO: handle commands that bypass the fifo, like `0x00, 0xe3, 0xe4, 0xe5, etc.`
-        match cmd {
-            _ => {
-                // add the command or param to the fifo
-                self.command_fifo.push_back(data);
-            }
-        }
-    }
-
     fn handle_gp0_input(&mut self, data: u32) {
+        log::info!("GPU: GP0 write: {:08x}", data);
         // if we still executing some command
         if let Some(cmd) = self.current_command.as_mut() {
-            // add the new data we received
-            if !cmd.still_need_params() {
-                self.execute_gp0_or_add_to_fifo(data);
+            if cmd.still_need_params() {
+                log::info!("gp0 extra param {:08X}", data);
+                cmd.add_param(data);
+                if !cmd.still_need_params() {
+                    // take the self reference from here, so that we can update the gpu_stat
+                    // without issues
+                    let mut cmd = self.current_command.take().unwrap();
+
+                    self.gpu_stat
+                        .fetch_update(|s| Some(s - GpuStat::READY_FOR_DMA_RECV))
+                        .unwrap();
+
+                    log::info!("executing command {:?}", cmd.cmd_type());
+                    cmd.exec_command(&mut self.gpu_context);
+                    self.current_command = None;
+
+                    // ready for next command
+                    self.gpu_stat
+                        .fetch_update(|s| {
+                            Some(s | GpuStat::READY_FOR_CMD_RECV | GpuStat::READY_FOR_DMA_RECV)
+                        })
+                        .unwrap();
+                }
             } else {
-                self.command_fifo.push_back(data);
+                unreachable!();
             }
-            return;
+        } else {
+            let mut cmd = instantiate_gp0_command(data);
+            log::info!("creating new command {:?}", cmd.cmd_type());
+            if cmd.still_need_params() {
+                self.current_command = Some(cmd);
+                self.gpu_stat
+                    .fetch_update(|s| Some(s - GpuStat::READY_FOR_CMD_RECV))
+                    .unwrap();
+            } else {
+                cmd.exec_command(&mut self.gpu_context);
+                self.current_command = None;
+                log::info!("executing command {:?}", cmd.cmd_type());
+            }
         }
-        self.execute_gp0_or_add_to_fifo(data);
     }
 
     fn run_gp1_command(&mut self, data: u32) {
@@ -166,25 +144,23 @@ impl GpuBackend {
             }
             0x01 => {
                 // Reset command fifo buffer
-                log::info!(
-                    "Gpu resetting fifo, now at length={}",
-                    self.command_fifo.len()
-                );
+
+                // TODO: reset the sender buffer
                 if let Some(cmd) = &mut self.current_command {
                     if let Gp0CmdType::CpuToVramBlit = cmd.cmd_type() {
                         // flush vram write
 
                         // FIXME: close the write here and flush
                         //  do not add more data
-                        while !cmd.exec_command(&mut self.gpu_context) {
-                            if cmd.still_need_params() {
-                                cmd.add_param(0);
-                            }
-                        }
+                        //while !cmd.exec_command(&mut self.gpu_context) {
+                        //    if cmd.still_need_params() {
+                        //        cmd.add_param(0);
+                        //    }
+                        //}
                         self.current_command = None;
+                        todo!();
                     }
                 }
-                self.command_fifo.clear();
             }
             0x02 => {
                 // Reset IRQ

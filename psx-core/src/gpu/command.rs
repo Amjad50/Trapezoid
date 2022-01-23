@@ -1,6 +1,9 @@
+use crate::gpu::GpuStat;
+
 use super::gpu_context::{vertex_position_from_u32, DrawingTextureParams, DrawingVertex};
 use super::GpuContext;
 
+#[derive(Debug)]
 pub enum Gp0CmdType {
     Misc = 0,
     Polygon = 1,
@@ -40,7 +43,7 @@ pub trait Gp0Command {
     where
         Self: Sized;
     fn add_param(&mut self, param: u32);
-    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool;
+    fn exec_command(&mut self, ctx: &mut GpuContext);
     fn still_need_params(&mut self) -> bool;
     fn cmd_type(&self) -> Gp0CmdType;
 }
@@ -116,22 +119,17 @@ impl Gp0Command for PolygonCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
-        if !self.still_need_params() {
-            log::info!("POLYGON executing {:#?}", self);
+    fn exec_command(&mut self, ctx: &mut GpuContext) {
+        assert!(!self.still_need_params());
+        log::info!("POLYGON executing {:#?}", self);
 
-            ctx.draw_polygon(
-                &self.vertices[..self.input_pointer],
-                self.texture_params,
-                self.textured,
-                self.texture_blending,
-                self.semi_transparent,
-            );
-
-            true
-        } else {
-            false
-        }
+        ctx.draw_polygon(
+            &self.vertices[..self.input_pointer],
+            self.texture_params,
+            self.textured,
+            self.texture_blending,
+            self.semi_transparent,
+        );
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -211,16 +209,11 @@ impl Gp0Command for LineCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
-        if !self.still_need_params() {
-            log::info!("LINE executing {:#?}", self);
+    fn exec_command(&mut self, ctx: &mut GpuContext) {
+        assert!(!self.still_need_params());
+        log::info!("LINE executing {:#?}", self);
 
-            ctx.draw_polyline(&self.vertices[..], self.semi_transparent);
-
-            true
-        } else {
-            false
-        }
+        ctx.draw_polyline(&self.vertices[..], self.semi_transparent);
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -301,63 +294,58 @@ impl Gp0Command for RectangleCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
+    fn exec_command(&mut self, ctx: &mut GpuContext) {
         // TODO: Add texture repeat of U,V exceed 255
-        if !self.still_need_params() {
-            // compute the location of other vertices
-            let top_left = self.vertices[0].position();
-            let top_left_tex = self.vertices[0].tex_coord();
-            let size = match self.size_mode {
-                0 => &self.size,
-                1 => &[1.0; 2],
-                2 => &[8.0; 2],
-                3 => &[16.0; 2],
-                _ => unreachable!(),
-            };
-            let size_coord = [size[0] as i32, size[1] as i32];
+        assert!(!self.still_need_params());
+        // compute the location of other vertices
+        let top_left = self.vertices[0].position();
+        let top_left_tex = self.vertices[0].tex_coord();
+        let size = match self.size_mode {
+            0 => &self.size,
+            1 => &[1.0; 2],
+            2 => &[8.0; 2],
+            3 => &[16.0; 2],
+            _ => unreachable!(),
+        };
+        let size_coord = [size[0] as i32, size[1] as i32];
 
-            // top right
-            // NOTE: for some reason, -1 when computing tex coords is needed
-            //  check if its true or not.
-            self.vertices[1].set_position([top_left[0] + size[0], top_left[1]]);
-            self.vertices[1].set_tex_coord([
-                (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u32,
-                top_left_tex[1],
-            ]);
-            // bottom left
-            self.vertices[2].set_position([top_left[0], top_left[1] + size[1]]);
-            self.vertices[2].set_tex_coord([
-                top_left_tex[0],
-                (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
-            ]);
-            // bottom right
-            self.vertices[3].set_position([top_left[0] + size[0], top_left[1] + size[1]]);
-            self.vertices[3].set_tex_coord([
-                (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u32,
-                (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
-            ]);
+        // top right
+        // NOTE: for some reason, -1 when computing tex coords is needed
+        //  check if its true or not.
+        self.vertices[1].set_position([top_left[0] + size[0], top_left[1]]);
+        self.vertices[1].set_tex_coord([
+            (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u32,
+            top_left_tex[1],
+        ]);
+        // bottom left
+        self.vertices[2].set_position([top_left[0], top_left[1] + size[1]]);
+        self.vertices[2].set_tex_coord([
+            top_left_tex[0],
+            (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
+        ]);
+        // bottom right
+        self.vertices[3].set_position([top_left[0] + size[0], top_left[1] + size[1]]);
+        self.vertices[3].set_tex_coord([
+            (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u32,
+            (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
+        ]);
 
-            log::info!("RECTANGLE executing {:#?}", self);
-            if self.textured {
-                // it will just take what is needed from the stat, which include the tex page
-                // to use and color mode
-                self.texture_params
-                    .tex_page_from_gpustat(ctx.read_gpu_stat().bits);
-                self.texture_params.set_texture_flip(ctx.textured_rect_flip);
-            }
-
-            ctx.draw_polygon(
-                &self.vertices,
-                self.texture_params,
-                self.textured,
-                false,
-                self.semi_transparent,
-            );
-
-            true
-        } else {
-            false
+        log::info!("RECTANGLE executing {:#?}", self);
+        if self.textured {
+            // it will just take what is needed from the stat, which include the tex page
+            // to use and color mode
+            self.texture_params
+                .tex_page_from_gpustat(ctx.read_gpu_stat().bits);
+            self.texture_params.set_texture_flip(ctx.textured_rect_flip);
         }
+
+        ctx.draw_polygon(
+            &self.vertices,
+            self.texture_params,
+            self.textured,
+            false,
+            self.semi_transparent,
+        );
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -383,7 +371,7 @@ impl Gp0Command for EnvironmentCommand {
         unreachable!()
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
+    fn exec_command(&mut self, ctx: &mut GpuContext) {
         let data = self.0;
         let cmd = data >> 24;
         log::info!("gp0 command {:02X} data: {:08X}", cmd, data);
@@ -486,8 +474,6 @@ impl Gp0Command for EnvironmentCommand {
             }
             _ => todo!("gp0 environment command {:02X}", cmd),
         }
-
-        true
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -513,7 +499,7 @@ impl Gp0Command for MiscCommand {
         unreachable!()
     }
 
-    fn exec_command(&mut self, _ctx: &mut GpuContext) -> bool {
+    fn exec_command(&mut self, _ctx: &mut GpuContext) {
         let data = self.0;
         let cmd = data >> 24;
         match cmd {
@@ -525,8 +511,6 @@ impl Gp0Command for MiscCommand {
             }
             _ => todo!("gp0 misc command {:02X}", cmd),
         }
-
-        true
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -542,12 +526,9 @@ struct CpuToVramBlitCommand {
     input_state: u8,
     dest: (u32, u32),
     size: (u32, u32),
+    total_size: usize,
 
     block: Vec<u16>,
-    block_counter: usize,
-    next_data: Option<u32>,
-
-    done: bool,
 }
 
 impl Gp0Command for CpuToVramBlitCommand {
@@ -558,13 +539,10 @@ impl Gp0Command for CpuToVramBlitCommand {
         Self {
             input_state: 0,
             size: (0, 0),
+            total_size: 0,
             dest: (0, 0),
 
             block: Vec::new(),
-            block_counter: 0,
-            next_data: None,
-
-            done: false,
         }
     }
 
@@ -581,50 +559,43 @@ impl Gp0Command for CpuToVramBlitCommand {
                 let size_x = ((param & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1;
                 let size_y = ((param >> 16).wrapping_sub(1) & 0x1FF) + 1;
                 self.size = (size_x, size_y);
-                self.block.resize((size_x * size_y) as usize, 0);
+                self.total_size = (size_x * size_y) as usize;
+
+                // we add one, so that if the size is odd, we would not need to
+                // re-allocate the block when we push the last value.
+                self.block.reserve(self.total_size + 1);
                 log::info!("CPU to VRAM: size {:?}", self.size);
                 self.input_state = 2;
             }
-            2 => self.next_data = Some(param),
+            2 => {
+                // for debugging
+                let vram_pos = (
+                    (self.block.len() as u32 % self.size.0) + self.dest.0,
+                    (self.block.len() as u32 / self.size.0) + self.dest.1,
+                );
+                log::info!("IN TRANSFERE, dest={:?}, data={:08X}", vram_pos, param);
+
+                let d1 = param as u16;
+                let d2 = (param >> 16) as u16;
+
+                self.block.push(d1);
+                self.block.push(d2);
+            }
             _ => unreachable!(),
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
-        if let Some(next_data) = self.next_data.take() {
-            // for debugging
-            let vram_pos = (
-                (self.block_counter as u32 % self.size.0) + self.dest.0,
-                (self.block_counter as u32 / self.size.0) + self.dest.1,
-            );
+    fn exec_command(&mut self, ctx: &mut GpuContext) {
+        assert!(!self.still_need_params());
 
-            log::info!("IN TRANSFERE, dest={:?}, data={:08X}", vram_pos, next_data);
+        let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
+        let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
 
-            let d1 = next_data as u16;
-            let d2 = (next_data >> 16) as u16;
-
-            self.block[self.block_counter] = d1;
-            if self.block_counter + 1 < self.block.len() {
-                self.block[self.block_counter + 1] = d2;
-            }
-            self.block_counter += 2;
-
-            if self.block_counter >= self.block.len() {
-                log::info!("DONE TRANSFERE");
-
-                let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
-                let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
-
-                ctx.write_vram_block((x_range, y_range), self.block.as_ref());
-                return true;
-            }
-        }
-
-        false
+        ctx.write_vram_block((x_range, y_range), &self.block[..self.total_size]);
     }
 
     fn still_need_params(&mut self) -> bool {
-        !self.done
+        self.input_state != 2 || self.block.len() < self.total_size
     }
 
     fn cmd_type(&self) -> Gp0CmdType {
@@ -679,10 +650,8 @@ impl Gp0Command for VramToVramBlitCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
-        if self.input_state != 3 {
-            return false;
-        }
+    fn exec_command(&mut self, ctx: &mut GpuContext) {
+        assert!(!self.still_need_params());
 
         // TODO: use vulkan image copy itself
         let x_range = (self.src.0)..(self.src.0 + self.size.0);
@@ -692,8 +661,6 @@ impl Gp0Command for VramToVramBlitCommand {
         let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
         let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
         ctx.write_vram_block((x_range, y_range), block.as_ref());
-
-        true
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -747,10 +714,8 @@ impl Gp0Command for VramToCpuBlitCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
-        if self.input_state != 2 {
-            return false;
-        }
+    fn exec_command(&mut self, ctx: &mut GpuContext) {
+        assert!(!self.still_need_params());
         assert!(self.block.is_empty());
 
         let x_range = (self.src.0)..(self.src.0 + self.size.0);
@@ -778,8 +743,12 @@ impl Gp0Command for VramToCpuBlitCommand {
             // TODO: send full block
             ctx.send_to_gpu_read(data);
         }
+        // after sending all the data, we set the gpu_stat bit to indicate that
+        // the data can be read now
+        ctx.gpu_stat
+            .fetch_update(|s| Some(s | GpuStat::READY_FOR_TO_SEND_VRAM))
+            .unwrap();
         log::info!("DONE TRANSFERE");
-        true
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -841,15 +810,11 @@ impl Gp0Command for FillVramCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) -> bool {
-        if self.input_state != 2 {
-            return false;
-        }
+    fn exec_command(&mut self, ctx: &mut GpuContext) {
+        assert!(!self.still_need_params());
 
         ctx.fill_color(self.top_left, self.size, self.color);
         log::info!("Fill Vram: done");
-
-        true
     }
 
     fn still_need_params(&mut self) -> bool {
