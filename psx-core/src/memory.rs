@@ -298,11 +298,8 @@ impl CpuBus {
     }
 
     pub fn clock_components(&mut self, cpu_cycles: u32) {
-        for _ in 0..cpu_cycles {
-            // TODO: handle Cpu timing better (this should clock for at least once
-            //  for every instruction)
-            self.dma.clock_dma(&mut self.dma_bus, &mut self.interrupts);
-        }
+        self.dma
+            .clock_dma(&mut self.dma_bus, &mut self.interrupts, cpu_cycles);
 
         // almost 2 GPU clocks per 1 CPU
         let (dot_clocks, hblank_clock) =

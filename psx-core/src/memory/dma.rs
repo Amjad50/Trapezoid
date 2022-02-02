@@ -79,9 +79,14 @@ impl ChannelControl {
 
 #[derive(Default)]
 struct DmaChannel {
-    // TODO: delay stuff are temporary to fix the DMA timing
-    delay: u32,
+    /// This is used to accurately emulate the DMA clock and transfer
+    /// speed in relation to the CPU clock.
+    delay: i64,
+    /// When this value is `true`, then the DMA has finished transfer and waiting
+    /// for the delay to finish before requesting interrupt, and signaling that
+    /// the transfer is done.
     during_delay: bool,
+
     base_address: u32,
     block_control: u32,
     channel_control: ChannelControl,
@@ -157,7 +162,7 @@ impl Default for Dma {
 }
 
 impl Dma {
-    fn perform_gpu_channel2_dma(&mut self, dma_bus: &mut super::DmaBus) {
+    fn perform_gpu_channel2_dma(&mut self, dma_bus: &mut super::DmaBus) -> Option<u32> {
         let channel = &mut self.channels[2];
         // GPU channel
         match channel.channel_control.sync_mode() {
@@ -205,22 +210,11 @@ impl Dma {
                 channel.block_control |= blocks << 16;
                 channel.base_address = address;
                 if blocks == 0 {
-                    channel.channel_control.finish_transfer();
-                    self.interrupt.request_interrupt(2);
+                    channel.during_delay = true;
                 }
+                Some(remaining_length)
             }
             2 => {
-                if channel.during_delay {
-                    assert!(channel.delay > 0);
-                    channel.delay -= 1;
-                    if channel.delay == 0 {
-                        channel.during_delay = false;
-                        channel.channel_control.finish_transfer();
-                        self.interrupt.request_interrupt(2);
-                    }
-                    return;
-                }
-
                 // Linked list mode, to sending GP0 commands
                 assert!(channel.channel_control.address_step() == 4);
                 let mut linked_entry_addr = channel.base_address & 0xFFFFFC;
@@ -243,7 +237,7 @@ impl Dma {
 
                     if n_entries != 0 {
                         channel.base_address = linked_entry_addr & 0xFFFFFF;
-                        return;
+                        return None;
                     }
 
                     log::info!(
@@ -253,7 +247,6 @@ impl Dma {
                         linked_entry_addr
                     );
                 }
-                channel.delay += n_entries + 1;
 
                 for i in 1..(n_entries + 1) {
                     let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
@@ -267,12 +260,14 @@ impl Dma {
                 if channel.base_address == 0xFFFFFF {
                     channel.during_delay = true;
                 }
+
+                Some(n_entries + 1)
             }
             _ => unreachable!(),
         }
     }
 
-    fn perform_cdrom_channel3_dma(&mut self, dma_bus: &mut super::DmaBus) {
+    fn perform_cdrom_channel3_dma(&mut self, dma_bus: &mut super::DmaBus) -> Option<u32> {
         let channel = &mut self.channels[3];
         // must be to main ram
         assert!(!channel
@@ -295,7 +290,7 @@ impl Dma {
         {
             channel.channel_control.finish_transfer();
             self.interrupt.request_interrupt(3);
-            return;
+            return None;
         }
 
         let block_size = channel.block_control & 0xFFFF;
@@ -324,12 +319,18 @@ impl Dma {
         channel.block_control = 0;
         channel.base_address = address;
 
-        channel.channel_control.finish_transfer();
-        self.interrupt.request_interrupt(3);
+        channel.during_delay = true;
+        // chrom transfer rate:
+        // BIOS: 24 clk/word
+        // GAMES: 40 clk/word
+        //
+        // Not sure exactly what is BIOS and what is GAMES, so for now, lets make
+        // it 30 clk/word (around the middle).
+        Some(block_size * 30)
     }
 
     // TODO: implement this, now its just an empty handler that trigger interrupt
-    fn perform_spu_channel4_dma(&mut self, _dma_bus: &mut super::DmaBus) {
+    fn perform_spu_channel4_dma(&mut self, _dma_bus: &mut super::DmaBus) -> Option<u32> {
         let channel = &mut self.channels[4];
         // must be sync mode 1
         assert!(channel.channel_control.sync_mode() == 1);
@@ -362,6 +363,7 @@ impl Dma {
             channel.channel_control.finish_transfer();
             self.interrupt.request_interrupt(4);
         }
+        None
     }
 
     // Some control flags are ignored here like:
@@ -370,7 +372,7 @@ impl Dma {
     // - Chopping
     // - sync mode
     // Becuase they are hardwired
-    fn perform_otc_channel6_dma(&mut self, dma_bus: &mut super::DmaBus) {
+    fn perform_otc_channel6_dma(&mut self, dma_bus: &mut super::DmaBus) -> Option<u32> {
         let channel = &mut self.channels[6];
         // must be to main ram
         assert!(!channel
@@ -392,7 +394,7 @@ impl Dma {
         {
             channel.channel_control.finish_transfer();
             self.interrupt.request_interrupt(6);
-            return;
+            return None;
         }
 
         // word align
@@ -410,8 +412,9 @@ impl Dma {
             current = next;
         }
         dma_bus.main_ram.write_u32(current, 0xFFFFFF);
-        channel.channel_control.finish_transfer();
-        self.interrupt.request_interrupt(6);
+
+        channel.during_delay = true;
+        Some(n_entries)
     }
 
     #[allow(dead_code)]
@@ -419,20 +422,55 @@ impl Dma {
         &mut self,
         dma_bus: &mut super::DmaBus,
         interrupt_requester: &mut impl InterruptRequester,
+        cycles: u32,
     ) {
+        let mut cycles = cycles as i64;
+
         // TODO: handle priority appropriately
+        // TODO: handle multiple DMAs if `cycles` can be split
         for (i, channel) in self.channels.iter_mut().enumerate() {
             let channel_enabled = (self.control >> (i * 4)) & 0b1000 != 0;
 
             if channel_enabled && channel.channel_control.in_progress() {
                 log::info!("channel {} doing DMA", i);
 
-                match i {
-                    2 => self.perform_gpu_channel2_dma(dma_bus),
-                    3 => self.perform_cdrom_channel3_dma(dma_bus),
-                    4 => self.perform_spu_channel4_dma(dma_bus),
-                    6 => self.perform_otc_channel6_dma(dma_bus),
-                    _ => todo!("DMA channel {}", i),
+                if channel.during_delay {
+                    channel.delay -= cycles;
+                    if channel.delay <= 0 {
+                        channel.during_delay = false;
+                        channel.channel_control.finish_transfer();
+                        self.interrupt.request_interrupt(i as u32);
+                    }
+                } else {
+                    // loop to execute the DMA channel multiple times if needed
+                    // depending on `cycles`.
+                    loop {
+                        let cycles_to_delay = match i {
+                            2 => self.perform_gpu_channel2_dma(dma_bus),
+                            3 => self.perform_cdrom_channel3_dma(dma_bus),
+                            4 => self.perform_spu_channel4_dma(dma_bus),
+                            6 => self.perform_otc_channel6_dma(dma_bus),
+                            _ => todo!("DMA channel {}", i),
+                        };
+                        // if we actually transferred anything
+                        if let Some(cycles_to_delay) = cycles_to_delay {
+                            let channel = &mut self.channels[i];
+                            channel.delay += cycles_to_delay as i64 - cycles;
+
+                            // if we are not finished (!during_delay), and the `delay`
+                            // is negative, meaning that we had more `cycles`,
+                            // then continue the loop, note that `cycles`
+                            // will actually be negative here, but it will be
+                            // inverted the next time we perform `-cycles` above.
+                            if !channel.during_delay && channel.delay < 0 {
+                                cycles = channel.delay;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
                 }
 
                 // remove trigger afterwards, since some handlers might check
