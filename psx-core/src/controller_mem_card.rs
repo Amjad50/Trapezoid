@@ -309,10 +309,21 @@ impl Default for ControllerAndMemoryCard {
 }
 
 impl ControllerAndMemoryCard {
-    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester) {
-        self.baudrate_timer = self.baudrate_timer.saturating_sub(1);
+    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester, mut cycles: u32) {
+        while cycles > 0 {
+            let (r, overflow) = cycles.overflowing_sub(self.baudrate_timer);
 
-        if self.baudrate_timer == 0 {
+            if overflow {
+                // this cannot overflow, because the `self.baudrate_timer` is
+                // larger than `cycles`, so no need to check
+                self.baudrate_timer -= cycles;
+                return;
+            }
+
+            cycles = r;
+            // reset to zero (as if we subtracted from `cycles`)
+            self.baudrate_timer = 0;
+
             // reload timer
             self.trigger_baudrate_reload();
             // advance the clock one step

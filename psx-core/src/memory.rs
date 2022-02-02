@@ -297,25 +297,30 @@ impl CpuBus {
         }
     }
 
-    fn clock_components(&mut self) {
-        // TODO: handle Cpu timing better (this should clock for at least once
-        //  for every instruction)
-        self.dma.clock_dma(&mut self.dma_bus, &mut self.interrupts);
+    pub fn clock_components(&mut self, cpu_cycles: u32) {
+        for _ in 0..cpu_cycles {
+            // TODO: handle Cpu timing better (this should clock for at least once
+            //  for every instruction)
+            self.dma.clock_dma(&mut self.dma_bus, &mut self.interrupts);
+        }
+
         // almost 2 GPU clocks per 1 CPU
-        let (dot_clock1, hblank_clock1) = self.dma_bus.gpu.clock(&mut self.interrupts);
-        let (dot_clock2, hblank_clock2) = self.dma_bus.gpu.clock(&mut self.interrupts);
-        // cdrom
-        self.dma_bus.cdrom.clock(&mut self.interrupts);
+        let (dot_clocks, hblank_clock) =
+            self.dma_bus.gpu.clock(&mut self.interrupts, cpu_cycles * 2);
+
         // controller and mem card
-        self.controller_mem_card.clock(&mut self.interrupts);
+        self.controller_mem_card
+            .clock(&mut self.interrupts, cpu_cycles);
+
+        // cdrom
+        self.dma_bus.cdrom.clock(&mut self.interrupts, cpu_cycles);
+
         // timers
-        self.timers.clock_from_system();
-        if hblank_clock1 || hblank_clock2 {
+        self.timers.clock_from_system(cpu_cycles);
+        if hblank_clock {
             self.timers.clock_from_hblank();
         }
-        if dot_clock1 || dot_clock2 {
-            self.timers.clock_from_gpu_dot();
-        }
+        self.timers.clock_from_gpu_dot(dot_clocks);
         // interrupts for the timers
         self.timers.handle_interrupts(&mut self.interrupts);
     }
@@ -323,9 +328,6 @@ impl CpuBus {
 
 impl BusLine for CpuBus {
     fn read_u32(&mut self, addr: u32) -> u32 {
-        // clock for every CPU cycle
-        self.clock_components();
-
         assert!(addr % 4 == 0, "unalligned u32 read");
         match addr {
             // TODO: implement I-cache isolation properly

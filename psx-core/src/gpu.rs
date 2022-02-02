@@ -193,8 +193,76 @@ impl Gpu {
         }
     }
 
-    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester) -> (bool, bool) {
-        self.drawing_clock(interrupt_requester)
+    /// returns the number of `dot_clocks`, and if `hblank_clock` occurres
+    /// when clocking the gpu for `cycles` cycles.
+    /// These clocks are used for timers.
+    pub fn clock(
+        &mut self,
+        interrupt_requester: &mut impl InterruptRequester,
+        cycles: u32,
+    ) -> (u32, bool) {
+        let gpu_stat = self.gpu_stat.load();
+        let max_dots = if gpu_stat.is_ntsc_video_mode() {
+            3413
+        } else {
+            3406
+        };
+        let max_scanlines = if gpu_stat.is_ntsc_video_mode() {
+            263
+        } else {
+            314
+        };
+        let horizontal_dots_divider = gpu_stat.horizontal_dots_divider();
+        let vertical_resolution = gpu_stat.vertical_resolution();
+        let is_interlace = gpu_stat.intersects(GpuStat::VERTICAL_INTERLACE);
+
+        // we can't overflow the max_dots and clock for example more than one
+        // scanline at a time.
+        assert!(cycles < max_dots);
+        self.dot += cycles;
+
+        // If the increment is more than the divider, we will clock the timer by the number
+        // of times the divider fits in the increment.
+        let mut dot_clocks = cycles / horizontal_dots_divider;
+
+        // We may have extra cycles to clock for one more time.
+        // For example:
+        // - divider = 10
+        // - cycles = 15
+        // If we follow the cycles increment, we will skip one value:
+        // 0 -> 15 -> 30. We lose the increment, when we got to `20` we will lose the
+        // `dot_clock`, but with the following check, we can know that we missed it
+        // and handle it accordingly.
+        if (self.dot % horizontal_dots_divider) < (cycles % horizontal_dots_divider) {
+            dot_clocks += 1;
+        }
+
+        let mut hblank_clock = false;
+        if self.dot >= max_dots {
+            hblank_clock = true;
+            self.dot -= max_dots;
+            self.scanline += 1;
+
+            if is_interlace && vertical_resolution == 240 && self.scanline < 240 {
+                self.drawing_odd = !self.drawing_odd;
+            }
+
+            if self.scanline >= max_scanlines {
+                self.scanline = 0;
+                self.in_vblank = false;
+
+                if is_interlace && vertical_resolution == 480 {
+                    self.drawing_odd = !self.drawing_odd;
+                }
+            }
+
+            if self.scanline == 240 {
+                interrupt_requester.request_vblank();
+                self.in_vblank = true;
+            }
+        }
+
+        (dot_clocks, hblank_clock)
     }
 
     pub fn in_vblank(&self) -> bool {
@@ -284,54 +352,6 @@ impl Gpu {
 
         log::trace!("GPUREAD = {:08X?}", out);
         out.unwrap_or(0)
-    }
-
-    /// returns if a (dot_clock, hblank_clock) occurred in the current GPU cycle
-    /// This is used for timers.
-    fn drawing_clock(&mut self, interrupt_requester: &mut impl InterruptRequester) -> (bool, bool) {
-        let gpu_stat = self.gpu_stat.load();
-        let max_dots = if gpu_stat.is_ntsc_video_mode() {
-            3413
-        } else {
-            3406
-        };
-        let max_scanlines = if gpu_stat.is_ntsc_video_mode() {
-            263
-        } else {
-            314
-        };
-        let horizontal_dots_divider = gpu_stat.horizontal_dots_divider();
-        let vertical_resolution = gpu_stat.vertical_resolution();
-        let is_interlace = gpu_stat.intersects(GpuStat::VERTICAL_INTERLACE);
-
-        self.dot += 1;
-        let dot_clock = self.dot % horizontal_dots_divider == 0;
-        let mut hblank_clock = false;
-        if self.dot >= max_dots {
-            hblank_clock = true;
-            self.dot = 0;
-            self.scanline += 1;
-
-            if is_interlace && vertical_resolution == 240 && self.scanline < 240 {
-                self.drawing_odd = !self.drawing_odd;
-            }
-
-            if self.scanline >= max_scanlines {
-                self.scanline = 0;
-                self.in_vblank = false;
-
-                if is_interlace && vertical_resolution == 480 {
-                    self.drawing_odd = !self.drawing_odd;
-                }
-            }
-
-            if self.scanline == 240 {
-                interrupt_requester.request_vblank();
-                self.in_vblank = true;
-            }
-        }
-
-        (dot_clock, hblank_clock)
     }
 }
 
