@@ -103,7 +103,7 @@ pub enum Opcode {
     Swc(u8),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct Instruction {
     pub opcode: Opcode,
 
