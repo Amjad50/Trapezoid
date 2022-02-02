@@ -179,11 +179,7 @@ impl Cdrom {
 
 // clocking and commands
 impl Cdrom {
-    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester) {
-        self.execute_next_command(interrupt_requester);
-    }
-
-    fn execute_next_command(&mut self, interrupt_requester: &mut impl InterruptRequester) {
+    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester, cycles: u32) {
         if self.interrupt_flag & 7 != 0 {
             // pending interrupts, waiting for acknowledgement
             return;
@@ -191,10 +187,11 @@ impl Cdrom {
         if let Some(cmd) = self.command {
             // delay (this applies for all parts of the command)
             // If no delay is needed, it can be reset from the command itself
-            if self.command_delay_timer > 0 {
-                self.command_delay_timer -= 1;
+            if self.command_delay_timer > cycles + 1 {
+                self.command_delay_timer -= cycles;
                 return;
             }
+
             // reset the timer here, so that if a command needs to change the value
             // it can do so
             self.command_delay_timer = CDROM_COMMAND_DEFAULT_DELAY;

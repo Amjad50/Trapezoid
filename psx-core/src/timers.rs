@@ -137,7 +137,7 @@ impl TimerBase {
         }
     }
 
-    fn increment_counter(&mut self) {
+    fn increment_counter(&mut self, cycles: u32) {
         // this can happen for timer 0 and 1 in special times, like
         //  inside Hblank or Vblank
         if self.paused {
@@ -146,25 +146,28 @@ impl TimerBase {
 
         let old_irq = self.mode.irq();
 
-        if self.counter == self.target && self.mode.reset_after_target() {
-            self.counter = 0;
-        } else {
-            // reset after 0xFFFF
-            self.counter = self.counter.wrapping_add(1);
-        }
+        assert!(cycles <= 0xFFFF);
+        let (new_counter, overflow) = self.counter.overflowing_add(cycles as u16);
+
+        let reached_target = self.counter < self.target && new_counter >= self.target;
+        self.counter = new_counter;
+
         let mut irq = false;
         let is_one_shot_mode = !self.mode.irq_repeat_mode();
         // there should not be irq
         let one_shot_mode_irq_supressed = is_one_shot_mode && self.one_shot_suppress_irqs;
 
-        if self.counter == self.target {
+        if reached_target {
             self.mode.set_reached_target();
             if self.mode.irq_on_target() {
                 irq = true;
             }
+            if self.mode.reset_after_target() {
+                self.counter -= self.target;
+            }
         }
 
-        if self.counter == 0xFFFF {
+        if overflow {
             self.mode.set_reached_ffff();
             if self.mode.irq_on_ffff() {
                 irq = true;
@@ -231,11 +234,11 @@ impl Timer0 {
 }
 
 impl Timer0 {
-    fn increment_counter(&mut self) {
+    fn increment_counter(&mut self, cycles: u32) {
         let sync_mode = self.mode().sync_mode();
         if self.mode().sync_enable() {
-            // TODO: fix
-            self.base.increment_counter();
+            // TODO: fix sync modes
+            self.base.increment_counter(cycles);
             match sync_mode {
                 0 => {}
                 1 => {}
@@ -244,7 +247,7 @@ impl Timer0 {
                 _ => unreachable!(),
             }
         } else {
-            self.base.increment_counter();
+            self.base.increment_counter(cycles);
         }
     }
 }
@@ -273,11 +276,11 @@ impl Timer1 {
 }
 
 impl Timer1 {
-    fn increment_counter(&mut self) {
+    fn increment_counter(&mut self, cycles: u32) {
         let sync_mode = self.mode().sync_mode();
         if self.mode().sync_enable() {
-            // TODO: fix
-            self.base.increment_counter();
+            // TODO: fix sync modes
+            self.base.increment_counter(cycles);
             match sync_mode {
                 0 => {}
                 1 => {}
@@ -286,7 +289,7 @@ impl Timer1 {
                 _ => unreachable!(),
             }
         } else {
-            self.base.increment_counter();
+            self.base.increment_counter(cycles);
         }
     }
 }
@@ -294,7 +297,7 @@ impl Timer1 {
 #[derive(Default)]
 struct Timer2 {
     base: TimerBase,
-    divider_counter: u8,
+    divider_counter: u32,
 }
 
 impl Timer2 {
@@ -316,26 +319,25 @@ impl Timer2 {
 }
 
 impl Timer2 {
-    fn increment_counter(&mut self) {
+    fn increment_counter(&mut self, cycles: u32) {
         let sync_mode = self.mode().sync_mode();
         if self.mode().sync_enable() && (sync_mode == 0 || sync_mode == 3) {
             // stop counter at current value forever
         } else {
-            self.base.increment_counter();
+            self.base.increment_counter(cycles);
         }
     }
 
-    fn clock_from_system(&mut self) {
+    fn clock_from_system(&mut self, cycles: u32) {
         // 0 or 1
         // system clock
         if self.mode().clk_source() & 2 == 0 {
-            self.increment_counter();
+            self.increment_counter(cycles);
         } else {
-            self.divider_counter += 1;
-            if self.divider_counter == 8 {
-                self.divider_counter = 0;
-                self.increment_counter();
-            }
+            self.divider_counter += cycles;
+            self.increment_counter(self.divider_counter / 8);
+            // reset divider
+            self.divider_counter %= 8;
         }
     }
 }
@@ -348,29 +350,29 @@ pub struct Timers {
 }
 
 impl Timers {
-    pub fn clock_from_system(&mut self) {
+    pub fn clock_from_system(&mut self, cycles: u32) {
         // 0 or 2
         if self.timer0.mode().clk_source() & 1 == 0 {
-            self.timer0.increment_counter();
+            self.timer0.increment_counter(cycles);
         }
 
         // 0 or 2
         if self.timer1.mode().clk_source() & 1 == 0 {
-            self.timer1.increment_counter();
+            self.timer1.increment_counter(cycles);
         }
 
-        self.timer2.clock_from_system();
+        self.timer2.clock_from_system(cycles);
     }
 
-    pub fn clock_from_gpu_dot(&mut self) {
+    pub fn clock_from_gpu_dot(&mut self, dot_clocks: u32) {
         if self.timer0.mode().clk_source() & 1 == 1 {
-            self.timer0.increment_counter();
+            self.timer0.increment_counter(dot_clocks);
         }
     }
 
     pub fn clock_from_hblank(&mut self) {
         if self.timer1.mode().clk_source() & 1 == 1 {
-            self.timer1.increment_counter();
+            self.timer1.increment_counter(1);
         }
     }
 

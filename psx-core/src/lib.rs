@@ -46,7 +46,13 @@ impl Psx {
     /// return `true` on the beginning of VBLANK
     pub fn clock(&mut self) -> bool {
         let in_vblank_old = self.bus.gpu().in_vblank();
-        self.cpu.execute_next(&mut self.bus);
+
+        // this number doesn't mean anything
+        // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
+        for _ in 0..32 {
+            self.cpu.execute_next(&mut self.bus);
+        }
+        self.bus.clock_components(self.cpu.take_elapsed_cycles());
 
         self.bus.gpu().in_vblank() && !in_vblank_old
     }

@@ -32,6 +32,8 @@ pub struct Cpu {
     cop2: Gte,
 
     jump_dest_next: Option<u32>,
+
+    elapsed_cycles: u32,
 }
 
 impl Cpu {
@@ -42,6 +44,8 @@ impl Cpu {
             cop0: SystemControlCoprocessor::default(),
             cop2: Gte::default(),
             jump_dest_next: None,
+
+            elapsed_cycles: 0,
         }
     }
 
@@ -69,6 +73,11 @@ impl Cpu {
                 self.execute_instruction(instruction, bus);
             }
         }
+    }
+
+    #[inline]
+    pub fn take_elapsed_cycles(&mut self) -> u32 {
+        std::mem::take(&mut self.elapsed_cycles)
     }
 }
 
@@ -649,6 +658,8 @@ impl Cpu {
 
 impl Cpu {
     fn bus_read_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u32> {
+        self.elapsed_cycles += 1;
+
         if addr % 4 != 0 {
             self.execute_exception(Exception::AddressErrorLoad);
             self.cop0.write_bad_vaddr(addr);
@@ -663,6 +674,8 @@ impl Cpu {
     }
 
     fn bus_write_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u32) {
+        self.elapsed_cycles += 1;
+
         if addr % 4 != 0 {
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
