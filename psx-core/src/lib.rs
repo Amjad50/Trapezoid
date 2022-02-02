@@ -49,9 +49,8 @@ impl Psx {
 
         // this number doesn't mean anything
         // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
-        for _ in 0..32 {
-            self.cpu.execute_next(&mut self.bus);
-        }
+        self.cpu.clock(&mut self.bus, 32);
+
         self.bus.clock_components(self.cpu.take_elapsed_cycles());
 
         self.bus.gpu().in_vblank() && !in_vblank_old

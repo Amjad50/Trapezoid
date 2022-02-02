@@ -49,16 +49,11 @@ impl Cpu {
         }
     }
 
-    pub fn execute_next<P: CpuBusProvider>(&mut self, bus: &mut P) {
-        // cause.10 is not a latch, so it should be updated continually
-        let new_cause =
-            (self.cop0.read_cause() & !0x400) | ((bus.pending_interrupts() as u32) << 10);
-        self.cop0.write_cause(new_cause);
+    pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) {
+        let pending_interrupts = bus.pending_interrupts();
+        self.check_and_execute_interrupt(pending_interrupts);
 
-        if !self.check_and_execute_interrupt() {
-            let pc = self.regs.pc;
-
-            // if its not a valid read, it will generate an exception
+        for _ in 0..clocks {
             if let Some(instruction) = self.bus_read_u32(bus, self.regs.pc) {
                 let instruction = Instruction::from_u32(instruction);
 
@@ -69,8 +64,8 @@ impl Cpu {
                     self.regs.pc = jump_dest;
                 }
 
-                log::trace!("{:08X}: {:02X?}", pc, instruction);
-                self.execute_instruction(instruction, bus);
+                log::trace!("{:08X}: {:02X?}", self.regs.pc, instruction);
+                self.execute_instruction(&instruction, bus);
             }
         }
     }
@@ -128,16 +123,15 @@ impl Cpu {
         self.regs.pc = jmp_vector;
     }
 
-    fn check_and_execute_interrupt(&mut self) -> bool {
-        let cause = self.cop0.read_cause();
+    fn check_and_execute_interrupt(&mut self, pending_interrupts: bool) {
         let sr = self.cop0.read_sr();
+        // cause.10 is not a latch, so it should be updated continually
+        let new_cause = (self.cop0.read_cause() & !0x400) | ((pending_interrupts as u32) << 10);
+        self.cop0.write_cause(new_cause);
 
         // cause.10 is set and sr.10 and sr.0 are set, then execute the interrupt
-        if cause & 0x400 != 0 && sr & 0x401 == 0x401 {
+        if pending_interrupts && (sr & 0x401 == 0x401) {
             self.execute_exception(Exception::Interrupt);
-            true
-        } else {
-            false
         }
     }
 
@@ -149,7 +143,8 @@ impl Cpu {
         data as i8 as i32 as u32
     }
 
-    fn execute_alu_reg<F>(&mut self, instruction: Instruction, handler: F)
+    #[inline]
+    fn execute_alu_reg<F>(&mut self, instruction: &Instruction, handler: F)
     where
         F: FnOnce(u32, u32) -> (u32, bool),
     {
@@ -164,7 +159,8 @@ impl Cpu {
         }
     }
 
-    fn execute_alu_imm<F>(&mut self, instruction: Instruction, handler: F)
+    #[inline]
+    fn execute_alu_imm<F>(&mut self, instruction: &Instruction, handler: F)
     where
         F: FnOnce(u32, &Instruction) -> u32,
     {
@@ -173,7 +169,8 @@ impl Cpu {
         self.regs.write_register(instruction.rt, result);
     }
 
-    fn execute_branch<F>(&mut self, instruction: Instruction, have_rt: bool, handler: F)
+    #[inline]
+    fn execute_branch<F>(&mut self, instruction: &Instruction, have_rt: bool, handler: F)
     where
         F: FnOnce(i32, i32) -> bool,
     {
@@ -191,7 +188,8 @@ impl Cpu {
         }
     }
 
-    fn execute_load<F>(&mut self, instruction: Instruction, mut handler: F)
+    #[inline]
+    fn execute_load<F>(&mut self, instruction: &Instruction, mut handler: F)
     where
         F: FnMut(&mut Self, u32) -> Option<u32>,
     {
@@ -203,7 +201,8 @@ impl Cpu {
         }
     }
 
-    fn execute_store<F>(&mut self, instruction: Instruction, mut handler: F)
+    #[inline]
+    fn execute_store<F>(&mut self, instruction: &Instruction, mut handler: F)
     where
         F: FnMut(&mut Self, u32, u32),
     {
@@ -214,7 +213,7 @@ impl Cpu {
         handler(self, computed_addr, rt);
     }
 
-    fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: Instruction, bus: &mut P) {
+    fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: &Instruction, bus: &mut P) {
         match instruction.opcode {
             Opcode::Lb => {
                 self.execute_load(instruction, |s, computed_addr| {
