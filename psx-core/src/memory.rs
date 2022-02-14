@@ -297,10 +297,13 @@ impl CpuBus {
         }
     }
 
-    pub fn clock_components(&mut self, cpu_cycles: u32) {
-        self.dma
-            .clock_dma(&mut self.dma_bus, &mut self.interrupts, cpu_cycles);
+    /// Since DMA is running using the CPU resources, we should run it and
+    /// treat the cycles consumed by it as if they were running from the CPU
+    pub fn clock_dma(&mut self) -> u32 {
+        self.dma.clock_dma(&mut self.dma_bus, &mut self.interrupts)
+    }
 
+    pub fn clock_components(&mut self, cpu_cycles: u32) {
         // almost 2 GPU clocks per 1 CPU
         let (dot_clocks, hblank_clock) =
             self.dma_bus.gpu.clock(&mut self.interrupts, cpu_cycles * 2);
@@ -447,5 +450,9 @@ impl BusLine for CpuBus {
 impl CpuBusProvider for CpuBus {
     fn pending_interrupts(&self) -> bool {
         self.interrupts.pending_interrupts()
+    }
+
+    fn should_run_dma(&self) -> bool {
+        self.dma.needs_to_run()
     }
 }
