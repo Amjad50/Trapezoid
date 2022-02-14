@@ -22,9 +22,17 @@ use vulkano::{
     sync::GpuFuture,
 };
 
+const MAX_CPU_CYCLES_TO_CLOCK: u32 = 1000;
+
 pub struct Psx {
     bus: CpuBus,
     cpu: Cpu,
+    /// Stores the excess CPU cycles for later execution.
+    ///
+    /// Sometimes, when running the DMA (mostly CD-ROM) it can generate
+    /// a lot of CPU cycles, clocking the components with this many CPU cycles
+    /// will crash the emulator, so we split clocking across multiple `clock` calls.
+    excess_cpu_cycles: u32,
 }
 
 impl Psx {
@@ -40,6 +48,7 @@ impl Psx {
         Ok(Self {
             cpu: Cpu::new(),
             bus: CpuBus::new(bios, disk_file, device, queue),
+            excess_cpu_cycles: 0,
         })
     }
 
@@ -47,11 +56,17 @@ impl Psx {
     pub fn clock(&mut self) -> bool {
         let in_vblank_old = self.bus.gpu().in_vblank();
 
-        // this number doesn't mean anything
-        // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
-        self.cpu.clock(&mut self.bus, 32);
+        if self.excess_cpu_cycles == 0 {
+            // this number doesn't mean anything
+            // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
+            let cpu_cycles = self.cpu.clock(&mut self.bus, 32);
+            // the DMA is running of the CPU
+            self.excess_cpu_cycles = cpu_cycles + self.bus.clock_dma();
+        }
 
-        self.bus.clock_components(self.cpu.take_elapsed_cycles());
+        let cpu_cycles_to_run = self.excess_cpu_cycles.min(MAX_CPU_CYCLES_TO_CLOCK);
+        self.excess_cpu_cycles -= cpu_cycles_to_run;
+        self.bus.clock_components(cpu_cycles_to_run);
 
         self.bus.gpu().in_vblank() && !in_vblank_old
     }

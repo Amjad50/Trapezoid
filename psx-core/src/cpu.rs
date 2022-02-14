@@ -10,6 +10,7 @@ use register::Registers;
 
 pub trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
+    fn should_run_dma(&self) -> bool;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,7 +50,7 @@ impl Cpu {
         }
     }
 
-    pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) {
+    pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> u32 {
         let pending_interrupts = bus.pending_interrupts();
         self.check_and_execute_interrupt(pending_interrupts);
 
@@ -66,12 +67,27 @@ impl Cpu {
 
                 log::trace!("{:08X}: {:02X?}", self.regs.pc, instruction);
                 self.execute_instruction(&instruction, bus);
+
+                // exit so that we can run dma
+                // Delaying the DMA can cause problems,
+                // since if the DMA's SyncMode is `0`, it should run between
+                // CPU cycles. This means that the following execution flow doesn't have
+                // race conditions, becuase the DMA will run in between these two
+                // CPU executions:
+                // - CPU: Setup and start DMA channel 6 (SyncMode=0)
+                // - CPU: Setup and start DMA channel 6 (SyncMode=0)
+                //
+                // Thus, if we delayed the execution of DMA even for
+                // just a small amount, it would cause problems.
+                //
+                // TODO: maybe we should optimize this a bit more, so that we
+                //       won't need to check on every CPU instruction
+                if bus.should_run_dma() {
+                    break;
+                }
             }
         }
-    }
 
-    #[inline]
-    pub fn take_elapsed_cycles(&mut self) -> u32 {
         std::mem::take(&mut self.elapsed_cycles)
     }
 }
