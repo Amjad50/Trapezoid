@@ -58,14 +58,14 @@ impl Cpu {
             if let Some(instruction) = self.bus_read_u32(bus, self.regs.pc) {
                 let instruction = Instruction::from_u32(instruction);
 
-                self.regs.pc += 4;
-
                 if let Some(jump_dest) = self.jump_dest_next.take() {
                     log::trace!("pc jump {:08X}", jump_dest);
                     self.regs.pc = jump_dest;
                 }
 
                 log::trace!("{:08X}: {:02X?}", self.regs.pc, instruction);
+
+                self.regs.pc += 4;
                 self.execute_instruction(&instruction, bus);
 
                 // exit so that we can run dma
