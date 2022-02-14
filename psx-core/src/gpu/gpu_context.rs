@@ -9,7 +9,7 @@ use vulkano::descriptor_set::PersistentDescriptorSet;
 use vulkano::device::{Device, Queue};
 use vulkano::format::{ClearValue, Format};
 use vulkano::image::view::{ComponentMapping, ComponentSwizzle, ImageView};
-use vulkano::image::{ImageDimensions, StorageImage};
+use vulkano::image::{ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage};
 use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
@@ -215,7 +215,7 @@ impl GpuContext {
         gpu_read_sender: Sender<u32>,
         gpu_front_image_sender: Sender<Arc<StorageImage>>,
     ) -> Self {
-        let render_image = StorageImage::new(
+        let render_image = StorageImage::with_usage(
             device.clone(),
             ImageDimensions::Dim2d {
                 width: 1024,
@@ -223,11 +223,19 @@ impl GpuContext {
                 array_layers: 1,
             },
             Format::A1R5G5B5_UNORM_PACK16,
+            ImageUsage {
+                transfer_source: true,
+                transfer_destination: true,
+                color_attachment: true,
+                sampled: true,
+                ..ImageUsage::none()
+            },
+            ImageCreateFlags::none(),
             [queue.family()],
         )
         .unwrap();
 
-        let render_image_back_image = StorageImage::new(
+        let render_image_back_image = StorageImage::with_usage(
             device.clone(),
             ImageDimensions::Dim2d {
                 width: 1024,
@@ -235,6 +243,12 @@ impl GpuContext {
                 array_layers: 1,
             },
             Format::A1R5G5B5_UNORM_PACK16,
+            ImageUsage {
+                transfer_destination: true,
+                sampled: true,
+                ..ImageUsage::none()
+            },
+            ImageCreateFlags::none(),
             [queue.family()],
         )
         .unwrap();
@@ -844,7 +858,7 @@ impl GpuContext {
             )
         };
 
-        let front_image = StorageImage::new(
+        let front_image = StorageImage::with_usage(
             self.device.clone(),
             ImageDimensions::Dim2d {
                 width: size[0],
@@ -852,6 +866,12 @@ impl GpuContext {
                 array_layers: 1,
             },
             Format::B8G8R8A8_UNORM,
+            ImageUsage {
+                transfer_source: true,
+                color_attachment: true,
+                ..ImageUsage::none()
+            },
+            ImageCreateFlags::none(),
             Some(self.queue.family()),
         )
         .unwrap();
