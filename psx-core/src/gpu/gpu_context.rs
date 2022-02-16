@@ -10,10 +10,14 @@ use vulkano::device::{Device, Queue};
 use vulkano::format::{ClearValue, Format};
 use vulkano::image::view::{ComponentMapping, ComponentSwizzle, ImageView};
 use vulkano::image::{ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage};
+use vulkano::pipeline::graphics::color_blend::{
+    AttachmentBlend, BlendFactor, BlendOp, ColorBlendAttachmentState, ColorBlendState,
+    ColorComponents,
+};
 use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
-use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint};
+use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint, StateMode};
 use vulkano::render_pass::{Framebuffer, Subpass};
 use vulkano::sampler::{Filter, MipmapMode, Sampler, SamplerAddressMode};
 use vulkano::sync::{self, GpuFuture};
@@ -193,8 +197,8 @@ pub struct GpuContext {
     render_image_back_image: Arc<StorageImage>,
 
     render_image_framebuffer: Arc<Framebuffer>,
-    polygon_pipeline: Arc<GraphicsPipeline>,
-    line_pipeline: Arc<GraphicsPipeline>,
+    polygon_pipelines: Vec<Arc<GraphicsPipeline>>,
+    line_pipelines: Vec<Arc<GraphicsPipeline>>,
     descriptor_set: Arc<PersistentDescriptorSet>,
 
     vertex_buffer_pool: CpuBufferPool<DrawingVertex>,
@@ -292,27 +296,42 @@ impl GpuContext {
         )
         .unwrap();
 
-        let polygon_pipeline = GraphicsPipeline::start()
-            .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertex>())
-            .vertex_shader(vs.entry_point("main").unwrap(), ())
-            .input_assembly_state(
-                InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
-            )
-            .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
-            .fragment_shader(fs.entry_point("main").unwrap(), ())
-            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-            .build(device.clone())
-            .unwrap();
+        // create multiple pipelines, one for each semi_transparency_mode
+        // TODO: is there a better way to do this?
+        let polygon_pipelines = (0..4)
+            .map(|transparency_mode| {
+                GraphicsPipeline::start()
+                    .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertex>())
+                    .vertex_shader(vs.entry_point("main").unwrap(), ())
+                    .input_assembly_state(
+                        InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
+                    )
+                    .color_blend_state(Self::create_color_blend_state(transparency_mode))
+                    .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+                    .fragment_shader(fs.entry_point("main").unwrap(), ())
+                    .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+                    .build(device.clone())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
 
-        let line_pipeline = GraphicsPipeline::start()
-            .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertex>())
-            .vertex_shader(vs.entry_point("main").unwrap(), ())
-            .input_assembly_state(InputAssemblyState::new().topology(PrimitiveTopology::LineStrip))
-            .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
-            .fragment_shader(fs.entry_point("main").unwrap(), ())
-            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-            .build(device.clone())
-            .unwrap();
+        // multiple pipelines
+        let line_pipelines = (0..4)
+            .map(|transparency_mode| {
+                GraphicsPipeline::start()
+                    .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertex>())
+                    .vertex_shader(vs.entry_point("main").unwrap(), ())
+                    .input_assembly_state(
+                        InputAssemblyState::new().topology(PrimitiveTopology::LineStrip),
+                    )
+                    .color_blend_state(Self::create_color_blend_state(transparency_mode))
+                    .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
+                    .fragment_shader(fs.entry_point("main").unwrap(), ())
+                    .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+                    .build(device.clone())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
 
         let sampler = Sampler::new(
             device.clone(),
@@ -332,7 +351,7 @@ impl GpuContext {
         // even though, we are using the layout from the `polygon_pipeline`
         // it still works without issues with `line_pipeline` since its the
         // same layout taken from the same shader.
-        let layout = polygon_pipeline
+        let layout = polygon_pipelines[0]
             .layout()
             .descriptor_set_layouts()
             .get(0)
@@ -404,8 +423,8 @@ impl GpuContext {
 
             render_image_back_image,
 
-            polygon_pipeline,
-            line_pipeline,
+            polygon_pipelines,
+            line_pipelines,
             descriptor_set,
 
             vertex_buffer_pool,
@@ -579,6 +598,52 @@ impl GpuContext {
             .unwrap();
     }
 
+    /// Create ColorBlendState for a specific semi_transparency_mode, to be
+    /// used to create a specific pipeline for it.
+    fn create_color_blend_state(semi_transparency_mode: u8) -> ColorBlendState {
+        // Mode 3 has no blend, so it is used for non_transparent draws
+        let blend = match semi_transparency_mode & 3 {
+            0 => Some(AttachmentBlend {
+                color_op: BlendOp::Add,
+                color_source: BlendFactor::SrcAlpha,
+                color_destination: BlendFactor::OneMinusSrcAlpha,
+                alpha_op: BlendOp::Add,
+                alpha_source: BlendFactor::One,
+                alpha_destination: BlendFactor::Zero,
+            }),
+            1 => Some(AttachmentBlend {
+                color_op: BlendOp::Add,
+                color_source: BlendFactor::One,
+                color_destination: BlendFactor::SrcAlpha,
+                alpha_op: BlendOp::Add,
+                alpha_source: BlendFactor::One,
+                alpha_destination: BlendFactor::Zero,
+            }),
+            2 => Some(AttachmentBlend {
+                color_op: BlendOp::ReverseSubtract,
+                color_source: BlendFactor::One,
+                color_destination: BlendFactor::SrcAlpha,
+                alpha_op: BlendOp::Add,
+                alpha_source: BlendFactor::One,
+                alpha_destination: BlendFactor::Zero,
+            }),
+            3 => None,
+            _ => unreachable!(),
+        };
+        ColorBlendState {
+            logic_op: None,
+            attachments: vec![ColorBlendAttachmentState {
+                blend,
+                color_write_mask: ColorComponents {
+                    a: false,
+                    ..ColorComponents::all()
+                },
+                color_write_enable: StateMode::Fixed(true),
+            }],
+            blend_constants: StateMode::Fixed([0.0, 0.0, 0.0, 0.0]),
+        }
+    }
+
     fn new_command_buffer_builder(&mut self) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
         let mut builder = AutoCommandBufferBuilder::primary(
             self.device.clone(),
@@ -686,7 +751,7 @@ impl GpuContext {
             self.update_gpu_stat_from_texture_params(&texture_params);
         };
 
-        let semi_transparency_mode = if textured {
+        let mut semi_transparency_mode = if textured {
             texture_params.semi_transparency_mode
         } else {
             gpu_stat.semi_transparency_mode()
@@ -697,8 +762,17 @@ impl GpuContext {
         // will be not needed. Thus, we don't update if its `textured`
         // TODO: fix texture updates and back image updates
         if semi_transparent {
-            self.update_back_image();
+            if semi_transparency_mode == 3 {
+                self.update_back_image();
+            }
+        } else {
+            // setting semi_transparency_mode to 3 to disable blending since we don't need it
+            // mode 3 has no alpha blending, and semi_transparency is handled entirely by
+            // the shader.
+            semi_transparency_mode = 3;
         }
+
+        let pipeline = &self.polygon_pipelines[semi_transparency_mode as usize];
 
         let push_constants = fs::ty::PushConstantData {
             offset: [self.drawing_offset.0, self.drawing_offset.1],
@@ -725,7 +799,7 @@ impl GpuContext {
             self.device.clone(),
             self.queue.family(),
             CommandBufferUsage::OneTimeSubmit,
-            self.polygon_pipeline.subpass().clone(),
+            pipeline.subpass().clone(),
         )
         .unwrap();
 
@@ -740,12 +814,12 @@ impl GpuContext {
             )
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
-                self.polygon_pipeline.layout().clone(),
+                pipeline.layout().clone(),
                 0,
                 self.descriptor_set.clone(),
             )
-            .bind_pipeline_graphics(self.polygon_pipeline.clone())
-            .push_constants(self.polygon_pipeline.layout().clone(), 0, push_constants)
+            .bind_pipeline_graphics(pipeline.clone())
+            .push_constants(pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, vertex_buffer)
             .draw(vertices.len() as u32, 1, 0, 0)
             .unwrap();
@@ -778,11 +852,17 @@ impl GpuContext {
         let height = drawing_bottom - drawing_top + 1;
         let width = drawing_right - drawing_left + 1;
 
+        let mut semi_transparency_mode = gpu_stat.semi_transparency_mode();
+
         if semi_transparent {
-            self.update_back_image();
+            if semi_transparency_mode == 3 {
+                self.update_back_image();
+            }
+        } else {
+            semi_transparency_mode = 3;
         }
 
-        let semi_transparency_mode = gpu_stat.semi_transparency_mode();
+        let pipeline = &self.line_pipelines[semi_transparency_mode as usize];
 
         let push_constants = fs::ty::PushConstantData {
             offset: [self.drawing_offset.0, self.drawing_offset.1],
@@ -806,7 +886,7 @@ impl GpuContext {
             self.device.clone(),
             self.queue.family(),
             CommandBufferUsage::OneTimeSubmit,
-            self.line_pipeline.subpass().clone(),
+            pipeline.subpass().clone(),
         )
         .unwrap();
 
@@ -821,12 +901,12 @@ impl GpuContext {
             )
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
-                self.line_pipeline.layout().clone(),
+                pipeline.layout().clone(),
                 0,
                 self.descriptor_set.clone(),
             )
-            .bind_pipeline_graphics(self.line_pipeline.clone())
-            .push_constants(self.line_pipeline.layout().clone(), 0, push_constants)
+            .bind_pipeline_graphics(pipeline.clone())
+            .push_constants(pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, vertex_buffer)
             .draw(vertices.len() as u32, 1, 0, 0)
             .unwrap();

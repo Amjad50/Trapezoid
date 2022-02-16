@@ -28,14 +28,6 @@ layout(set = 0, binding = 0) uniform sampler2D back_tex;
 
 const vec2 SCREEN_DIM = vec2(1024, 512);
 
-const float transparency_factors[4][2] = {
-    // back factor, front factor
-    {0.5, 0.5},
-    {1.0, 1.0},
-    {1.0, -1.0},
-    {1.0, 0.25},
-};
-
 const float dither_table[16] = {
     -4.0/255.0,  +0.0/255.0,  -3.0/255.0,  +1.0/255.0,   //\dither offsets for first two scanlines
     +2.0/255.0,  -2.0/255.0,  +3.0/255.0,  -1.0/255.0,   ///
@@ -43,17 +35,40 @@ const float dither_table[16] = {
     +3.0/255.0,  -1.0/255.0,  +2.0/255.0,  -2.0/255.0    ///(same as above, but shifted two pixels horizontally)
 };
 
-
-vec3 get_color_with_semi_transparency(vec3 color, bool semi_transparency_param) {
+// this gets the back value from the texture and does manual blending
+// since we can't acheive this blending using Vulkan's alphaBlending ops
+vec3 get_color_with_semi_transparency_for_mode_3(vec3 color, bool semi_transparency_param) {
     if (!semi_transparency_param) {
         return color;
     }
 
     vec3 back_color = vec3(texture(back_tex, gl_FragCoord.xy / SCREEN_DIM));
 
-    float factors[] = transparency_factors[pc.semi_transparency_mode];
+    return (1.0 * back_color) + (0.25 * color);
+}
 
-    return (factors[0] * back_color) + (factors[1] * color);
+vec4 get_color_with_semi_transparency(vec3 color, bool semi_transparency_param) {
+    float alpha = 0.0;
+
+    // since this is mostly the most common case, we'll do it first
+    if (pc.semi_transparency_mode == 3u) {
+        // alpha here doesn't matter since it won't be written to the framebuffer anyway (disabled by the blend)
+        return vec4(get_color_with_semi_transparency_for_mode_3(color, semi_transparency_param), 0.0);
+    }
+    if (pc.semi_transparency_mode == 0u) {
+        if (semi_transparency_param) {
+            alpha = 0.5;
+        } else {
+            alpha = 1.0;
+        }
+    } else if (pc.semi_transparency_mode == 1u) {
+        alpha = float(semi_transparency_param);
+    } else { // pc.semi_transparency_mode == 2u
+        alpha = float(semi_transparency_param);
+    }
+
+    // transparency will be handled by alpha blending
+    return vec4(color, alpha);
 }
 
 vec4 fetch_color_from_texture(uvec2 coord) {
@@ -71,6 +86,7 @@ uint u16_from_color_with_alpha(vec4 raw_color_value) {
 
 void main() {
     vec3 t_color;
+    vec4 out_color;
 
     if (pc.dither_enabled) {
         uint x = uint(gl_FragCoord.x) % 4;
@@ -129,9 +145,10 @@ void main() {
         if (pc.is_texture_blended) {
             color *= t_color * 2;
         }
-        t_color = get_color_with_semi_transparency(color, pc.semi_transparent && color_value.a == 1.0);
+        out_color = get_color_with_semi_transparency(color, pc.semi_transparent && color_value.a == 1.0);
     } else {
-        t_color = get_color_with_semi_transparency(t_color, pc.semi_transparent);
+        out_color = get_color_with_semi_transparency(t_color, pc.semi_transparent);
     }
-    f_color = vec4(t_color.b, t_color.g, t_color.r, 0.0);
+    // swizzle the colors
+    f_color = out_color.bgra;
 }
