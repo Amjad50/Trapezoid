@@ -479,6 +479,9 @@ impl GpuContext {
                 0,
             )
             .unwrap();
+
+        // update back image when loading textures
+        self.update_back_image();
     }
 
     pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
@@ -676,10 +679,6 @@ impl GpuContext {
         let height = drawing_bottom - drawing_top + 1;
         let width = drawing_right - drawing_left + 1;
 
-        if textured || semi_transparent {
-            self.update_back_image();
-        }
-
         if textured {
             if !self.allow_texture_disable {
                 texture_params.texture_disable = false;
@@ -692,6 +691,14 @@ impl GpuContext {
         } else {
             gpu_stat.semi_transparency_mode()
         };
+
+        // we might need to update back image if we are drawing `textured`
+        // But, updating textures isn't done a lot, so most of the updates
+        // will be not needed. Thus, we don't update if its `textured`
+        // TODO: fix texture updates and back image updates
+        if semi_transparent {
+            self.update_back_image();
+        }
 
         let push_constants = fs::ty::PushConstantData {
             offset: [self.drawing_offset.0, self.drawing_offset.1],
