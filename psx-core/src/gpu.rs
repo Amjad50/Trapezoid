@@ -269,8 +269,12 @@ impl Gpu {
         self.in_vblank
     }
 
-    pub fn blit_to_front<D, IF>(&mut self, dest_image: Arc<D>, full_vram: bool, in_future: IF)
-    where
+    pub fn sync_gpu_and_blit_to_front<D, IF>(
+        &mut self,
+        dest_image: Arc<D>,
+        full_vram: bool,
+        in_future: IF,
+    ) where
         D: ImageAccess + 'static,
         IF: GpuFuture,
     {
@@ -278,8 +282,9 @@ impl Gpu {
             .send(BackendCommand::BlitFront(full_vram))
             .unwrap();
 
-        // may not be ready yet
-        let img = self.gpu_front_image_receiver.try_recv().ok();
+        // `recv` is blocking, here we will wait for the GPU to finish all drawing.
+        // FIXME: Do not block. Find a way to keep the GPU synced with minimal performance loss.
+        let img = self.gpu_front_image_receiver.recv().ok();
         self.current_front_image = img.or(self.current_front_image.take());
 
         if let Some(img) = self.current_front_image.as_ref() {
@@ -321,6 +326,13 @@ impl Gpu {
             in_future
                 .then_execute(self.queue.clone(), cb)
                 .unwrap()
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+        } else {
+            // we must flush the future even if we are not using it.
+            in_future
                 .then_signal_fence_and_flush()
                 .unwrap()
                 .wait(None)

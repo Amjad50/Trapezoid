@@ -84,6 +84,6 @@ impl Psx {
     {
         self.bus
             .gpu_mut()
-            .blit_to_front(dest_image, full_vram, in_future);
+            .sync_gpu_and_blit_to_front(dest_image, full_vram, in_future);
     }
 }
