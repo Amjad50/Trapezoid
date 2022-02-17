@@ -304,7 +304,7 @@ impl GpuContext {
                     .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertex>())
                     .vertex_shader(vs.entry_point("main").unwrap(), ())
                     .input_assembly_state(
-                        InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
+                        InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
                     )
                     .color_blend_state(Self::create_color_blend_state(transparency_mode))
                     .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())

@@ -55,7 +55,7 @@ struct PolygonCommand {
     textured: bool,
     semi_transparent: bool,
     texture_blending: bool,
-    vertices: [DrawingVertex; 4],
+    vertices: [DrawingVertex; 6],
     texture_params: DrawingTextureParams,
     current_input_state: u8,
     input_pointer: usize,
@@ -72,12 +72,7 @@ impl Gp0Command for PolygonCommand {
             textured: (data0 >> 26) & 1 == 1,
             semi_transparent: (data0 >> 25) & 1 == 1,
             texture_blending: (data0 >> 24) & 1 == 0, // enabled with 0
-            vertices: [
-                DrawingVertex::new_with_color(data0),
-                DrawingVertex::new_with_color(data0),
-                DrawingVertex::new_with_color(data0),
-                DrawingVertex::new_with_color(data0),
-            ],
+            vertices: [DrawingVertex::new_with_color(data0); 6],
             texture_params: DrawingTextureParams::default(),
             current_input_state: 1,
             input_pointer: 0,
@@ -123,8 +118,15 @@ impl Gp0Command for PolygonCommand {
         assert!(!self.still_need_params());
         log::info!("POLYGON executing {:#?}", self);
 
+        let input_pointer = if self.is_4_vertices {
+            self.vertices[4] = self.vertices[2];
+            self.vertices[5] = self.vertices[1];
+            6
+        } else {
+            3
+        };
         ctx.draw_polygon(
-            &self.vertices[..self.input_pointer],
+            &self.vertices[..input_pointer],
             self.texture_params,
             self.textured,
             self.texture_blending,
@@ -231,7 +233,7 @@ struct RectangleCommand {
     semi_transparent: bool,
     size_mode: u8,
     size: [f32; 2],
-    vertices: [DrawingVertex; 4],
+    vertices: [DrawingVertex; 6],
     texture_params: DrawingTextureParams,
     current_input_state: u8,
 }
@@ -246,12 +248,7 @@ impl Gp0Command for RectangleCommand {
             size: [0.0; 2],
             textured: (data0 >> 26) & 1 == 1,
             semi_transparent: (data0 >> 25) & 1 == 1,
-            vertices: [
-                DrawingVertex::new_with_color(data0),
-                DrawingVertex::new_with_color(data0),
-                DrawingVertex::new_with_color(data0),
-                DrawingVertex::new_with_color(data0),
-            ],
+            vertices: [DrawingVertex::new_with_color(data0); 6],
             texture_params: DrawingTextureParams::default(),
             current_input_state: 0,
         }
@@ -323,9 +320,13 @@ impl Gp0Command for RectangleCommand {
             top_left_tex[0],
             (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
         ]);
+        // copies of top right and bottom left for the second triangle
+        self.vertices[3] = self.vertices[1];
+        self.vertices[4] = self.vertices[2];
+
         // bottom right
-        self.vertices[3].set_position([top_left[0] + size[0], top_left[1] + size[1]]);
-        self.vertices[3].set_tex_coord([
+        self.vertices[5].set_position([top_left[0] + size[0], top_left[1] + size[1]]);
+        self.vertices[5].set_tex_coord([
             (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u32,
             (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
         ]);
