@@ -904,13 +904,18 @@ impl GpuContext {
             gpu_stat.semi_transparency_mode()
         };
 
+        let mut semi_transparent_mode_3 = false;
         // we might need to update back image if we are drawing `textured`
         // But, updating textures isn't done a lot, so most of the updates
         // will be not needed. Thus, we don't update if its `textured`
         // TODO: fix texture updates and back image updates
         if semi_transparent {
             if semi_transparency_mode == 3 {
+                // flush previous batch because semi_transparent mode 3 cannot be grouped
+                // with other draws, since it relies on updated back image
+                self.check_and_flush_buffered_polygon_vertices(None);
                 self.update_back_image();
+                semi_transparent_mode_3 = true;
             }
         } else {
             // setting semi_transparency_mode to 3 to disable blending since we don't need it
@@ -948,9 +953,18 @@ impl GpuContext {
         });
         self.buffered_polygons_vertices
             .extend(converted_vertices_iter);
+
+        if semi_transparent_mode_3 {
+            // flush the polygon immediately
+            self.check_and_flush_buffered_polygon_vertices(None);
+        }
     }
 
     pub fn draw_polyline(&mut self, vertices: &[DrawingVertex], semi_transparent: bool) {
+        // flush previous polygons if there is any, since we want to draw
+        // in order they come in from the CPU.
+        self.check_and_flush_buffered_polygon_vertices(None);
+
         let gpu_stat = self.read_gpu_stat();
 
         let (drawing_left, drawing_top) = self.drawing_area_top_left;
@@ -970,10 +984,6 @@ impl GpuContext {
         } else {
             semi_transparency_mode = 3;
         }
-
-        // flush previous polygons if there is any, since we want to draw
-        // in order they come in from the CPU.
-        self.check_and_flush_buffered_polygon_vertices(None);
 
         let pipeline = &self.line_pipelines[semi_transparency_mode as usize];
 
