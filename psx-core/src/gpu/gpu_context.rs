@@ -451,10 +451,10 @@ impl GpuContext {
 
         let vertex_buffer_pool = CpuBufferPool::vertex_buffer(device.clone());
 
-        let (texture_blit, texture_blit_future) =
+        let (front_blit, front_blit_init_future) =
             FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
 
-        let gpu_future = Some(image_clear_future.join(texture_blit_future).boxed());
+        let gpu_future = Some(image_clear_future.join(front_blit_init_future).boxed());
 
         let command_builder = AutoCommandBufferBuilder::primary(
             device.clone(),
@@ -500,7 +500,7 @@ impl GpuContext {
             buffered_draw_vertices: Vec::new(),
             current_buffered_draws_state: None,
 
-            front_blit: texture_blit,
+            front_blit,
 
             gpu_future,
 
@@ -764,6 +764,10 @@ impl GpuContext {
     }
 
     fn flush_command_builder(&mut self) {
+        // No need to flush if there no draw commands
+        if self.buffered_draws == 0 {
+            return;
+        }
         let new_builder = self.new_command_buffer_builder();
         let command_buffer_builder = std::mem::replace(&mut self.command_builder, new_builder);
         self.buffered_draws = 0;
