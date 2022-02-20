@@ -151,7 +151,7 @@ struct LineCommand {
     semi_transparent: bool,
     first_color: u32,
     vertices: Vec<DrawingVertex>,
-    expecting_vertex: bool,
+    expecting_vertex_position: bool,
     done_input: bool,
     polyline_can_be_finished: bool,
 }
@@ -174,7 +174,7 @@ impl Gp0Command for LineCommand {
             semi_transparent: (data0 >> 25) & 1 == 1,
             first_color: data0 & 0xFFFFFF,
             vertices,
-            expecting_vertex: true,
+            expecting_vertex_position: true,
             done_input: false,
             polyline_can_be_finished: false,
         }
@@ -191,11 +191,15 @@ impl Gp0Command for LineCommand {
             return;
         }
 
-        if self.expecting_vertex {
+        if self.expecting_vertex_position {
             if self.gouraud {
                 self.vertices.last_mut().unwrap().position_from_u32(param);
-                self.expecting_vertex = false;
+                self.expecting_vertex_position = false;
             } else {
+                if self.polyline && self.vertices.len() >= 2 {
+                    // duplicate the last vertex
+                    self.vertices.push(*self.vertices.last().unwrap());
+                }
                 let mut vertex = DrawingVertex::new_with_color(self.first_color);
                 vertex.position_from_u32(param);
                 self.vertices.push(vertex);
@@ -205,8 +209,12 @@ impl Gp0Command for LineCommand {
                 self.done_input = true;
             }
         } else {
+            if self.polyline && self.vertices.len() >= 2 {
+                // duplicate the last vertex
+                self.vertices.push(*self.vertices.last().unwrap());
+            }
             self.vertices.push(DrawingVertex::new_with_color(param));
-            self.expecting_vertex = true;
+            self.expecting_vertex_position = true;
             self.polyline_can_be_finished = false;
         }
     }

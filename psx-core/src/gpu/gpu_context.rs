@@ -118,8 +118,8 @@ impl DrawingVertex {
 }
 
 /// Contains the vertex data `position, color, tex_coord`, as well as
-/// data that is global to the whole polygon, and were normally sent through
-/// `push_constants`, but after using polygon draw buffering, it would be better
+/// data that is global to the whole polygon/polyline, and were normally sent through
+/// `push_constants`, but after using polygon/polyline draw buffering, it would be better
 /// to group them into the vertex data.
 ///
 /// TODO: some old GPUs might not support more than 8 vertex data, check on that.
@@ -205,13 +205,22 @@ impl DrawingTextureParams {
     }
 }
 
+/// The type of the draw command, informs how the drawing vertices should be handled
+#[derive(PartialEq, Debug)]
+pub enum DrawType {
+    Polygon,
+    Polyline,
+}
+
 /// A structure to hold the similar state of consecutive draws.
 /// If any of these states got changed, the buffered draws should be flushed
 /// and a new state is established with the new values.
-#[derive(Default, PartialEq, Debug)]
-struct BufferedPolygonDrawsState {
+#[derive(PartialEq, Debug)]
+struct BufferedDrawsState {
     /// Same semi_transparency_mode can use the same pipeline
     semi_transparency_mode: u8,
+    /// The type of the vertices buffered
+    draw_type: DrawType,
     /// It is used for push constants, and will rarely change
     left: u32,
     /// It is used for push constants, and will rarely change
@@ -256,12 +265,12 @@ pub struct GpuContext {
 
     render_image_framebuffer: Arc<Framebuffer>,
     polygon_pipelines: Vec<Arc<GraphicsPipeline>>,
-    line_pipelines: Vec<Arc<GraphicsPipeline>>,
+    polyline_pipelines: Vec<Arc<GraphicsPipeline>>,
     descriptor_set: Arc<PersistentDescriptorSet>,
 
     vertex_buffer_pool: CpuBufferPool<DrawingVertexFull>,
-    buffered_polygons_vertices: Vec<DrawingVertexFull>,
-    current_buffered_polygons_state: Option<BufferedPolygonDrawsState>,
+    buffered_draw_vertices: Vec<DrawingVertexFull>,
+    current_buffered_draws_state: Option<BufferedDrawsState>,
 
     front_blit: FrontBlit,
 
@@ -376,13 +385,13 @@ impl GpuContext {
             .collect::<Vec<_>>();
 
         // multiple pipelines
-        let line_pipelines = (0..4)
+        let polyline_pipelines = (0..4)
             .map(|transparency_mode| {
                 GraphicsPipeline::start()
                     .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertexFull>())
                     .vertex_shader(vs.entry_point("main").unwrap(), ())
                     .input_assembly_state(
-                        InputAssemblyState::new().topology(PrimitiveTopology::LineStrip),
+                        InputAssemblyState::new().topology(PrimitiveTopology::LineList),
                     )
                     .color_blend_state(Self::create_color_blend_state(transparency_mode))
                     .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
@@ -484,12 +493,12 @@ impl GpuContext {
             render_image_back_image,
 
             polygon_pipelines,
-            line_pipelines,
+            polyline_pipelines,
             descriptor_set,
 
             vertex_buffer_pool,
-            buffered_polygons_vertices: Vec::new(),
-            current_buffered_polygons_state: None,
+            buffered_draw_vertices: Vec::new(),
+            current_buffered_draws_state: None,
 
             front_blit: texture_blit,
 
@@ -777,14 +786,11 @@ impl GpuContext {
     // it will flush the buffered vertices, and set the `current_state` to `new_state`.
     //
     // Using `None` as `new_state` will always flush the buffered vertices (if any).
-    fn check_and_flush_buffered_polygon_vertices(
-        &mut self,
-        new_state: Option<BufferedPolygonDrawsState>,
-    ) {
-        if new_state == self.current_buffered_polygons_state {
+    fn check_and_flush_buffered_draws(&mut self, new_state: Option<BufferedDrawsState>) {
+        if new_state == self.current_buffered_draws_state {
             return;
         }
-        let current_state = std::mem::replace(&mut self.current_buffered_polygons_state, new_state);
+        let current_state = std::mem::replace(&mut self.current_buffered_draws_state, new_state);
 
         let current_state = if let Some(state) = current_state {
             state
@@ -792,17 +798,21 @@ impl GpuContext {
             return;
         };
 
-        let vertices_len = self.buffered_polygons_vertices.len();
+        let vertices_len = self.buffered_draw_vertices.len();
         // if we have a valid instance, then there must be some vertices
         assert!(vertices_len > 0);
 
         // we create a "cloned iter" here so that we don't clone the vector
         let vertex_buffer = self
             .vertex_buffer_pool
-            .chunk(self.buffered_polygons_vertices.iter().cloned())
+            .chunk(self.buffered_draw_vertices.iter().cloned())
             .unwrap();
 
-        let pipeline = &self.polygon_pipelines[current_state.semi_transparency_mode as usize];
+        let pipelines_set = match current_state.draw_type {
+            DrawType::Polygon => &self.polygon_pipelines,
+            DrawType::Polyline => &self.polyline_pipelines,
+        };
+        let pipeline = &pipelines_set[current_state.semi_transparency_mode as usize];
 
         let push_constants = vs::ty::PushConstantData {
             offset: [
@@ -854,18 +864,18 @@ impl GpuContext {
             .end_render_pass()
             .unwrap();
 
-        self.increment_buffered_draws_and_cleanup();
+        self.increment_buffered_draws_and_flush_command_builder();
 
         // prepare for next batch
-        self.buffered_polygons_vertices.clear();
+        self.buffered_draw_vertices.clear();
     }
 
     /// Adds to the buffered commands counter and flushes the command builder if needed exceeded a
     /// specific threshold.
-    fn increment_buffered_draws_and_cleanup(&mut self) {
+    fn increment_buffered_draws_and_flush_command_builder(&mut self) {
         // NOTE: this number is arbitrary, it should be tested later or maybe
         //       make it dynamic
-        const MAX_BUFFERED_COMMANDS: u32 = 40;
+        const MAX_BUFFERED_COMMANDS: u32 = 20;
 
         self.buffered_draws += 1;
         if self.buffered_draws > MAX_BUFFERED_COMMANDS {
@@ -873,9 +883,12 @@ impl GpuContext {
         }
     }
 
-    pub fn draw_polygon(
+    /// common function to draw polygons and polylines
+    #[inline]
+    fn draw(
         &mut self,
         vertices: &[DrawingVertex],
+        draw_type: DrawType,
         mut texture_params: DrawingTextureParams,
         textured: bool,
         texture_blending: bool,
@@ -913,7 +926,7 @@ impl GpuContext {
             if semi_transparency_mode == 3 {
                 // flush previous batch because semi_transparent mode 3 cannot be grouped
                 // with other draws, since it relies on updated back image
-                self.check_and_flush_buffered_polygon_vertices(None);
+                self.check_and_flush_buffered_draws(None);
                 self.update_back_image();
                 semi_transparent_mode_3 = true;
             }
@@ -924,9 +937,10 @@ impl GpuContext {
             semi_transparency_mode = 3;
         }
 
-        // flush previous polygons if this is a different state
-        self.check_and_flush_buffered_polygon_vertices(Some(BufferedPolygonDrawsState {
+        // flush previous draws if this is a different state
+        self.check_and_flush_buffered_draws(Some(BufferedDrawsState {
             semi_transparency_mode,
+            draw_type,
             drawing_offset: self.drawing_offset,
             left,
             top,
@@ -951,118 +965,47 @@ impl GpuContext {
             is_textured: textured as u32,
             is_texture_blended: texture_blending as u32,
         });
-        self.buffered_polygons_vertices
-            .extend(converted_vertices_iter);
+        self.buffered_draw_vertices.extend(converted_vertices_iter);
 
         if semi_transparent_mode_3 {
-            // flush the polygon immediately
-            self.check_and_flush_buffered_polygon_vertices(None);
+            // flush the draw immediately
+            self.check_and_flush_buffered_draws(None);
         }
     }
 
+    pub fn draw_polygon(
+        &mut self,
+        vertices: &[DrawingVertex],
+        texture_params: DrawingTextureParams,
+        textured: bool,
+        texture_blending: bool,
+        semi_transparent: bool,
+    ) {
+        self.draw(
+            vertices,
+            DrawType::Polygon,
+            texture_params,
+            textured,
+            texture_blending,
+            semi_transparent,
+        );
+    }
+
     pub fn draw_polyline(&mut self, vertices: &[DrawingVertex], semi_transparent: bool) {
-        // flush previous polygons if there is any, since we want to draw
-        // in order they come in from the CPU.
-        self.check_and_flush_buffered_polygon_vertices(None);
-
-        let gpu_stat = self.read_gpu_stat();
-
-        let (drawing_left, drawing_top) = self.drawing_area_top_left;
-        let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
-
-        let left = drawing_left;
-        let top = drawing_top;
-        let height = drawing_bottom - drawing_top + 1;
-        let width = drawing_right - drawing_left + 1;
-
-        let mut semi_transparency_mode = gpu_stat.semi_transparency_mode();
-
-        if semi_transparent {
-            if semi_transparency_mode == 3 {
-                self.update_back_image();
-            }
-        } else {
-            semi_transparency_mode = 3;
-        }
-
-        let pipeline = &self.line_pipelines[semi_transparency_mode as usize];
-
-        let push_constants = vs::ty::PushConstantData {
-            offset: [self.drawing_offset.0, self.drawing_offset.1],
-            drawing_top_left: [left, top],
-            drawing_size: [width, height],
-        };
-
-        let vertex_buffer = self
-            .vertex_buffer_pool
-            .chunk(
-                vertices
-                    .iter()
-                    .map(|v| DrawingVertexFull {
-                        position: v.position,
-                        color: v.color,
-                        tex_coord: v.tex_coord,
-                        clut_base: [0; 2],
-                        tex_page_base: [0; 2],
-                        semi_transparency_mode: semi_transparency_mode as u32,
-                        tex_page_color_mode: 0,
-                        texture_flip: [0, 0],
-                        semi_transparent: semi_transparent as u32,
-                        dither_enabled: gpu_stat.dither_enabled() as u32,
-                        is_textured: false as u32,
-                        is_texture_blended: false as u32,
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap();
-
-        let mut secondary_buffer = AutoCommandBufferBuilder::secondary_graphics(
-            self.device.clone(),
-            self.queue.family(),
-            CommandBufferUsage::OneTimeSubmit,
-            pipeline.subpass().clone(),
-        )
-        .unwrap();
-
-        secondary_buffer
-            .set_viewport(
-                0,
-                [Viewport {
-                    origin: [left as f32, top as f32],
-                    dimensions: [width as f32, height as f32],
-                    depth_range: 0.0..1.0,
-                }],
-            )
-            .bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                pipeline.layout().clone(),
-                0,
-                self.descriptor_set.clone(),
-            )
-            .bind_pipeline_graphics(pipeline.clone())
-            .push_constants(pipeline.layout().clone(), 0, push_constants)
-            .bind_vertex_buffers(0, vertex_buffer)
-            .draw(vertices.len() as u32, 1, 0, 0)
-            .unwrap();
-
-        self.command_builder
-            .begin_render_pass(
-                self.render_image_framebuffer.clone(),
-                SubpassContents::SecondaryCommandBuffers,
-                [ClearValue::None],
-            )
-            .unwrap()
-            .execute_commands(secondary_buffer.build().unwrap())
-            .unwrap()
-            .end_render_pass()
-            .unwrap();
-
-        self.increment_buffered_draws_and_cleanup();
+        // Textures are not supported for polylines
+        self.draw(
+            vertices,
+            DrawType::Polyline,
+            DrawingTextureParams::default(),
+            false,
+            false,
+            semi_transparent,
+        );
     }
 
     pub fn blit_to_front(&mut self, full_vram: bool) {
         let gpu_stat = self.read_gpu_stat();
-        self.check_and_flush_buffered_polygon_vertices(None);
+        self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 
         let (topleft, size) = if full_vram {
