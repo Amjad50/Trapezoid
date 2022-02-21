@@ -545,6 +545,8 @@ impl GpuContext {
     pub fn write_vram_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
         // TODO: check for out-of-bound writes here
 
+        self.check_and_flush_buffered_draws(None);
+
         let left = block_range.0.start;
         let top = block_range.1.start;
         let width = block_range.0.len() as u32;
@@ -577,6 +579,7 @@ impl GpuContext {
     pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
         // TODO: check for out-of-bound reads here
 
+        self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 
         let left = block_range.0.start;
@@ -631,6 +634,8 @@ impl GpuContext {
     }
 
     pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
+        self.check_and_flush_buffered_draws(None);
+
         let mut width = size.0;
         let mut height = size.1;
         // TODO: I'm not sure if we should support wrapping, but for now
