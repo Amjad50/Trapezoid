@@ -277,7 +277,7 @@ pub struct GpuContext {
     gpu_future: Option<Box<dyn GpuFuture>>,
 
     command_builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    buffered_draws: u32,
+    buffered_commands: u32,
 }
 
 impl GpuContext {
@@ -505,7 +505,7 @@ impl GpuContext {
             gpu_future,
 
             command_builder,
-            buffered_draws: 0,
+            buffered_commands: 0,
         }
     }
 
@@ -571,6 +571,7 @@ impl GpuContext {
                 0,
             )
             .unwrap();
+        self.increment_command_builder_commands_and_flush();
 
         // update back image when loading textures
         self.update_back_image();
@@ -672,6 +673,7 @@ impl GpuContext {
                 0,
             )
             .unwrap();
+        self.increment_command_builder_commands_and_flush();
     }
 
     /// Create ColorBlendState for a specific semi_transparency_mode, to be
@@ -770,12 +772,12 @@ impl GpuContext {
 
     fn flush_command_builder(&mut self) {
         // No need to flush if there no draw commands
-        if self.buffered_draws == 0 {
+        if self.buffered_commands == 0 {
             return;
         }
         let new_builder = self.new_command_buffer_builder();
         let command_buffer_builder = std::mem::replace(&mut self.command_builder, new_builder);
-        self.buffered_draws = 0;
+        self.buffered_commands = 0;
 
         let command_buffer = command_buffer_builder.build().unwrap();
 
@@ -873,7 +875,7 @@ impl GpuContext {
             .end_render_pass()
             .unwrap();
 
-        self.increment_buffered_draws_and_flush_command_builder();
+        self.increment_command_builder_commands_and_flush();
 
         // prepare for next batch
         self.buffered_draw_vertices.clear();
@@ -881,13 +883,13 @@ impl GpuContext {
 
     /// Adds to the buffered commands counter and flushes the command builder if needed exceeded a
     /// specific threshold.
-    fn increment_buffered_draws_and_flush_command_builder(&mut self) {
+    fn increment_command_builder_commands_and_flush(&mut self) {
         // NOTE: this number is arbitrary, it should be tested later or maybe
         //       make it dynamic
         const MAX_BUFFERED_COMMANDS: u32 = 20;
 
-        self.buffered_draws += 1;
-        if self.buffered_draws > MAX_BUFFERED_COMMANDS {
+        self.buffered_commands += 1;
+        if self.buffered_commands > MAX_BUFFERED_COMMANDS {
             self.flush_command_builder();
         }
     }
