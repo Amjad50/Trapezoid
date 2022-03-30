@@ -16,7 +16,7 @@ impl Default for MainRam {
 
 impl MainRam {
     pub fn put_at_address(&mut self, block_data: &[u8], addr: u32) {
-        let addr = addr as usize;
+        let addr = (addr as usize) & 0x1FFFFF;
         let block_len = block_data.len();
         assert!((block_len + addr) < self.data.len());
 
@@ -26,35 +26,35 @@ impl MainRam {
 
 impl BusLine for MainRam {
     fn read_u32(&mut self, addr: u32) -> u32 {
-        let index = addr as usize;
+        let index = (addr as usize) & 0x1FFFFF;
 
         LittleEndian::read_u32(&self.data[index..index + 4])
     }
 
     fn write_u32(&mut self, addr: u32, data: u32) {
-        let index = addr as usize;
+        let index = (addr as usize) & 0x1FFFFF;
 
         LittleEndian::write_u32(&mut self.data[index..index + 4], data)
     }
 
     fn read_u16(&mut self, addr: u32) -> u16 {
-        let index = addr as usize;
+        let index = (addr as usize) & 0x1FFFFF;
 
         LittleEndian::read_u16(&self.data[index..index + 2])
     }
 
     fn write_u16(&mut self, addr: u32, data: u16) {
-        let index = addr as usize;
+        let index = (addr as usize) & 0x1FFFFF;
 
         LittleEndian::write_u16(&mut self.data[index..index + 2], data)
     }
 
     fn read_u8(&mut self, addr: u32) -> u8 {
-        self.data[addr as usize]
+        self.data[(addr as usize) & 0x1FFFFF]
     }
 
     fn write_u8(&mut self, addr: u32, data: u8) {
-        self.data[addr as usize] = data;
+        self.data[(addr as usize) & 0x1FFFFF] = data;
     }
 }
 
