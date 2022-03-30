@@ -156,6 +156,49 @@ impl Default for Dma {
 /// All Dma handles are of type `fn(&mut DmaChannel, &mut super::DmaBus) -> (u32, bool)`
 /// The return values are `(The number of cpu cycles spent, Is dma finished)`
 impl Dma {
+    fn perform_mdec_in_channel0_dma(
+        channel: &mut DmaChannel,
+        dma_bus: &mut super::DmaBus,
+    ) -> (u32, bool) {
+        // must be from main ram
+        assert!(channel
+            .channel_control
+            .intersects(ChannelControl::DIRECTION));
+        // must be forward
+        assert!(channel.channel_control.address_step() == 4);
+        // must be sync mode 1
+        assert!(channel.channel_control.sync_mode() == 1);
+        // make sure there is no chopping, so we can finish this in one go
+        // TODO: implement chopping
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::CHOPPING_ENABLED));
+
+        // TODO: check if the max is 32 or not
+        let block_size = channel.block_control & 0xFFFF;
+        let blocks = channel.block_control >> 16;
+
+        // word align
+        let mut address = channel.base_address & 0xFFFFFC;
+
+        for _ in 0..block_size {
+            let data = dma_bus.main_ram.read_u32(address);
+            // TODO: write to params directly
+            dma_bus.mdec.write_u32(0, data);
+
+            // step
+            address += 4;
+        }
+
+        let blocks = blocks - 1;
+
+        channel.block_control &= 0xFFFF;
+        channel.block_control |= blocks << 16;
+        channel.base_address = address;
+
+        (block_size, blocks == 0)
+    }
+
     fn perform_gpu_channel2_dma(
         channel: &mut DmaChannel,
         dma_bus: &mut super::DmaBus,
@@ -172,31 +215,22 @@ impl Dma {
                 // TODO: check if the max is 16 or not
                 let block_size = channel.block_control & 0xFFFF;
                 let blocks = channel.block_control >> 16;
-                // transfer one block only
-                let mut remaining_length = block_size;
 
                 let mut address = channel.base_address & 0xFFFFFC;
 
-                let next_address = |remaining_length: &mut u32, address: &mut u32| {
-                    *remaining_length -= 1;
-                    let (r, overflow) = (*address as i32).overflowing_add(address_step);
-                    assert!(!overflow);
-                    *address = r as u32;
-                };
-
                 if direction_from_main_ram {
-                    while remaining_length > 0 {
+                    for _ in 0..block_size {
                         let data = dma_bus.main_ram.read_u32(address);
                         dma_bus.gpu.write_u32(0, data);
                         // step
-                        next_address(&mut remaining_length, &mut address);
+                        address = (address as i32 + address_step as i32) as u32;
                     }
                 } else {
-                    while remaining_length > 0 {
+                    for _ in 0..block_size {
                         let data = dma_bus.gpu.read_u32(0);
                         dma_bus.main_ram.write_u32(address, data);
                         // step
-                        next_address(&mut remaining_length, &mut address);
+                        address = (address as i32 + address_step as i32) as u32;
                     }
                 }
 
@@ -206,7 +240,7 @@ impl Dma {
                 channel.block_control |= blocks << 16;
                 channel.base_address = address;
 
-                (remaining_length, blocks == 0)
+                (block_size, blocks == 0)
             }
             2 => {
                 // Linked list mode, to sending GP0 commands
@@ -433,6 +467,7 @@ impl Dma {
                 log::info!("channel {} doing DMA", i);
 
                 let (cycles_to_delay, finished) = match i {
+                    0 => Self::perform_mdec_in_channel0_dma(channel, dma_bus),
                     2 => Self::perform_gpu_channel2_dma(channel, dma_bus),
                     3 => Self::perform_cdrom_channel3_dma(channel, dma_bus),
                     4 => Self::perform_spu_channel4_dma(channel, dma_bus),
