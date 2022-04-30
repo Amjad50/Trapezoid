@@ -60,8 +60,9 @@ impl BusLine for MemoryControl2 {
     }
 
     fn write_u32(&mut self, _addr: u32, data: u32) {
-        assert_eq!(
-            data, 0xB88,
+        // TODO: implement different ram modes
+        assert!(
+            data == 0xB88 || data == 0x888,
             "mem_ctrl2 value is wrong, should be 0xB88, got {:08X}",
             data
         );
