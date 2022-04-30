@@ -199,6 +199,49 @@ impl Dma {
         (block_size, blocks == 0)
     }
 
+    fn perform_mdec_out_channel1_dma(
+        channel: &mut DmaChannel,
+        dma_bus: &mut super::DmaBus,
+    ) -> (u32, bool) {
+        // must be from main ram
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::DIRECTION));
+        // must be forward
+        assert!(channel.channel_control.address_step() == 4);
+        // must be sync mode 1
+        assert!(channel.channel_control.sync_mode() == 1);
+        // make sure there is no chopping, so we can finish this in one go
+        // TODO: implement chopping
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::CHOPPING_ENABLED));
+
+        // TODO: check if the max is 32 or not
+        let block_size = channel.block_control & 0xFFFF;
+        let blocks = channel.block_control >> 16;
+
+        // word align
+        let mut address = channel.base_address & 0xFFFFFC;
+
+        for _ in 0..block_size {
+            // TODO: read whole buffer
+            let data = dma_bus.mdec.read_u32(0);
+            dma_bus.main_ram.write_u32(address, data);
+
+            // step
+            address += 4;
+        }
+
+        let blocks = blocks - 1;
+
+        channel.block_control &= 0xFFFF;
+        channel.block_control |= blocks << 16;
+        channel.base_address = address;
+
+        (block_size, blocks == 0)
+    }
+
     fn perform_gpu_channel2_dma(
         channel: &mut DmaChannel,
         dma_bus: &mut super::DmaBus,
@@ -468,6 +511,7 @@ impl Dma {
 
                 let (cycles_to_delay, finished) = match i {
                     0 => Self::perform_mdec_in_channel0_dma(channel, dma_bus),
+                    1 => Self::perform_mdec_out_channel1_dma(channel, dma_bus),
                     2 => Self::perform_gpu_channel2_dma(channel, dma_bus),
                     3 => Self::perform_cdrom_channel3_dma(channel, dma_bus),
                     4 => Self::perform_spu_channel4_dma(channel, dma_bus),
