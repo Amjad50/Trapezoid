@@ -47,17 +47,46 @@ impl MdecStatus {
     }
 }
 
+struct DecodeMacroBlockCommandState {
+    // block state
+    out: [i16; 64],
+    q_scale: u16,
+    k: usize,
+
+    // color state
+    cr_blk: [i16; 64],
+    cb_blk: [i16; 64],
+    color_decoding_state: u32,
+    color_out: [u32; 256],
+}
+
+impl Default for DecodeMacroBlockCommandState {
+    fn default() -> Self {
+        Self {
+            out: [0; 64],
+            q_scale: 0,
+            k: 0,
+
+            cr_blk: [0; 64],
+            cb_blk: [0; 64],
+            color_decoding_state: 0,
+            color_out: [0; 256],
+        }
+    }
+}
+
+impl DecodeMacroBlockCommandState {
+    fn reset_after_block(&mut self) {
+        self.out = [0; 64];
+        self.k = 0;
+        self.q_scale = 0;
+    }
+}
+
 enum MdecCommand {
-    DecodeMacroBlock {
-        data: Vec<u16>,
-    },
-    SetQuantTable {
-        color_and_luminance: bool,
-        data: [u8; 128],
-    },
-    SetScaleTable {
-        data: [u16; 64],
-    },
+    DecodeMacroBlock(DecodeMacroBlockCommandState),
+    SetQuantTable { color_and_luminance: bool },
+    SetScaleTable,
 }
 
 pub struct Mdec {
@@ -91,12 +120,12 @@ impl Default for Mdec {
 }
 
 impl Mdec {
-    fn y_to_mono(&self, src: &[i16; 64]) -> [u32; 64] {
+    fn y_to_mono(src: &[i16; 64], signed: bool) -> [u32; 64] {
         let mut out = [0; 64];
         for i in 0..64 {
             let mut y = extend_sign::<10>(src[i] as u16);
             y = y.clamp(-128, 127);
-            if !self.status.intersects(MdecStatus::DATA_SIGNED) {
+            if !signed {
                 y += 128;
             }
             out[i] = (y & 0xFF) as u32;
@@ -105,12 +134,12 @@ impl Mdec {
     }
 
     fn yuv_to_rgb(
-        &self,
         cr_blk: &[i16; 64],
         cb_blk: &[i16; 64],
         y_blk: &[i16; 64],
         xx: usize,
         yy: usize,
+        signed: bool,
         out: &mut [u32; 256],
     ) {
         for y in 0..8 {
@@ -128,19 +157,19 @@ impl Mdec {
                 let mut g = (y_data + g).clamp(-128, 127);
                 let mut b = (y_data + b).clamp(-128, 127);
 
-                if !self.status.intersects(MdecStatus::DATA_SIGNED) {
+                if !signed {
                     r += 128;
                     g += 128;
                     b += 128;
                 }
 
                 out[(x + xx) + ((y + yy) * 16)] =
-                    (r as u16 as u32) | ((g as u16 as u32) << 8) | ((b as u16 as u32) << 16);
+                    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
             }
         }
     }
 
-    fn real_idct_core(&self, inp_out: &mut [i16; 64]) {
+    fn real_idct_core(inp_out: &mut [i16; 64], scaletable: &[u16; 64]) {
         let mut tmp = [0; 64];
 
         // pass 1
@@ -148,7 +177,7 @@ impl Mdec {
             for y in 0..8 {
                 let mut sum = 0;
                 for z in 0..8 {
-                    sum += inp_out[x + z * 8] as i64 * (self.scaletable[y + z * 8] as i16) as i64;
+                    sum += inp_out[x + z * 8] as i64 * (scaletable[y + z * 8] as i16) as i64;
                 }
                 tmp[x + y * 8] = sum;
             }
@@ -159,7 +188,7 @@ impl Mdec {
             for y in 0..8 {
                 let mut sum = 0;
                 for z in 0..8 {
-                    sum += tmp[y * 8 + z] * (self.scaletable[x + z * 8] as i16) as i64;
+                    sum += tmp[y * 8 + z] * (scaletable[x + z * 8] as i16) as i64;
                 }
                 let t = extend_sign::<9>(((sum >> 32) + ((sum >> 31) & 1)) as u16);
                 let t = t.clamp(-128, 127);
@@ -168,102 +197,228 @@ impl Mdec {
         }
     }
 
-    // return the decoded data and the next index to start `src` from next
-    fn rl_decode_block(&self, src: &[u16], qt: &[u8; 64]) -> ([i16; 64], usize) {
-        let mut out = [0; 64];
+    // performs `rl_decode_block` but incremently as input come into the MDEC
+    // component, returns `true` when its done
+    fn rl_decode_block_input(
+        new_input: u16,
+        qt: &[u8; 64],
+        state: &mut DecodeMacroBlockCommandState,
+    ) -> bool {
+        if state.k == 0 {
+            if new_input == 0xFE00 {
+                false
+            } else {
+                let n = new_input;
 
-        let mut i = 0;
+                state.k = 0;
+                state.q_scale = (n >> 10) & 0x3F;
 
-        loop {
-            let n = src[i];
-            if n != 0xFE00 {
-                break;
+                let mut val = extend_sign::<10>(n & 0x3FF);
+                if state.q_scale == 0 {
+                    val *= 2;
+                } else {
+                    val *= qt[0] as i32;
+                };
+
+                val = val.clamp(-0x400, 0x3FF);
+                let index = if state.q_scale == 0 {
+                    state.k
+                } else {
+                    ZAGZIG[state.k]
+                };
+                state.out[index] = val as i16;
+
+                state.k += 1;
+
+                false
             }
-            i += 1;
+        } else {
+            let n = new_input;
+
+            state.k += ((n >> 10) & 0x3F) as usize;
+            if state.k < 64 {
+                let mut val =
+                    (extend_sign::<10>(n & 0x3FF) * qt[state.k] as i32 * state.q_scale as i32) >> 3;
+
+                if state.q_scale == 0 {
+                    val = extend_sign::<10>(n & 0x3FF) * 2;
+                }
+                val = val.clamp(-0x400, 0x3FF);
+                let index = if state.q_scale == 0 {
+                    state.k
+                } else {
+                    ZAGZIG[state.k]
+                };
+                state.out[index] = val as i16;
+
+                state.k += 1;
+            }
+
+            if state.k >= 64 {
+                true
+            } else {
+                false
+            }
         }
-
-        let mut n = src[i];
-        i += 1;
-
-        let mut k = 0;
-        let q_scale = (n >> 10) & 0x3F;
-        let mut val = extend_sign::<10>(n & 0x3FF) * qt[k] as i32;
-
-        loop {
-            if q_scale == 0 {
-                val = extend_sign::<10>(n & 0x3FF) * 2;
-            }
-            val = val.clamp(-0x400, 0x3FF);
-            let index = if q_scale == 0 { k } else { ZAGZIG[k] };
-            out[index] = val as i16;
-
-            n = src[i];
-            i += 1;
-
-            k += ((n >> 10) & 0x3F) as usize + 1;
-            if k > 63 {
-                break;
-            }
-
-            val = (extend_sign::<10>(n & 0x3FF) * qt[k] as i32 * q_scale as i32 + 4) / 8;
-        }
-
-        self.real_idct_core(&mut out);
-        (out, i)
     }
 
-    fn exec_current_cmd(&mut self) {
-        match self.current_cmd.take() {
-            Some(MdecCommand::DecodeMacroBlock { data }) => match self.status.output_depth() {
-                0 | 1 => {
-                    let (out, _i) = self.rl_decode_block(&data, &self.iq_y);
-                    let out = self.y_to_mono(&out);
-                    self.status.set_current_block(4); // y
-                    self.push_to_out_fifo(&out);
+    fn handle_current_cmd(&mut self, input: u32) {
+        if let Some(current_cmd) = &mut self.current_cmd {
+            // the purpose of these variables is to own the data,
+            // since we need `&mut self` to call `push_to_out_fifo`, and we
+            // can't get it while borrowing `current_cmd`
+            //
+            // set to the idct output for mono decoding
+            let mut mono_block_input_done = None;
+            // set to the idct output for color decoding
+            let mut color_block_input_done = None;
+            match current_cmd {
+                MdecCommand::DecodeMacroBlock(state) => {
+                    match self.status.output_depth() {
+                        0 | 1 => {
+                            let inp = [input as u16, (input >> 16) as u16];
+                            for i in inp {
+                                let done = Self::rl_decode_block_input(i, &self.iq_y, state);
+                                if done {
+                                    Self::real_idct_core(&mut state.out, &self.scaletable);
+                                    let out = Self::y_to_mono(
+                                        &state.out,
+                                        self.status.intersects(MdecStatus::DATA_SIGNED),
+                                    );
+                                    mono_block_input_done = Some(out);
+                                    state.reset_after_block();
+                                }
+                            }
+                        }
+                        2 | 3 => {
+                            let inp = [input as u16, (input >> 16) as u16];
+
+                            for i in inp {
+                                let done = Self::rl_decode_block_input(i, &self.iq_y, state);
+                                if done {
+                                    Self::real_idct_core(&mut state.out, &self.scaletable);
+                                    match state.color_decoding_state {
+                                        0 => {
+                                            // cr_blk
+                                            state.cr_blk = state.out;
+                                            state.color_decoding_state = 1;
+                                            self.status.set_current_block(5); // Cb
+                                        }
+                                        1 => {
+                                            // cb_blk
+                                            state.cb_blk = state.out;
+                                            state.color_decoding_state = 2;
+                                            self.status.set_current_block(0); // Y1
+                                        }
+                                        2 => {
+                                            // y1
+                                            state.color_decoding_state = 3;
+                                            Self::yuv_to_rgb(
+                                                &state.cr_blk,
+                                                &state.cb_blk,
+                                                &state.out,
+                                                0,
+                                                0,
+                                                self.status.intersects(MdecStatus::DATA_SIGNED),
+                                                &mut state.color_out,
+                                            );
+                                            self.status.set_current_block(1); // Y2
+                                        }
+                                        3 => {
+                                            // y2
+                                            state.color_decoding_state = 4;
+                                            Self::yuv_to_rgb(
+                                                &state.cr_blk,
+                                                &state.cb_blk,
+                                                &state.out,
+                                                0,
+                                                0,
+                                                self.status.intersects(MdecStatus::DATA_SIGNED),
+                                                &mut state.color_out,
+                                            );
+                                            self.status.set_current_block(2); // Y3
+                                        }
+                                        4 => {
+                                            // y3
+                                            state.color_decoding_state = 5;
+                                            Self::yuv_to_rgb(
+                                                &state.cr_blk,
+                                                &state.cb_blk,
+                                                &state.out,
+                                                0,
+                                                0,
+                                                self.status.intersects(MdecStatus::DATA_SIGNED),
+                                                &mut state.color_out,
+                                            );
+                                            self.status.set_current_block(3); // Y4
+                                        }
+                                        5 => {
+                                            // y4
+                                            state.color_decoding_state = 0;
+                                            Self::yuv_to_rgb(
+                                                &state.cr_blk,
+                                                &state.cb_blk,
+                                                &state.out,
+                                                0,
+                                                0,
+                                                self.status.intersects(MdecStatus::DATA_SIGNED),
+                                                &mut state.color_out,
+                                            );
+                                            color_block_input_done = Some(std::mem::replace(
+                                                &mut state.color_out,
+                                                [0; 256],
+                                            ));
+                                        }
+                                        _ => unreachable!(),
+                                    }
+                                    state.reset_after_block();
+                                }
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
                 }
-                2 | 3 => {
-                    let mut out = [0u32; 256];
-
-                    let mut offset = 0;
-
-                    let (cr_blk, i) = self.rl_decode_block(&data[offset..], &self.iq_uv);
-                    offset += i;
-                    let (cb_blk, i) = self.rl_decode_block(&data[offset..], &self.iq_uv);
-                    offset += i;
-
-                    let (y1, i) = self.rl_decode_block(&data[offset..], &self.iq_y);
-                    offset += i;
-                    self.yuv_to_rgb(&cr_blk, &cb_blk, &y1, 0, 0, &mut out);
-
-                    let (y2, i) = self.rl_decode_block(&data[offset..], &self.iq_y);
-                    offset += i;
-                    self.yuv_to_rgb(&cr_blk, &cb_blk, &y2, 0, 8, &mut out);
-
-                    let (y3, i) = self.rl_decode_block(&data[offset..], &self.iq_y);
-                    offset += i;
-                    self.yuv_to_rgb(&cr_blk, &cb_blk, &y3, 8, 0, &mut out);
-
-                    let (y4, _i) = self.rl_decode_block(&data[offset..], &self.iq_y);
-                    //offset += i;
-                    self.yuv_to_rgb(&cr_blk, &cb_blk, &y4, 8, 8, &mut out);
-
-                    self.push_to_out_fifo(&out);
+                MdecCommand::SetQuantTable {
+                    color_and_luminance,
+                } => {
+                    if self.params_ptr < 64 / 4 {
+                        let start_i = self.params_ptr * 4;
+                        LittleEndian::write_u32(&mut self.iq_y[start_i..start_i + 4], input);
+                    } else {
+                        assert!(*color_and_luminance);
+                        let start_i = (self.params_ptr - (64 / 4)) * 4;
+                        LittleEndian::write_u32(&mut self.iq_uv[start_i..start_i + 4], input);
+                    }
                 }
-                _ => unreachable!(),
-            },
-            Some(MdecCommand::SetQuantTable {
-                color_and_luminance,
-                data,
-            }) => {
-                self.iq_y.copy_from_slice(&data[0..64]);
-                if color_and_luminance {
-                    self.iq_uv.copy_from_slice(&data[64..128]);
+                MdecCommand::SetScaleTable => {
+                    let start_i = self.params_ptr * 2;
+                    self.scaletable[start_i] = input as u16;
+                    self.scaletable[start_i + 1] = (input >> 16) as u16;
                 }
             }
-            Some(MdecCommand::SetScaleTable { data }) => {
-                self.scaletable = data;
+            self.remaining_params -= 1;
+            self.params_ptr += 1;
+
+            if let Some(out_block) = mono_block_input_done {
+                match self.status.output_depth() {
+                    0 | 1 => {
+                        self.push_to_out_fifo(&out_block);
+                    }
+                    _ => unreachable!(),
+                }
             }
-            None => {}
+            if let Some(out_block) = color_block_input_done {
+                match self.status.output_depth() {
+                    2 | 3 => {
+                        self.push_to_out_fifo(&out_block);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            if self.remaining_params == 0 {
+                self.status.remove(MdecStatus::COMMAND_BUSY);
+                self.current_cmd = None;
+            }
         }
     }
 }
@@ -273,7 +428,7 @@ impl Mdec {
         self.status.remove(MdecStatus::DATA_OUT_FIFO_EMPTY);
         match self.status.output_depth() {
             0 => {
-                for d in data[..64].chunks(8) {
+                for d in data.chunks(8) {
                     self.data_out_fifo.push_back(u32::from_le_bytes([
                         (d[0] as u8 >> 4) | (d[1] as u8 & 0xF0),
                         (d[2] as u8 >> 4) | (d[3] as u8 & 0xF0),
@@ -283,7 +438,7 @@ impl Mdec {
                 }
             }
             1 => {
-                for d in data[..64].chunks(4) {
+                for d in data.chunks(4) {
                     self.data_out_fifo.push_back(u32::from_le_bytes([
                         d[0] as u8, d[1] as u8, d[2] as u8, d[3] as u8,
                     ]));
@@ -292,7 +447,7 @@ impl Mdec {
             2 => todo!("depth 2"),
             3 => {
                 let bit_15 = self.status.intersects(MdecStatus::DATA_OUTPUT_BIT15_SET) as u16;
-                for d in data[..256].chunks(2) {
+                for d in data.chunks(2) {
                     let [r, g, b, _] = d[0].to_le_bytes();
                     let r = r >> 3;
                     let g = g >> 3;
@@ -334,31 +489,11 @@ impl Mdec {
         self.status.bits() | self.remaining_params.wrapping_sub(1) as u32
     }
 
+    // handles commands params and execution
     fn write_command_params(&mut self, input: u32) {
         // receiveing params
-        if let Some(current_cmd) = &mut self.current_cmd {
-            match current_cmd {
-                MdecCommand::DecodeMacroBlock { data } => {
-                    data.push(input as u16);
-                    data.push((input >> 16) as u16);
-                }
-                MdecCommand::SetQuantTable { data, .. } => {
-                    let start_i = self.params_ptr * 4;
-                    LittleEndian::write_u32(&mut data[start_i..start_i + 4], input);
-                }
-                MdecCommand::SetScaleTable { data } => {
-                    let start_i = self.params_ptr * 2;
-                    data[start_i] = input as u16;
-                    data[start_i + 1] = (input >> 16) as u16;
-                }
-            }
-            self.remaining_params -= 1;
-            self.params_ptr += 1;
-
-            if self.remaining_params == 0 {
-                self.status.remove(MdecStatus::COMMAND_BUSY);
-                self.exec_current_cmd();
-            }
+        if self.current_cmd.is_some() {
+            self.handle_current_cmd(input);
         } else {
             // new command
             let cmd = input >> 29;
@@ -374,7 +509,8 @@ impl Mdec {
                 // Decode macroblocks
                 1 => {
                     self.remaining_params = input as u16;
-                    self.current_cmd = Some(MdecCommand::DecodeMacroBlock { data: Vec::new() })
+                    self.status.set_current_block(4); // Cr or Y
+                    self.current_cmd = Some(MdecCommand::DecodeMacroBlock(Default::default()))
                 }
                 // Set quant tables
                 2 => {
@@ -392,13 +528,12 @@ impl Mdec {
                     };
                     self.current_cmd = Some(MdecCommand::SetQuantTable {
                         color_and_luminance,
-                        data: [0; 128],
                     });
                 }
                 // Set scale tables
                 3 => {
                     self.remaining_params = 64 / 2;
-                    self.current_cmd = Some(MdecCommand::SetScaleTable { data: [0; 64] });
+                    self.current_cmd = Some(MdecCommand::SetScaleTable);
                 }
                 // Invalid
                 _ => {
