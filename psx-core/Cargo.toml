@@ -11,7 +11,8 @@ byteorder = "1.4.2"
 log = "0.4.14"
 bitflags = "1.2.1"
 
-vulkano = "0.27"
-vulkano-shaders = "0.27"
+vulkano = "0.29"
+vulkano-shaders = "0.29"
+bytemuck = { version = "1.9.1", features = ["derive"] }
 
 crossbeam = "0.8.1"

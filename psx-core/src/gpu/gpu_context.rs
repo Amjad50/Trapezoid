@@ -1,3 +1,4 @@
+use bytemuck::{Pod, Zeroable};
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::Sender;
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, CpuBufferPool};
@@ -5,10 +6,10 @@ use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
     SubpassContents,
 };
-use vulkano::descriptor_set::PersistentDescriptorSet;
+use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::device::{Device, Queue};
 use vulkano::format::{ClearValue, Format};
-use vulkano::image::view::{ComponentMapping, ComponentSwizzle, ImageView};
+use vulkano::image::view::{ImageView, ImageViewCreateInfo};
 use vulkano::image::{ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage};
 use vulkano::pipeline::graphics::color_blend::{
     AttachmentBlend, BlendFactor, BlendOp, ColorBlendAttachmentState, ColorBlendState,
@@ -18,8 +19,11 @@ use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveT
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint, StateMode};
-use vulkano::render_pass::{Framebuffer, Subpass};
-use vulkano::sampler::{Filter, MipmapMode, Sampler, SamplerAddressMode};
+use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, Subpass};
+use vulkano::sampler::{
+    ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
+    SamplerMipmapMode,
+};
 use vulkano::sync::{self, GpuFuture};
 
 use super::front_blit::FrontBlit;
@@ -62,7 +66,8 @@ pub fn vertex_position_from_u32(position: u32) -> [f32; 2] {
     [x as f32, y as f32]
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
+#[repr(C)]
 pub struct DrawingVertex {
     position: [f32; 2],
     color: [f32; 3],
@@ -124,7 +129,8 @@ impl DrawingVertex {
 ///
 /// TODO: some old GPUs might not support more than 8 vertex data, check on that.
 ///       We can group multiple data together into a single u32.
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
+#[repr(C)]
 struct DrawingVertexFull {
     position: [f32; 2],
     color: [f32; 3],
@@ -404,50 +410,51 @@ impl GpuContext {
 
         let sampler = Sampler::new(
             device.clone(),
-            Filter::Nearest,
-            Filter::Nearest,
-            MipmapMode::Nearest,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
+            SamplerCreateInfo {
+                mag_filter: Filter::Nearest,
+                min_filter: Filter::Nearest,
+                mipmap_mode: SamplerMipmapMode::Nearest,
+                address_mode: [SamplerAddressMode::Repeat; 3],
+                ..Default::default()
+            },
         )
         .unwrap();
 
         // even though, we are using the layout from the `polygon_pipeline`
         // it still works without issues with `line_pipeline` since its the
         // same layout taken from the same shader.
-        let layout = polygon_pipelines[0]
-            .layout()
-            .descriptor_set_layouts()
-            .get(0)
-            .unwrap();
-        let mut set_builder = PersistentDescriptorSet::start(layout.clone());
+        let layout = polygon_pipelines[0].layout().set_layouts().get(0).unwrap();
 
-        set_builder
-            .add_sampled_image(
-                ImageView::start(render_image_back_image.clone())
-                    .with_component_mapping(ComponentMapping {
-                        r: ComponentSwizzle::Blue,
-                        b: ComponentSwizzle::Red,
-                        ..Default::default()
-                    })
-                    .build()
-                    .unwrap(),
+        let render_image_back_image_view = ImageView::new(
+            render_image_back_image.clone(),
+            ImageViewCreateInfo {
+                component_mapping: ComponentMapping {
+                    r: ComponentSwizzle::Blue,
+                    b: ComponentSwizzle::Red,
+                    ..Default::default()
+                },
+                ..ImageViewCreateInfo::from_image(&render_image_back_image)
+            },
+        )
+        .unwrap();
+
+        let descriptor_set = PersistentDescriptorSet::new(
+            layout.clone(),
+            [WriteDescriptorSet::image_view_sampler(
+                0,
+                render_image_back_image_view,
                 sampler,
-            )
-            .unwrap();
-
-        let descriptor_set = set_builder.build().unwrap();
-
-        let render_image_framebuffer = Framebuffer::start(render_pass)
-            .add(ImageView::new(render_image.clone()).unwrap())
-            .unwrap()
-            .build()
-            .unwrap();
+            )],
+        )
+        .unwrap();
+        let render_image_framebuffer = Framebuffer::new(
+            render_pass,
+            FramebufferCreateInfo {
+                attachments: vec![ImageView::new_default(render_image.clone()).unwrap()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let vertex_buffer_pool = CpuBufferPool::vertex_buffer(device.clone());
 
