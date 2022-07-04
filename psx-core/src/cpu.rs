@@ -36,6 +36,8 @@ pub struct Cpu {
     jump_dest_next: Option<u32>,
 
     elapsed_cycles: u32,
+
+    instruction_trace: bool,
 }
 
 impl Cpu {
@@ -48,7 +50,13 @@ impl Cpu {
             jump_dest_next: None,
 
             elapsed_cycles: 0,
+
+            instruction_trace: false,
         }
+    }
+
+    pub fn toggle_instruction_trace(&mut self) {
+        self.instruction_trace = !self.instruction_trace;
     }
 
     pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> u32 {
@@ -60,6 +68,9 @@ impl Cpu {
                 let instruction = Instruction::from_u32(instruction);
 
                 log::trace!("{:08X}: {}", self.regs.pc, instruction);
+                if self.instruction_trace {
+                    println!("{:08X}: {}", self.regs.pc, instruction);
+                }
                 self.regs.pc += 4;
                 if let Some(jump_dest) = self.jump_dest_next.take() {
                     log::trace!("pc jump {:08X}", jump_dest);

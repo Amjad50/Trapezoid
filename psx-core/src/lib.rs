@@ -87,4 +87,8 @@ impl Psx {
             .gpu_mut()
             .sync_gpu_and_blit_to_front(dest_image, full_vram, in_future);
     }
+
+    pub fn toggle_instruction_trace(&mut self) {
+        self.cpu.toggle_instruction_trace();
+    }
 }

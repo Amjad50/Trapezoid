@@ -334,6 +334,11 @@ fn main() {
                     };
                     if let Some(k) = digital_key {
                         psx.change_controller_key_state(k, pressed);
+                    } else if pressed {
+                        match input.virtual_keycode {
+                            Some(VirtualKeyCode::Slash) => psx.toggle_instruction_trace(),
+                            _ => {}
+                        }
                     }
                 }
                 _ => {}
