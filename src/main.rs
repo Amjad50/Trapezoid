@@ -6,15 +6,15 @@ use clap::Parser;
 use vulkano::{
     device::{
         physical::{PhysicalDevice, PhysicalDeviceType},
-        Device, DeviceExtensions, Features, Queue,
+        Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo,
     },
     image::{ImageUsage, SwapchainImage},
-    instance::{Instance, InstanceExtensions},
+    instance::{Instance, InstanceCreateInfo, InstanceExtensions},
     swapchain::{
-        self, AcquireError, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreationError,
+        self, AcquireError, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreateInfo,
+        SwapchainCreationError,
     },
     sync::{self, GpuFuture},
-    Version,
 };
 use vulkano_win::VkSurfaceBuild;
 use winit::{
@@ -44,7 +44,11 @@ impl VkDisplay {
     fn windowed(event_loop: &EventLoop<()>, full_vram_display: bool) -> Self {
         let required_extensions = vulkano_win::required_extensions();
 
-        let instance = Instance::new(None, Version::V1_1, &required_extensions, None).unwrap();
+        let instance = Instance::new(InstanceCreateInfo {
+            enabled_extensions: required_extensions,
+            ..Default::default()
+        })
+        .unwrap();
 
         let surface = WindowBuilder::new()
             .build_vk_surface(event_loop, instance.clone())
@@ -59,7 +63,9 @@ impl VkDisplay {
             .filter(|&p| p.supported_extensions().is_superset_of(&device_extensions))
             .filter_map(|p| {
                 p.queue_families()
-                    .find(|&q| q.supports_graphics() && surface.is_supported(q).unwrap_or(false))
+                    .find(|&q| {
+                        q.supports_graphics() && q.supports_surface(&surface).unwrap_or(false)
+                    })
                     .map(|q| (p, q))
             })
             .min_by_key(|(p, _)| match p.properties().device_type {
@@ -79,36 +85,49 @@ impl VkDisplay {
 
         let (device, mut queues) = Device::new(
             physical_device,
-            &Features::none(),
-            &physical_device
-                .required_extensions()
-                .union(&device_extensions),
-            [(queue_family, 0.5)].iter().cloned(),
+            DeviceCreateInfo {
+                enabled_extensions: physical_device
+                    .required_extensions()
+                    .union(&device_extensions),
+                queue_create_infos: vec![QueueCreateInfo::family(queue_family)],
+                ..Default::default()
+            },
         )
         .unwrap();
 
         let queue = queues.next().unwrap();
 
         let (swapchain, images) = {
-            let caps = surface.capabilities(physical_device).unwrap();
+            let caps = physical_device
+                .surface_capabilities(&surface, Default::default())
+                .unwrap();
 
-            let format = caps.supported_formats[0].0;
+            let format = Some(
+                physical_device
+                    .surface_formats(&surface, Default::default())
+                    .unwrap()[0]
+                    .0,
+            );
 
             let dimensions: [u32; 2] = surface.window().inner_size().into();
 
-            Swapchain::start(device.clone(), surface.clone())
-                .num_images(caps.min_image_count)
-                .format(format)
-                .dimensions(dimensions)
-                .usage(ImageUsage {
-                    transfer_destination: true,
-                    ..ImageUsage::none()
-                })
-                .sharing_mode(&queue)
-                .composite_alpha(CompositeAlpha::Opaque)
-                .present_mode(PresentMode::Immediate)
-                .build()
-                .unwrap()
+            Swapchain::new(
+                device.clone(),
+                surface.clone(),
+                SwapchainCreateInfo {
+                    min_image_count: caps.min_image_count,
+                    image_format: format,
+                    image_extent: dimensions,
+                    image_usage: ImageUsage {
+                        transfer_destination: true,
+                        ..ImageUsage::none()
+                    },
+                    composite_alpha: CompositeAlpha::Opaque,
+                    present_mode: PresentMode::Immediate,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
         };
 
         Self {
@@ -125,8 +144,11 @@ impl VkDisplay {
     }
 
     fn headless() -> Self {
-        let instance =
-            Instance::new(None, Version::V1_1, &InstanceExtensions::none(), None).unwrap();
+        let instance = Instance::new(InstanceCreateInfo {
+            enabled_extensions: InstanceExtensions::none(),
+            ..Default::default()
+        })
+        .unwrap();
 
         let (physical_device, queue_family) = PhysicalDevice::enumerate(&instance)
             .filter_map(|p| {
@@ -151,9 +173,11 @@ impl VkDisplay {
 
         let (device, mut queues) = Device::new(
             physical_device,
-            &Features::none(),
-            physical_device.required_extensions(),
-            [(queue_family, 0.5)].iter().cloned(),
+            DeviceCreateInfo {
+                enabled_extensions: *physical_device.required_extensions(),
+                queue_create_infos: vec![QueueCreateInfo::family(queue_family)],
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -175,12 +199,14 @@ impl VkDisplay {
                 ..
             } => {
                 let dimensions: [u32; 2] = surface.window().inner_size().into();
-                let (new_swapchain, new_images) =
-                    match swapchain.recreate().dimensions(dimensions).build() {
-                        Ok(r) => r,
-                        Err(SwapchainCreationError::UnsupportedDimensions) => return,
-                        Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
-                    };
+                let (new_swapchain, new_images) = match swapchain.recreate(SwapchainCreateInfo {
+                    image_extent: dimensions,
+                    ..swapchain.create_info()
+                }) {
+                    Ok(r) => r,
+                    Err(SwapchainCreationError::ImageExtentNotSupported { .. }) => return,
+                    Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
+                };
 
                 *swapchain = new_swapchain;
                 *images = new_images;

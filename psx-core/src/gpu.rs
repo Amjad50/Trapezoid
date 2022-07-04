@@ -143,6 +143,7 @@ pub struct Gpu {
     // channel for front image coming from backend
     gpu_front_image_receiver: Receiver<Arc<StorageImage>>,
 
+    first_frame: bool,
     current_front_image: Option<Arc<StorageImage>>,
 
     // shared GPUSTAT
@@ -182,6 +183,7 @@ impl Gpu {
             gpu_backend_sender,
             gpu_front_image_receiver,
 
+            first_frame: true,
             current_front_image: None,
 
             gpu_stat,
@@ -278,14 +280,19 @@ impl Gpu {
         D: ImageAccess + 'static,
         IF: GpuFuture,
     {
+        // if we have a previous image, then we are not in the first frame,
+        // so there should be an image in the channel.
+        if !self.first_frame {
+            // `recv` is blocking, here we will wait for the GPU to finish all drawing.
+            // FIXME: Do not block. Find a way to keep the GPU synced with minimal performance loss.
+            self.current_front_image = Some(self.gpu_front_image_receiver.recv().unwrap());
+        }
+        self.first_frame = false;
+
+        // send command for next frame from now, so when we recv later, its mostly will be ready
         self.gpu_backend_sender
             .send(BackendCommand::BlitFront(full_vram))
             .unwrap();
-
-        // `recv` is blocking, here we will wait for the GPU to finish all drawing.
-        // FIXME: Do not block. Find a way to keep the GPU synced with minimal performance loss.
-        let img = self.gpu_front_image_receiver.recv().ok();
-        self.current_front_image = img.or(self.current_front_image.take());
 
         if let Some(img) = self.current_front_image.as_ref() {
             let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
@@ -332,11 +339,7 @@ impl Gpu {
                 .unwrap();
         } else {
             // we must flush the future even if we are not using it.
-            in_future
-                .then_signal_fence_and_flush()
-                .unwrap()
-                .wait(None)
-                .unwrap();
+            in_future.flush().unwrap();
         }
     }
 }

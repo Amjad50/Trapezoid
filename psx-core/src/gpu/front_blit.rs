@@ -1,16 +1,17 @@
 use std::sync::Arc;
 
+use bytemuck::{Pod, Zeroable};
 use vulkano::{
     buffer::{BufferUsage, ImmutableBuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferExecFuture, CommandBufferUsage,
         PrimaryAutoCommandBuffer, SubpassContents,
     },
-    descriptor_set::PersistentDescriptorSet,
+    descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
     device::{Device, Queue},
     format::{ClearValue, Format},
     image::{
-        view::{ComponentMapping, ComponentSwizzle, ImageView},
+        view::{ImageView, ImageViewCreateInfo},
         ImageAccess, StorageImage,
     },
     pipeline::{
@@ -21,8 +22,11 @@ use vulkano::{
         },
         GraphicsPipeline, Pipeline, PipelineBindPoint,
     },
-    render_pass::{Framebuffer, RenderPass, Subpass},
-    sampler::{Filter, MipmapMode, Sampler, SamplerAddressMode},
+    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
+    sampler::{
+        ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
+        SamplerMipmapMode,
+    },
     sync::{GpuFuture, NowFuture},
 };
 
@@ -69,7 +73,8 @@ void main() {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
 struct Vertex {
     position: [f32; 2],
 }
@@ -177,49 +182,48 @@ impl FrontBlit {
 
         let sampler = Sampler::new(
             self.device.clone(),
-            Filter::Nearest,
-            Filter::Nearest,
-            MipmapMode::Nearest,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            SamplerAddressMode::Repeat,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
+            SamplerCreateInfo {
+                mag_filter: Filter::Nearest,
+                min_filter: Filter::Nearest,
+                mipmap_mode: SamplerMipmapMode::Nearest,
+                address_mode: [SamplerAddressMode::Repeat; 3],
+                ..Default::default()
+            },
         )
         .unwrap();
 
-        let layout = self
-            .pipeline
-            .layout()
-            .descriptor_set_layouts()
-            .get(0)
-            .unwrap();
-        let mut set_builder = PersistentDescriptorSet::start(layout.clone());
+        let layout = self.pipeline.layout().set_layouts().get(0).unwrap();
 
-        let component_mapping = ComponentMapping {
-            r: ComponentSwizzle::Blue,
-            b: ComponentSwizzle::Red,
-            ..Default::default()
-        };
-        set_builder
-            .add_sampled_image(
-                ImageView::start(self.texture_image.clone())
-                    .with_component_mapping(component_mapping)
-                    .build()
-                    .unwrap(),
+        let texture_image_view = ImageView::new(
+            self.texture_image.clone(),
+            ImageViewCreateInfo {
+                component_mapping: ComponentMapping {
+                    r: ComponentSwizzle::Blue,
+                    b: ComponentSwizzle::Red,
+                    ..Default::default()
+                },
+                ..ImageViewCreateInfo::from_image(&self.texture_image)
+            },
+        )
+        .unwrap();
+
+        let set = PersistentDescriptorSet::new(
+            layout.clone(),
+            [WriteDescriptorSet::image_view_sampler(
+                0,
+                texture_image_view,
                 sampler,
-            )
-            .unwrap();
-
-        let set = set_builder.build().unwrap();
-
-        let framebuffer = Framebuffer::start(self.render_pass.clone())
-            .add(ImageView::new(dest_image).unwrap())
-            .unwrap()
-            .build()
-            .unwrap();
+            )],
+        )
+        .unwrap();
+        let framebuffer = Framebuffer::new(
+            self.render_pass.clone(),
+            FramebufferCreateInfo {
+                attachments: vec![ImageView::new_default(dest_image).unwrap()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let push_constants = vs::ty::PushConstantData { topleft, size };
 
