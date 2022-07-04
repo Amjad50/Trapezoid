@@ -1,4 +1,5 @@
 mod instruction;
+mod instruction_format;
 mod instructions_table;
 mod register;
 
@@ -58,7 +59,7 @@ impl Cpu {
             if let Some(instruction) = self.bus_read_u32(bus, self.regs.pc) {
                 let instruction = Instruction::from_u32(instruction);
 
-                log::trace!("{:08X}: {:02X?}", self.regs.pc, instruction);
+                log::trace!("{:08X}: {}", self.regs.pc, instruction);
                 self.regs.pc += 4;
                 if let Some(jump_dest) = self.jump_dest_next.take() {
                     log::trace!("pc jump {:08X}", jump_dest);
@@ -230,6 +231,9 @@ impl Cpu {
 
     fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: &Instruction, bus: &mut P) {
         match instruction.opcode {
+            Opcode::Nop => {
+                // nothing
+            }
             Opcode::Lb => {
                 self.execute_load(instruction, |s, computed_addr| {
                     Some(Self::sign_extend_8(s.bus_read_u8(bus, computed_addr)))

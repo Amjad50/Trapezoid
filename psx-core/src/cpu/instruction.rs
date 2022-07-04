@@ -6,6 +6,8 @@ pub enum Opcode {
     Special,
     Invalid,
 
+    Nop,
+
     // (u) means unsigned, (t) means overflow trap, (i) means immediate
     Lb,
     Lbu,
@@ -121,6 +123,22 @@ pub struct Instruction {
 
 impl Instruction {
     pub fn from_u32(instruction: u32) -> Self {
+        if instruction == 0 {
+            return Self {
+                opcode: Opcode::Nop,
+                imm5: 0,
+                rd_raw: 0,
+                rd: Register::from_byte(0),
+                rt_raw: 0,
+                rt: Register::from_byte(0),
+                rs_raw: 0,
+                rs: Register::from_byte(0),
+                imm16: 0,
+                imm25: 0,
+                imm26: 0,
+            };
+        }
+
         let primary_identifier = (instruction >> 26) as u8;
         let secondary_identifier = instruction as u8 & 0x3F;
         let imm5 = (instruction >> 6) as u8 & 0x1F;

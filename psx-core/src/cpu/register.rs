@@ -62,6 +62,11 @@ impl Register {
     pub fn from_byte(idx: u8) -> Self {
         Register { idx: idx & 0x1F }
     }
+
+    #[inline]
+    pub fn idx(&self) -> u8 {
+        self.idx
+    }
 }
 
 impl From<Register> for RegisterType {
