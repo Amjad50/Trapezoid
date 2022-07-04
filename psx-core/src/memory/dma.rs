@@ -190,7 +190,8 @@ impl Dma {
             address += 4;
         }
 
-        let blocks = blocks - 1;
+        // NOTE: treat 0 as 1, and do not overflow
+        let blocks = blocks.saturating_sub(1);
 
         channel.block_control &= 0xFFFF;
         channel.block_control |= blocks << 16;
@@ -233,7 +234,8 @@ impl Dma {
             address += 4;
         }
 
-        let blocks = blocks - 1;
+        // NOTE: treat 0 as 1, and do not overflow
+        let blocks = blocks.saturating_sub(1);
 
         channel.block_control &= 0xFFFF;
         channel.block_control |= blocks << 16;
