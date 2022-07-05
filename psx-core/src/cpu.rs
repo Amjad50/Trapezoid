@@ -3,9 +3,14 @@ mod instruction_format;
 mod instructions_table;
 mod register;
 
+use std::collections::HashSet;
+use std::io::Write;
+use std::thread;
+
 use crate::coprocessor::{Gte, SystemControlCoprocessor};
 use crate::memory::BusLine;
 
+use crossbeam::channel::Receiver;
 use instruction::{Instruction, Opcode};
 use register::Registers;
 
@@ -38,10 +43,29 @@ pub struct Cpu {
     elapsed_cycles: u32,
 
     instruction_trace: bool,
+    paused: bool,
+    breakpoints: HashSet<u32>,
+    // currently on top of breakpoint, so ignore it and continue when unpaused
+    // so that we don't get stuck in one instruction.
+    in_breakpoint: bool,
+    stdin_recv: Receiver<String>,
+    should_print_prompt: bool,
 }
 
 impl Cpu {
     pub fn new() -> Self {
+        let (tx, rx) = crossbeam::channel::bounded(5);
+
+        // thread to collect stdin and not block the Cpu
+        thread::spawn(move || {
+            let stdin = std::io::stdin();
+            loop {
+                let mut line = String::new();
+                stdin.read_line(&mut line).unwrap();
+                tx.send(line).unwrap();
+            }
+        });
+
         Self {
             // reset value
             regs: Registers::new(),
@@ -52,24 +76,140 @@ impl Cpu {
             elapsed_cycles: 0,
 
             instruction_trace: false,
+            paused: false,
+            breakpoints: HashSet::new(),
+            in_breakpoint: false,
+            stdin_recv: rx,
+            should_print_prompt: false,
         }
     }
 
-    pub fn toggle_instruction_trace(&mut self) {
-        self.instruction_trace = !self.instruction_trace;
+    pub fn set_instruction_trace(&mut self, trace: bool) {
+        self.instruction_trace = trace;
+        println!("Instruction trace: {}", self.instruction_trace);
+    }
+
+    pub fn set_pause(&mut self, pause: bool) {
+        self.paused = pause;
+        self.should_print_prompt = pause;
+    }
+
+    pub fn add_breakpoint(&mut self, address: u32) {
+        self.breakpoints.insert(address);
+        println!("Breakpoint added: 0x{:08X}", address);
+    }
+
+    pub fn remove_breakpoint(&mut self, address: u32) {
+        self.breakpoints.remove(&address);
+        println!("Breakpoint removed: 0x{:08X}", address);
+    }
+
+    pub fn print_cpu_registers(&self) {
+        self.regs.debug_print();
     }
 
     pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> u32 {
+        if self.paused {
+            if self.should_print_prompt {
+                print!("CPU> ");
+                std::io::stdout().flush().unwrap();
+                self.should_print_prompt = false;
+            }
+
+            if let Ok(cmd) = self.stdin_recv.try_recv() {
+                self.should_print_prompt = true;
+                let mut tokens = cmd.trim().split_whitespace();
+                match tokens.next() {
+                    Some("h") => {
+                        println!("h - help");
+                        println!("r - print registers");
+                        println!("c - continue");
+                        println!("tt - enable trace");
+                        println!("tf - disbale trace");
+                        println!("b <addr> - set breakpoint");
+                        println!("rb <addr> - remove breakpoint");
+                        println!("lb - list breakpoints");
+                    }
+                    Some("r") => self.print_cpu_registers(),
+                    Some("c") => self.set_pause(false),
+                    Some("tt") => self.set_instruction_trace(true),
+                    Some("tf") => self.set_instruction_trace(false),
+                    Some("b") => {
+                        if let Some(a) = tokens.next() {
+                            match u32::from_str_radix(a.trim_start_matches("0x"), 16) {
+                                Ok(addr) => self.add_breakpoint(addr),
+                                Err(e) => println!("Invalid address: {}", e),
+                            }
+                        } else {
+                            println!("Usage: b <address>");
+                        }
+                    }
+                    Some("rb") => {
+                        if let Some(a) = tokens.next() {
+                            match u32::from_str_radix(a.trim_start_matches("0x"), 16) {
+                                Ok(addr) => self.remove_breakpoint(addr),
+                                Err(e) => println!("Invalid address: {}", e),
+                            }
+                        } else {
+                            println!("Usage: rb <address>");
+                        }
+                    }
+                    Some("lb") => {
+                        for bp in self.breakpoints.iter() {
+                            println!("Breakpoint: 0x{:08X}", bp);
+                        }
+                    }
+                    Some("") => {}
+                    Some(cmd) => println!("Unknown command: {}", cmd),
+                    _ => (),
+                }
+            }
+            return 0;
+        } else {
+            if !self.stdin_recv.is_empty() {
+                while self.stdin_recv.try_recv().is_ok() {}
+            }
+        }
+
         let pending_interrupts = bus.pending_interrupts();
         self.check_and_execute_interrupt(pending_interrupts);
 
         for _ in 0..clocks {
+            if !self.in_breakpoint
+                && !self.breakpoints.is_empty()
+                && self.breakpoints.contains(&self.regs.pc)
+            {
+                self.set_pause(true);
+                println!("Breakpoint hit at {:08X}", self.regs.pc);
+                self.in_breakpoint = true;
+                break;
+            }
+            self.in_breakpoint = false;
+
             if let Some(instruction) = self.bus_read_u32(bus, self.regs.pc) {
                 let instruction = Instruction::from_u32(instruction);
 
-                log::trace!("{:08X}: {}", self.regs.pc, instruction);
+                log::trace!(
+                    "{:08X}: {}{}",
+                    self.regs.pc,
+                    if self.jump_dest_next.is_some() {
+                        "_"
+                    } else {
+                        ""
+                    },
+                    instruction
+                );
                 if self.instruction_trace {
-                    println!("{:08X}: {}", self.regs.pc, instruction);
+                    println!(
+                        "{:08X}: {}{}",
+                        self.regs.pc,
+                        if self.jump_dest_next.is_some() {
+                            "_"
+                        } else {
+                            ""
+                        },
+                        instruction
+                    );
                 }
                 self.regs.pc += 4;
                 if let Some(jump_dest) = self.jump_dest_next.take() {

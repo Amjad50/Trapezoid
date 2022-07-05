@@ -130,3 +130,27 @@ impl Registers {
         self.general_regs[31] = data;
     }
 }
+
+impl Registers {
+    pub fn debug_print(&self) {
+        println!("Registers:");
+
+        println!(
+            "pc: {:08X}\t{:>4}: {:08X}",
+            self.pc,
+            Register::from_byte(1),
+            self.general_regs[1]
+        );
+        println!("hi: {:08X}\tlo: {:08X}", self.hi, self.lo);
+
+        for i in 2..32 / 2 {
+            println!(
+                "{:>4}: {:08X}\t{:>4}: {:08X}",
+                Register::from_byte(i),
+                self.general_regs[i as usize],
+                Register::from_byte(i + 32 / 2),
+                self.general_regs[(i + 32 / 2) as usize]
+            );
+        }
+    }
+}

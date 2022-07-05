@@ -61,6 +61,9 @@ impl Psx {
             // this number doesn't mean anything
             // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
             let cpu_cycles = self.cpu.clock(&mut self.bus, 32);
+            if cpu_cycles == 0 {
+                return true;
+            }
             // the DMA is running of the CPU
             self.excess_cpu_cycles = cpu_cycles + self.bus.clock_dma();
         }
@@ -88,7 +91,8 @@ impl Psx {
             .sync_gpu_and_blit_to_front(dest_image, full_vram, in_future);
     }
 
-    pub fn toggle_instruction_trace(&mut self) {
-        self.cpu.toggle_instruction_trace();
+    pub fn pause_cpu(&mut self) {
+        self.cpu.set_pause(true);
+        self.cpu.print_cpu_registers();
     }
 }

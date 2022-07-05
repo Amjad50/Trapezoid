@@ -336,7 +336,8 @@ fn main() {
                         psx.change_controller_key_state(k, pressed);
                     } else if pressed {
                         match input.virtual_keycode {
-                            Some(VirtualKeyCode::Slash) => psx.toggle_instruction_trace(),
+                            // Pause CPU and enable debug
+                            Some(VirtualKeyCode::Slash) => psx.pause_cpu(),
                             _ => {}
                         }
                     }
@@ -350,6 +351,9 @@ fn main() {
         for _ in 0..100 {
             if psx.clock() {
                 display.render_frame(&mut psx);
+                // break, so that when we are in debug mode, it will not hang
+                // since it will return `true` always in that case.
+                break;
             }
         }
     });
