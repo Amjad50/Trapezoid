@@ -48,6 +48,8 @@ pub struct Cpu {
     // currently on top of breakpoint, so ignore it and continue when unpaused
     // so that we don't get stuck in one instruction.
     in_breakpoint: bool,
+    // allow to execute one instruction only
+    step: bool,
     stdin_recv: Receiver<String>,
     should_print_prompt: bool,
 }
@@ -79,6 +81,7 @@ impl Cpu {
             paused: false,
             breakpoints: HashSet::new(),
             in_breakpoint: false,
+            step: false,
             stdin_recv: rx,
             should_print_prompt: false,
         }
@@ -124,6 +127,7 @@ impl Cpu {
                         println!("h - help");
                         println!("r - print registers");
                         println!("c - continue");
+                        println!("s - step");
                         println!("tt - enable trace");
                         println!("tf - disbale trace");
                         println!("b <addr> - set breakpoint");
@@ -132,6 +136,10 @@ impl Cpu {
                     }
                     Some("r") => self.print_cpu_registers(),
                     Some("c") => self.set_pause(false),
+                    Some("s") => {
+                        self.set_pause(false);
+                        self.step = true;
+                    }
                     Some("tt") => self.set_instruction_trace(true),
                     Some("tf") => self.set_instruction_trace(false),
                     Some("b") => {
@@ -234,6 +242,11 @@ impl Cpu {
                 // TODO: maybe we should optimize this a bit more, so that we
                 //       won't need to check on every CPU instruction
                 if bus.should_run_dma() {
+                    break;
+                }
+
+                if self.step {
+                    self.set_pause(true);
                     break;
                 }
             }
