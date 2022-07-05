@@ -44,7 +44,8 @@ pub struct Cpu {
 
     instruction_trace: bool,
     paused: bool,
-    breakpoints: HashSet<u32>,
+    instruction_breakpoints: HashSet<u32>,
+    write_breakpoints: HashSet<u32>,
     // currently on top of breakpoint, so ignore it and continue when unpaused
     // so that we don't get stuck in one instruction.
     in_breakpoint: bool,
@@ -79,7 +80,8 @@ impl Cpu {
 
             instruction_trace: false,
             paused: false,
-            breakpoints: HashSet::new(),
+            instruction_breakpoints: HashSet::new(),
+            write_breakpoints: HashSet::new(),
             in_breakpoint: false,
             step: false,
             stdin_recv: rx,
@@ -98,13 +100,23 @@ impl Cpu {
     }
 
     pub fn add_breakpoint(&mut self, address: u32) {
-        self.breakpoints.insert(address);
+        self.instruction_breakpoints.insert(address);
         println!("Breakpoint added: 0x{:08X}", address);
     }
 
     pub fn remove_breakpoint(&mut self, address: u32) {
-        self.breakpoints.remove(&address);
+        self.instruction_breakpoints.remove(&address);
         println!("Breakpoint removed: 0x{:08X}", address);
+    }
+
+    pub fn add_write_breakpoint(&mut self, address: u32) {
+        self.write_breakpoints.insert(address);
+        println!("Write Breakpoint added: 0x{:08X}", address);
+    }
+
+    pub fn remove_write_breakpoint(&mut self, address: u32) {
+        self.write_breakpoints.remove(&address);
+        println!("Write Breakpoint removed: 0x{:08X}", address);
     }
 
     pub fn print_cpu_registers(&self) {
@@ -122,7 +134,12 @@ impl Cpu {
             if let Ok(cmd) = self.stdin_recv.try_recv() {
                 self.should_print_prompt = true;
                 let mut tokens = cmd.trim().split_whitespace();
-                match tokens.next() {
+                let cmd = tokens.next();
+                let addr = tokens
+                    .next()
+                    .map(|a| u32::from_str_radix(a.trim_start_matches("0x"), 16));
+
+                match cmd {
                     Some("h") => {
                         println!("h - help");
                         println!("r - print registers");
@@ -130,9 +147,13 @@ impl Cpu {
                         println!("s - step");
                         println!("tt - enable trace");
                         println!("tf - disbale trace");
+                        println!("stack [n] - print stack [n entries]");
                         println!("b <addr> - set breakpoint");
                         println!("rb <addr> - remove breakpoint");
+                        println!("wb <addr> - set write breakpoint");
+                        println!("wrb <addr> - remove write breakpoint");
                         println!("lb - list breakpoints");
+                        println!("m[32/16/8] <addr> - print content of memory (default u32)");
                     }
                     Some("r") => self.print_cpu_registers(),
                     Some("c") => self.set_pause(false),
@@ -142,9 +163,20 @@ impl Cpu {
                     }
                     Some("tt") => self.set_instruction_trace(true),
                     Some("tf") => self.set_instruction_trace(false),
+                    Some("stack") => {
+                        let n = match tokens.next() {
+                            Some(n) => n.parse::<u32>().unwrap(),
+                            None => 10,
+                        };
+                        let sp = self.regs.read_register(register::RegisterType::Sp.into());
+                        println!("Stack: SP=0x{:08X}", sp);
+                        for i in 0..n {
+                            println!("    {:08X}", bus.read_u32(sp + i * 4));
+                        }
+                    }
                     Some("b") => {
-                        if let Some(a) = tokens.next() {
-                            match u32::from_str_radix(a.trim_start_matches("0x"), 16) {
+                        if let Some(addr) = addr {
+                            match addr {
                                 Ok(addr) => self.add_breakpoint(addr),
                                 Err(e) => println!("Invalid address: {}", e),
                             }
@@ -153,8 +185,8 @@ impl Cpu {
                         }
                     }
                     Some("rb") => {
-                        if let Some(a) = tokens.next() {
-                            match u32::from_str_radix(a.trim_start_matches("0x"), 16) {
+                        if let Some(addr) = addr {
+                            match addr {
                                 Ok(addr) => self.remove_breakpoint(addr),
                                 Err(e) => println!("Invalid address: {}", e),
                             }
@@ -162,9 +194,71 @@ impl Cpu {
                             println!("Usage: rb <address>");
                         }
                     }
+                    Some("wb") => {
+                        if let Some(addr) = addr {
+                            match addr {
+                                Ok(addr) => self.add_write_breakpoint(addr),
+                                Err(e) => println!("Invalid address: {}", e),
+                            }
+                        } else {
+                            println!("Usage: wb <address>");
+                        }
+                    }
+                    Some("wrb") => {
+                        if let Some(addr) = addr {
+                            match addr {
+                                Ok(addr) => self.remove_write_breakpoint(addr),
+                                Err(e) => println!("Invalid address: {}", e),
+                            }
+                        } else {
+                            println!("Usage: wrb <address>");
+                        }
+                    }
                     Some("lb") => {
-                        for bp in self.breakpoints.iter() {
+                        for bp in self.instruction_breakpoints.iter() {
                             println!("Breakpoint: 0x{:08X}", bp);
+                        }
+                        for bp in self.write_breakpoints.iter() {
+                            println!("Write Breakpoint: 0x{:08X}", bp);
+                        }
+                    }
+                    Some("m") | Some("m32") => {
+                        if let Some(addr) = addr {
+                            match addr {
+                                Ok(addr) => {
+                                    let val = bus.read_u32(addr);
+                                    println!("[0x{:08X}] = 0x{:08X}", addr, val);
+                                }
+                                Err(e) => println!("Invalid address: {}", e),
+                            }
+                        } else {
+                            println!("Usage: m/m32 <address>");
+                        }
+                    }
+                    Some("m16") => {
+                        if let Some(addr) = addr {
+                            match addr {
+                                Ok(addr) => {
+                                    let val = bus.read_u16(addr);
+                                    println!("[0x{:08X}] = 0x{:04X}", addr, val);
+                                }
+                                Err(e) => println!("Invalid address: {}", e),
+                            }
+                        } else {
+                            println!("Usage: m16 <address>");
+                        }
+                    }
+                    Some("m8") => {
+                        if let Some(addr) = addr {
+                            match addr {
+                                Ok(addr) => {
+                                    let val = bus.read_u8(addr);
+                                    println!("[0x{:08X}] = 0x{:02X}", addr, val);
+                                }
+                                Err(e) => println!("Invalid address: {}", e),
+                            }
+                        } else {
+                            println!("Usage: m8 <address>");
                         }
                     }
                     Some("") => {}
@@ -184,8 +278,8 @@ impl Cpu {
 
         for _ in 0..clocks {
             if !self.in_breakpoint
-                && !self.breakpoints.is_empty()
-                && self.breakpoints.contains(&self.regs.pc)
+                && !self.instruction_breakpoints.is_empty()
+                && self.instruction_breakpoints.contains(&self.regs.pc)
             {
                 self.set_pause(true);
                 println!("Breakpoint hit at {:08X}", self.regs.pc);
@@ -247,6 +341,11 @@ impl Cpu {
 
                 if self.step {
                     self.set_pause(true);
+                    self.step = false;
+                    break;
+                }
+                // can be set with write breakpoint
+                if self.paused {
                     break;
                 }
             }
@@ -862,6 +961,13 @@ impl Cpu {
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
+            if self.write_breakpoints.contains(&addr) {
+                self.set_pause(true);
+                println!(
+                    "Write Breakpoint u32 hit {:08X} at {:08X}",
+                    addr, self.regs.pc
+                );
+            }
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
                 _ => bus.write_u32(addr, data),
@@ -888,6 +994,13 @@ impl Cpu {
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
+            if self.write_breakpoints.contains(&addr) {
+                self.set_pause(true);
+                println!(
+                    "Write Breakpoint u16 hit {:08X} at {:08X}",
+                    addr, self.regs.pc
+                );
+            }
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
                 _ => bus.write_u16(addr, data),
@@ -902,7 +1015,15 @@ impl Cpu {
         }
     }
 
-    fn bus_write_u8<P: BusLine>(&self, bus: &mut P, addr: u32, data: u8) {
+    fn bus_write_u8<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u8) {
+        if self.write_breakpoints.contains(&addr) {
+            self.set_pause(true);
+            // TODO: fix the `pc` here
+            println!(
+                "Write Breakpoint u8 hit {:08X} at {:08X}",
+                addr, self.regs.pc
+            );
+        }
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
             _ => bus.write_u8(addr, data),
