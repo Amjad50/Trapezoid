@@ -4,11 +4,24 @@ use crate::memory::BusLine;
 use bitflags::bitflags;
 use byteorder::{ByteOrder, LittleEndian};
 
-// reversed ZIGZAG order
-const ZAGZIG: [usize; 64] = [
-    63, 62, 58, 57, 49, 48, 36, 35, 61, 59, 56, 50, 47, 37, 34, 21, 60, 55, 51, 46, 38, 33, 22, 20,
-    54, 52, 45, 39, 32, 23, 19, 10, 53, 44, 40, 31, 24, 18, 11, 9, 43, 41, 30, 25, 17, 12, 8, 3,
-    42, 29, 26, 16, 13, 7, 4, 2, 28, 27, 15, 14, 6, 5, 1, 0,
+const ZIGZAG: [usize; 64] = [
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+];
+
+const DEFAULT_IQ: [u8; 64] = [
+    2, 16, 16, 19, 16, 19, 22, 22, 22, 22, 22, 22, 26, 24, 26, 27, 27, 27, 26, 26, 26, 26, 27, 27,
+    27, 29, 29, 29, 34, 34, 34, 29, 29, 29, 27, 27, 29, 29, 32, 32, 34, 34, 37, 38, 37, 35, 35, 34,
+    35, 38, 38, 40, 40, 40, 48, 48, 46, 46, 56, 56, 58, 69, 69, 83,
+];
+// note that this is originally i16, but the emulator deals with u16 so its converted
+const DEFAULT_SCALETABLE: [u16; 64] = [
+    23170, 23170, 23170, 23170, 23170, 23170, 23170, 23170, 32138, 27245, 18204, 6392, 59143,
+    47331, 38290, 33397, 30273, 12539, 52996, 35262, 35262, 52996, 12539, 30273, 27245, 59143,
+    33397, 47331, 18204, 32138, 6392, 38290, 23170, 42365, 42365, 23170, 23170, 42365, 42365,
+    23170, 18204, 33397, 6392, 27245, 38290, 59143, 32138, 47331, 12539, 35262, 30273, 52996,
+    52996, 30273, 35262, 12539, 6392, 47331, 27245, 33397, 32138, 38290, 18204, 59143,
 ];
 
 const fn extend_sign<const N: usize>(x: u16) -> i32 {
@@ -52,6 +65,7 @@ struct DecodeMacroBlockCommandState {
     out: [i16; 64],
     q_scale: u16,
     k: usize,
+    first: bool,
 
     // color state
     cr_blk: [i16; 64],
@@ -66,6 +80,7 @@ impl Default for DecodeMacroBlockCommandState {
             out: [0; 64],
             q_scale: 0,
             k: 0,
+            first: true,
 
             cr_blk: [0; 64],
             cb_blk: [0; 64],
@@ -80,6 +95,7 @@ impl DecodeMacroBlockCommandState {
         self.out = [0; 64];
         self.k = 0;
         self.q_scale = 0;
+        self.first = true;
     }
 }
 
@@ -112,9 +128,9 @@ impl Default for Mdec {
 
             data_out_fifo: VecDeque::new(),
 
-            iq_y: [0; 64],
-            iq_uv: [0; 64],
-            scaletable: [0; 64],
+            iq_y: DEFAULT_IQ,
+            iq_uv: DEFAULT_IQ,
+            scaletable: DEFAULT_SCALETABLE,
         }
     }
 }
@@ -204,61 +220,50 @@ impl Mdec {
         qt: &[u8; 64],
         state: &mut DecodeMacroBlockCommandState,
     ) -> bool {
-        if state.k == 0 {
-            if new_input == 0xFE00 {
-                false
-            } else {
-                let n = new_input;
+        if new_input == 0xFE00 {
+            // if its first, then ignore
+            return !state.first;
+        }
 
-                state.k = 0;
-                state.q_scale = (n >> 10) & 0x3F;
+        let bottom_10 = new_input & 0x3FF;
+        let top_6 = (new_input >> 10) & 0x3F;
 
-                let mut val = extend_sign::<10>(n & 0x3FF);
-                if state.q_scale == 0 {
-                    val *= 2;
-                } else {
-                    val *= qt[0] as i32;
-                };
-
-                val = val.clamp(-0x400, 0x3FF);
-                let index = if state.q_scale == 0 {
-                    state.k
-                } else {
-                    ZAGZIG[state.k]
-                };
-                state.out[index] = val as i16;
-
-                state.k += 1;
-
-                false
+        if state.first {
+            if new_input == 0 {
+                return false;
             }
+            state.first = false;
+
+            if bottom_10 != 0 {
+                let m = if state.q_scale == 0 { 2 } else { qt[0] as i32 };
+                let val = extend_sign::<10>(bottom_10) * m;
+                state.out[0] = val.clamp(-0x400, 0x3FF) as i16;
+            }
+            state.q_scale = top_6;
+            state.k = 0;
+            false
         } else {
-            let n = new_input;
-
-            state.k += ((n >> 10) & 0x3F) as usize;
-            if state.k < 64 {
-                let mut val =
-                    (extend_sign::<10>(n & 0x3FF) * qt[state.k] as i32 * state.q_scale as i32) >> 3;
-
-                if state.q_scale == 0 {
-                    val = extend_sign::<10>(n & 0x3FF) * 2;
-                }
-                val = val.clamp(-0x400, 0x3FF);
-                let index = if state.q_scale == 0 {
-                    state.k
-                } else {
-                    ZAGZIG[state.k]
-                };
-                state.out[index] = val as i16;
-
-                state.k += 1;
-            }
-
+            state.k += top_6 as usize + 1;
             if state.k >= 64 {
-                true
-            } else {
-                false
+                return true;
             }
+            let i_rev_zig_zag_pos = if state.q_scale == 0 {
+                state.k
+            } else {
+                ZIGZAG[state.k]
+            };
+
+            if bottom_10 != 0 {
+                let val = if state.q_scale == 0 {
+                    extend_sign::<10>(bottom_10) * 2
+                } else {
+                    (extend_sign::<10>(bottom_10) * qt[state.k] as i32 * state.q_scale as i32 + 4)
+                        >> 3
+                };
+                state.out[i_rev_zig_zag_pos] = val.clamp(-0x400, 0x3FF) as i16;
+            }
+
+            false
         }
     }
 
@@ -317,7 +322,7 @@ impl Mdec {
                                                 &state.cr_blk,
                                                 &state.cb_blk,
                                                 &state.out,
-                                                0,
+                                                8,
                                                 0,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
                                                 &mut state.color_out,
@@ -332,7 +337,7 @@ impl Mdec {
                                                 &state.cb_blk,
                                                 &state.out,
                                                 0,
-                                                0,
+                                                8,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
                                                 &mut state.color_out,
                                             );
@@ -345,8 +350,8 @@ impl Mdec {
                                                 &state.cr_blk,
                                                 &state.cb_blk,
                                                 &state.out,
-                                                0,
-                                                0,
+                                                8,
+                                                8,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
                                                 &mut state.color_out,
                                             );
@@ -416,6 +421,21 @@ impl Mdec {
                 }
             }
             if self.remaining_params == 0 {
+                match self.current_cmd {
+                    Some(MdecCommand::SetQuantTable {
+                        color_and_luminance,
+                    }) => {
+                        log::info!("color {:?}", self.iq_y);
+                        if color_and_luminance {
+                            log::info!("lum {:?}", self.iq_uv);
+                        }
+                    }
+                    Some(MdecCommand::SetScaleTable) => {
+                        log::info!("scale {:?}", self.scaletable);
+                    }
+                    _ => {}
+                }
+
                 self.status.remove(MdecStatus::COMMAND_BUSY);
                 self.current_cmd = None;
             }
