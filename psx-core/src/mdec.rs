@@ -244,7 +244,7 @@ impl Mdec {
             false
         } else {
             state.k += top_6 as usize + 1;
-            if state.k >= 64 {
+            if state.k >= 63 {
                 return true;
             }
             let i_rev_zig_zag_pos = if state.q_scale == 0 {
@@ -501,7 +501,7 @@ impl Mdec {
     }
 
     fn read_status(&mut self) -> u32 {
-        log::info!(
+        log::trace!(
             "mdec read status {:?}, remaining_params: {}",
             self.status,
             self.remaining_params
