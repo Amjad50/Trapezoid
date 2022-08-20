@@ -1,3 +1,5 @@
+use crate::mdec;
+
 use super::interrupts::InterruptRequester;
 use super::BusLine;
 
@@ -226,9 +228,38 @@ impl Dma {
         let mut address = channel.base_address & 0xFFFFFC;
 
         for _ in 0..block_size {
+            // DOCS: If there's data in the output fifo, then the Current Block bits
+            // are always set to the current output block number (ie. Y1..Y4; or
+            // Y for mono) (this information is apparently passed to the DMA1
+            // controller, so that it knows if and how it must re-order the data in RAM).
+            //
+            // Because the mdec is not running in sync with DMA, we store the
+            // `Current Block` details for each fifo, and we can request them like this to compute
+            // the location of the write.
+            let (ty, index) = dma_bus.mdec.fifo_current_status();
             // TODO: read whole buffer
-            let data = dma_bus.mdec.read_u32(0);
-            dma_bus.main_ram.write_u32(address, data);
+            let data = dma_bus.mdec.read_fifo();
+
+            let offset;
+            match ty {
+                mdec::BlockType::Y1 | mdec::BlockType::Y3 => {
+                    let base_index = index as i32 / 4;
+                    offset = base_index * 4;
+                }
+                mdec::BlockType::Y2 | mdec::BlockType::Y4 => {
+                    let base_index = index as i32 / 4;
+                    offset = base_index * 4 + 4 - 32;
+                }
+                mdec::BlockType::YCr => {
+                    offset = 0;
+                }
+                _ => unreachable!(),
+            }
+
+            // The location of the write, this is result of the re-ordering
+            // of the MDEC blocks.
+            let effective_address = (address as i32 + (offset * 4)) as u32;
+            dma_bus.main_ram.write_u32(effective_address, data);
 
             // step
             address += 4;

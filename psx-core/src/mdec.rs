@@ -103,13 +103,32 @@ enum MdecCommand {
     SetScaleTable,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum BlockType {
+    Y1 = 0,
+    Y2,
+    Y3,
+    Y4,
+    /// Y in mono mode, Cr input in color mode
+    YCr,
+    // Used for input only in color mode. input block mode is not tracked currently
+    _Cb,
+}
+
+struct FifoBlock {
+    block_type: BlockType,
+    data: [u32; 48],
+    size: usize,
+    current_index: usize,
+}
+
 pub struct Mdec {
     status: MdecStatus,
     remaining_params: u16,
     current_cmd: Option<MdecCommand>,
     params_ptr: usize,
 
-    data_out_fifo: VecDeque<u32>,
+    out_fifo: VecDeque<FifoBlock>,
 
     iq_y: [u8; 64],
     iq_uv: [u8; 64],
@@ -124,7 +143,7 @@ impl Default for Mdec {
             current_cmd: None,
             params_ptr: 0,
 
-            data_out_fifo: VecDeque::new(),
+            out_fifo: VecDeque::new(),
 
             iq_y: DEFAULT_IQ,
             iq_uv: DEFAULT_IQ,
@@ -287,7 +306,7 @@ impl Mdec {
                                         &state.out,
                                         self.status.intersects(MdecStatus::DATA_SIGNED),
                                     );
-                                    block_done = Some(out);
+                                    block_done = Some((out, BlockType::YCr));
                                     state.reset_after_block();
                                 }
                             }
@@ -323,7 +342,7 @@ impl Mdec {
                                                 0,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
                                             );
-                                            block_done = Some(rgb_block);
+                                            block_done = Some((rgb_block, BlockType::Y1));
                                             self.status.set_current_block(1); // Y2
                                         }
                                         3 => {
@@ -337,7 +356,7 @@ impl Mdec {
                                                 0,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
                                             );
-                                            block_done = Some(rgb_block);
+                                            block_done = Some((rgb_block, BlockType::Y2));
                                             self.status.set_current_block(2); // Y3
                                         }
                                         4 => {
@@ -351,7 +370,7 @@ impl Mdec {
                                                 8,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
                                             );
-                                            block_done = Some(rgb_block);
+                                            block_done = Some((rgb_block, BlockType::Y3));
                                             self.status.set_current_block(3); // Y4
                                         }
                                         5 => {
@@ -365,7 +384,7 @@ impl Mdec {
                                                 8,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
                                             );
-                                            block_done = Some(rgb_block);
+                                            block_done = Some((rgb_block, BlockType::Y4));
                                         }
                                         _ => unreachable!(),
                                     }
@@ -397,8 +416,8 @@ impl Mdec {
             self.remaining_params -= 1;
             self.params_ptr += 1;
 
-            if let Some(out_block) = block_done.take() {
-                self.push_to_out_fifo(out_block);
+            if let Some((out_block, block_type)) = block_done.take() {
+                self.push_to_out_fifo(out_block, block_type);
             }
             if self.remaining_params == 0 {
                 match self.current_cmd {
@@ -424,34 +443,43 @@ impl Mdec {
 }
 
 impl Mdec {
-    fn push_to_out_fifo(&mut self, data: [u32; 64]) {
+    fn push_to_out_fifo(&mut self, data: [u32; 64], block_type: BlockType) {
         self.status.remove(MdecStatus::DATA_OUT_FIFO_EMPTY);
+
+        let mut out_data = [0u32; 48];
+        let size;
+        let mut i = 0;
         match self.status.output_depth() {
             0 => {
                 // 8 words
+                size = 64 / 8;
                 for d in data.chunks(8) {
-                    self.data_out_fifo.push_back(u32::from_le_bytes([
+                    out_data[i] = u32::from_le_bytes([
                         (d[0] as u8 >> 4) | (d[1] as u8 & 0xF0),
                         (d[2] as u8 >> 4) | (d[3] as u8 & 0xF0),
                         (d[4] as u8 >> 4) | (d[5] as u8 & 0xF0),
                         (d[6] as u8 >> 4) | (d[7] as u8 & 0xF0),
-                    ]));
+                    ]);
+                    i += 1;
                 }
             }
             1 => {
                 // 16 words
+                size = 64 / 4;
                 for d in data.chunks(4) {
-                    self.data_out_fifo.push_back(u32::from_le_bytes([
-                        d[0] as u8, d[1] as u8, d[2] as u8, d[3] as u8,
-                    ]));
+                    out_data[i] =
+                        u32::from_le_bytes([d[0] as u8, d[1] as u8, d[2] as u8, d[3] as u8]);
+                    i += 1;
                 }
             }
             2 => {
                 // 48 words
-                todo!("depth 2");
+                size = 48;
+                //todo!("depth 2");
             }
             3 => {
                 // 32 words
+                size = 64 / 2;
                 let bit_15 = self.status.intersects(MdecStatus::DATA_OUTPUT_BIT15_SET) as u16;
                 for d in data.chunks(2) {
                     let [r, g, b, _] = d[0].to_le_bytes();
@@ -466,24 +494,19 @@ impl Mdec {
                     let b = b >> 3;
                     let d2 = (r as u16) | ((g as u16) << 5) | ((b as u16) << 10) | (bit_15 << 15);
 
-                    self.data_out_fifo
-                        .push_back((d1 as u32) | ((d2 as u32) << 16));
+                    out_data[i] = (d1 as u32) | ((d2 as u32) << 16);
+                    i += 1;
                 }
             }
             _ => unreachable!(),
         }
-    }
 
-    fn read_response(&mut self) -> u32 {
-        if let Some(out) = self.data_out_fifo.pop_front() {
-            if self.data_out_fifo.is_empty() {
-                self.status.insert(MdecStatus::DATA_OUT_FIFO_EMPTY);
-            }
-            out
-        } else {
-            // return garbage if the fifo is empty
-            0
-        }
+        self.out_fifo.push_back(FifoBlock {
+            block_type,
+            data: out_data,
+            size,
+            current_index: 0,
+        });
     }
 
     fn read_status(&mut self) -> u32 {
@@ -573,10 +596,38 @@ impl Mdec {
     }
 }
 
+impl Mdec {
+    pub fn read_fifo(&mut self) -> u32 {
+        if let Some(block) = self.out_fifo.front_mut() {
+            let out = block.data[block.current_index];
+            block.current_index += 1;
+            if block.current_index == block.size {
+                self.out_fifo.pop_front();
+                if self.out_fifo.is_empty() {
+                    self.status.insert(MdecStatus::DATA_OUT_FIFO_EMPTY);
+                }
+            }
+            out
+        } else {
+            // return garbage if the fifo is empty
+            log::warn!("mdec read fifo: fifo is empty");
+            0
+        }
+    }
+
+    pub fn fifo_current_status(&self) -> (BlockType, usize) {
+        if let Some(block) = self.out_fifo.front() {
+            (block.block_type, block.current_index)
+        } else {
+            (BlockType::YCr, 0)
+        }
+    }
+}
+
 impl BusLine for Mdec {
     fn read_u32(&mut self, addr: u32) -> u32 {
         match addr & 0xF {
-            0 => self.read_response(),
+            0 => self.read_fifo(),
             4 => self.read_status(),
             _ => unreachable!(),
         }
