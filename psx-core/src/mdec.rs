@@ -54,15 +54,16 @@ impl MdecStatus {
         ((self.bits & Self::DATA_OUTPUT_DEPTH.bits) >> 25) as u8
     }
 
-    fn set_current_block(&mut self, block: u8) {
+    fn set_current_block(&mut self, block: BlockType) {
+        let block = block as u32;
         self.remove(Self::CURRENT_BLOCK);
-        self.bits |= ((block as u32) << 16) & Self::CURRENT_BLOCK.bits;
+        self.bits |= (block << 16) & Self::CURRENT_BLOCK.bits;
     }
 }
 
 struct DecodeMacroBlockCommandState {
     // block state
-    out: [i16; 64],
+    rl_out: [i16; 64],
     q_scale: u16,
     k: usize,
     first: bool,
@@ -76,7 +77,7 @@ struct DecodeMacroBlockCommandState {
 impl Default for DecodeMacroBlockCommandState {
     fn default() -> Self {
         Self {
-            out: [0; 64],
+            rl_out: [0; 64],
             q_scale: 0,
             k: 0,
             first: true,
@@ -90,7 +91,7 @@ impl Default for DecodeMacroBlockCommandState {
 
 impl DecodeMacroBlockCommandState {
     fn reset_after_block(&mut self) {
-        self.out = [0; 64];
+        self.rl_out = [0; 64];
         self.k = 0;
         self.q_scale = 0;
         self.first = true;
@@ -109,10 +110,8 @@ pub enum BlockType {
     Y2,
     Y3,
     Y4,
-    /// Y in mono mode, Cr input in color mode
-    YCr,
-    // Used for input only in color mode. input block mode is not tracked currently
-    _Cb,
+    YCr, // Y in mono mode, Cr input in color mode
+    Cb,
 }
 
 struct FifoBlock {
@@ -203,15 +202,16 @@ impl Mdec {
         out
     }
 
-    fn real_idct_core(inp_out: &mut [i16; 64], scaletable: &[u16; 64]) {
+    fn real_idct_core(inp: &[i16; 64], scaletable: &[u16; 64]) -> [i16; 64] {
         let mut tmp = [0; 64];
+        let mut out = [0; 64];
 
         // pass 1
         for x in 0..8 {
             for y in 0..8 {
                 let mut sum = 0;
                 for z in 0..8 {
-                    sum += inp_out[x + z * 8] as i64 * (scaletable[y + z * 8] as i16) as i64;
+                    sum += inp[x + z * 8] as i64 * (scaletable[y + z * 8] as i16) as i64;
                 }
                 tmp[x + y * 8] = sum;
             }
@@ -226,9 +226,10 @@ impl Mdec {
                 }
                 let t = extend_sign::<9>(((sum >> 32) + ((sum >> 31) & 1)) as u16);
                 let t = t.clamp(-128, 127);
-                inp_out[x + y * 8] = t as i16;
+                out[x + y * 8] = t as i16;
             }
         }
+        out
     }
 
     // performs `rl_decode_block` but incremently as input come into the MDEC
@@ -255,7 +256,7 @@ impl Mdec {
             if bottom_10 != 0 {
                 let m = if state.q_scale == 0 { 2 } else { qt[0] as i32 };
                 let val = extend_sign::<10>(bottom_10) * m;
-                state.out[0] = val.clamp(-0x400, 0x3FF) as i16;
+                state.rl_out[0] = val.clamp(-0x400, 0x3FF) as i16;
             }
             state.q_scale = top_6;
             state.k = 0;
@@ -278,7 +279,7 @@ impl Mdec {
                     (extend_sign::<10>(bottom_10) * qt[state.k] as i32 * state.q_scale as i32 + 4)
                         >> 3
                 };
-                state.out[i_rev_zig_zag_pos] = val.clamp(-0x400, 0x3FF) as i16;
+                state.rl_out[i_rev_zig_zag_pos] = val.clamp(-0x400, 0x3FF) as i16;
             }
 
             false
@@ -295,104 +296,73 @@ impl Mdec {
             let mut block_done = None;
             match current_cmd {
                 MdecCommand::DecodeMacroBlock(state) => {
-                    match self.status.output_depth() {
-                        0 | 1 => {
-                            let inp = [input as u16, (input >> 16) as u16];
-                            for i in inp {
-                                let done = Self::rl_decode_block_input(i, &self.iq_y, state);
-                                if done {
-                                    Self::real_idct_core(&mut state.out, &self.scaletable);
-                                    let out = Self::y_to_mono(
-                                        &state.out,
-                                        self.status.intersects(MdecStatus::DATA_SIGNED),
-                                    );
-                                    block_done = Some((out, BlockType::YCr));
-                                    state.reset_after_block();
-                                }
-                            }
+                    let inp = [input as u16, (input >> 16) as u16];
+                    let mut idct_out = None;
+                    for i in inp {
+                        let done = Self::rl_decode_block_input(i, &self.iq_y, state);
+                        if done {
+                            idct_out = Some(Self::real_idct_core(&state.rl_out, &self.scaletable));
+                            state.reset_after_block();
                         }
-                        2 | 3 => {
-                            let inp = [input as u16, (input >> 16) as u16];
+                    }
 
-                            for i in inp {
-                                let done = Self::rl_decode_block_input(i, &self.iq_y, state);
-                                if done {
-                                    Self::real_idct_core(&mut state.out, &self.scaletable);
-                                    match state.color_decoding_state {
-                                        0 => {
-                                            // cr_blk
-                                            state.cr_blk = state.out;
-                                            state.color_decoding_state = 1;
-                                            self.status.set_current_block(5); // Cb
-                                        }
-                                        1 => {
-                                            // cb_blk
-                                            state.cb_blk = state.out;
-                                            state.color_decoding_state = 2;
-                                            self.status.set_current_block(0); // Y1
-                                        }
-                                        2 => {
-                                            // y1
-                                            state.color_decoding_state = 3;
-                                            let rgb_block = Self::yuv_to_rgb(
-                                                &state.cr_blk,
-                                                &state.cb_blk,
-                                                &state.out,
-                                                0,
-                                                0,
-                                                self.status.intersects(MdecStatus::DATA_SIGNED),
-                                            );
-                                            block_done = Some((rgb_block, BlockType::Y1));
-                                            self.status.set_current_block(1); // Y2
-                                        }
-                                        3 => {
-                                            // y2
-                                            state.color_decoding_state = 4;
-                                            let rgb_block = Self::yuv_to_rgb(
-                                                &state.cr_blk,
-                                                &state.cb_blk,
-                                                &state.out,
-                                                8,
-                                                0,
-                                                self.status.intersects(MdecStatus::DATA_SIGNED),
-                                            );
-                                            block_done = Some((rgb_block, BlockType::Y2));
-                                            self.status.set_current_block(2); // Y3
-                                        }
-                                        4 => {
-                                            // y3
-                                            state.color_decoding_state = 5;
-                                            let rgb_block = Self::yuv_to_rgb(
-                                                &state.cr_blk,
-                                                &state.cb_blk,
-                                                &state.out,
-                                                0,
-                                                8,
-                                                self.status.intersects(MdecStatus::DATA_SIGNED),
-                                            );
-                                            block_done = Some((rgb_block, BlockType::Y3));
-                                            self.status.set_current_block(3); // Y4
-                                        }
-                                        5 => {
-                                            // y4
-                                            state.color_decoding_state = 0;
-                                            let rgb_block = Self::yuv_to_rgb(
-                                                &state.cr_blk,
-                                                &state.cb_blk,
-                                                &state.out,
-                                                8,
-                                                8,
-                                                self.status.intersects(MdecStatus::DATA_SIGNED),
-                                            );
-                                            block_done = Some((rgb_block, BlockType::Y4));
-                                        }
-                                        _ => unreachable!(),
+                    if let Some(idct_out) = idct_out {
+                        match self.status.output_depth() {
+                            0 | 1 => {
+                                let out = Self::y_to_mono(
+                                    &idct_out,
+                                    self.status.intersects(MdecStatus::DATA_SIGNED),
+                                );
+                                block_done = Some((out, BlockType::YCr));
+                            }
+                            2 | 3 => {
+                                // This is used to reduce code duplication when
+                                // decoding the color blocks.
+                                //
+                                // (current_block_type, next_block_type, (x,y))
+                                let blocks_data = &[
+                                    (BlockType::Y1, BlockType::Y2, (0, 0)),
+                                    (BlockType::Y2, BlockType::Y3, (8, 0)),
+                                    (BlockType::Y3, BlockType::Y4, (0, 8)),
+                                    (BlockType::Y4, BlockType::YCr, (8, 8)),
+                                ];
+                                match state.color_decoding_state {
+                                    0 => {
+                                        // Cr
+                                        state.cr_blk = idct_out;
+                                        state.color_decoding_state = 1;
+                                        // next block input
+                                        self.status.set_current_block(BlockType::Cb);
                                     }
-                                    state.reset_after_block();
+                                    1 => {
+                                        // Cb
+                                        state.cb_blk = idct_out;
+                                        state.color_decoding_state = 2;
+                                        // next block input
+                                        self.status.set_current_block(BlockType::Y1);
+                                    }
+                                    _ => {
+                                        // Y1..4
+                                        let (block_type, next_block_type, (x, y)) =
+                                            blocks_data[state.color_decoding_state as usize - 2];
+                                        state.color_decoding_state =
+                                            (state.color_decoding_state + 1) % 6;
+                                        let rgb_block = Self::yuv_to_rgb(
+                                            &state.cr_blk,
+                                            &state.cb_blk,
+                                            &idct_out,
+                                            x,
+                                            y,
+                                            self.status.intersects(MdecStatus::DATA_SIGNED),
+                                        );
+                                        block_done = Some((rgb_block, block_type));
+                                        // next block input
+                                        self.status.set_current_block(next_block_type);
+                                    }
                                 }
                             }
+                            _ => unreachable!(),
                         }
-                        _ => unreachable!(),
                     }
                 }
                 MdecCommand::SetQuantTable {
@@ -538,7 +508,7 @@ impl Mdec {
                 // Decode macroblocks
                 1 => {
                     self.remaining_params = input as u16;
-                    self.status.set_current_block(4); // Cr or Y
+                    self.status.set_current_block(BlockType::YCr); // Cr or Y
                     self.current_cmd = Some(MdecCommand::DecodeMacroBlock(Default::default()))
                 }
                 // Set quant tables
