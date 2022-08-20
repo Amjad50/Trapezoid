@@ -71,7 +71,6 @@ struct DecodeMacroBlockCommandState {
     cr_blk: [i16; 64],
     cb_blk: [i16; 64],
     color_decoding_state: u32,
-    color_out: [u32; 256],
 }
 
 impl Default for DecodeMacroBlockCommandState {
@@ -85,7 +84,6 @@ impl Default for DecodeMacroBlockCommandState {
             cr_blk: [0; 64],
             cb_blk: [0; 64],
             color_decoding_state: 0,
-            color_out: [0; 256],
         }
     }
 }
@@ -156,8 +154,8 @@ impl Mdec {
         xx: usize,
         yy: usize,
         signed: bool,
-        out: &mut [u32; 256],
-    ) {
+    ) -> [u32; 64] {
+        let mut out = [0; 64];
         for y in 0..8 {
             for x in 0..8 {
                 let r = cr_blk[((x + xx) / 2) + (((y + yy) / 2) * 8)];
@@ -179,10 +177,11 @@ impl Mdec {
                     b += 128;
                 }
 
-                out[(x + xx) + ((y + yy) * 16)] =
-                    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
+                out[x + (y * 8)] = (r as u32) | ((g as u32) << 8) | ((b as u32) << 16);
             }
         }
+
+        out
     }
 
     fn real_idct_core(inp_out: &mut [i16; 64], scaletable: &[u16; 64]) {
@@ -274,9 +273,7 @@ impl Mdec {
             // can't get it while borrowing `current_cmd`
             //
             // set to the idct output for mono decoding
-            let mut mono_block_input_done = None;
-            // set to the idct output for color decoding
-            let mut color_block_input_done = None;
+            let mut block_done = None;
             match current_cmd {
                 MdecCommand::DecodeMacroBlock(state) => {
                     match self.status.output_depth() {
@@ -290,7 +287,7 @@ impl Mdec {
                                         &state.out,
                                         self.status.intersects(MdecStatus::DATA_SIGNED),
                                     );
-                                    mono_block_input_done = Some(out);
+                                    block_done = Some(out);
                                     state.reset_after_block();
                                 }
                             }
@@ -318,61 +315,57 @@ impl Mdec {
                                         2 => {
                                             // y1
                                             state.color_decoding_state = 3;
-                                            Self::yuv_to_rgb(
+                                            let rgb_block = Self::yuv_to_rgb(
                                                 &state.cr_blk,
                                                 &state.cb_blk,
                                                 &state.out,
                                                 0,
                                                 0,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
-                                                &mut state.color_out,
                                             );
+                                            block_done = Some(rgb_block);
                                             self.status.set_current_block(1); // Y2
                                         }
                                         3 => {
                                             // y2
                                             state.color_decoding_state = 4;
-                                            Self::yuv_to_rgb(
+                                            let rgb_block = Self::yuv_to_rgb(
                                                 &state.cr_blk,
                                                 &state.cb_blk,
                                                 &state.out,
                                                 8,
                                                 0,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
-                                                &mut state.color_out,
                                             );
+                                            block_done = Some(rgb_block);
                                             self.status.set_current_block(2); // Y3
                                         }
                                         4 => {
                                             // y3
                                             state.color_decoding_state = 5;
-                                            Self::yuv_to_rgb(
+                                            let rgb_block = Self::yuv_to_rgb(
                                                 &state.cr_blk,
                                                 &state.cb_blk,
                                                 &state.out,
                                                 0,
                                                 8,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
-                                                &mut state.color_out,
                                             );
+                                            block_done = Some(rgb_block);
                                             self.status.set_current_block(3); // Y4
                                         }
                                         5 => {
                                             // y4
                                             state.color_decoding_state = 0;
-                                            Self::yuv_to_rgb(
+                                            let rgb_block = Self::yuv_to_rgb(
                                                 &state.cr_blk,
                                                 &state.cb_blk,
                                                 &state.out,
                                                 8,
                                                 8,
                                                 self.status.intersects(MdecStatus::DATA_SIGNED),
-                                                &mut state.color_out,
                                             );
-                                            color_block_input_done = Some(std::mem::replace(
-                                                &mut state.color_out,
-                                                [0; 256],
-                                            ));
+                                            block_done = Some(rgb_block);
                                         }
                                         _ => unreachable!(),
                                     }
@@ -404,21 +397,8 @@ impl Mdec {
             self.remaining_params -= 1;
             self.params_ptr += 1;
 
-            if let Some(out_block) = mono_block_input_done {
-                match self.status.output_depth() {
-                    0 | 1 => {
-                        self.push_to_out_fifo(&out_block);
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            if let Some(out_block) = color_block_input_done {
-                match self.status.output_depth() {
-                    2 | 3 => {
-                        self.push_to_out_fifo(&out_block);
-                    }
-                    _ => unreachable!(),
-                }
+            if let Some(out_block) = block_done.take() {
+                self.push_to_out_fifo(out_block);
             }
             if self.remaining_params == 0 {
                 match self.current_cmd {
@@ -444,10 +424,11 @@ impl Mdec {
 }
 
 impl Mdec {
-    fn push_to_out_fifo(&mut self, data: &[u32]) {
+    fn push_to_out_fifo(&mut self, data: [u32; 64]) {
         self.status.remove(MdecStatus::DATA_OUT_FIFO_EMPTY);
         match self.status.output_depth() {
             0 => {
+                // 8 words
                 for d in data.chunks(8) {
                     self.data_out_fifo.push_back(u32::from_le_bytes([
                         (d[0] as u8 >> 4) | (d[1] as u8 & 0xF0),
@@ -458,14 +439,19 @@ impl Mdec {
                 }
             }
             1 => {
+                // 16 words
                 for d in data.chunks(4) {
                     self.data_out_fifo.push_back(u32::from_le_bytes([
                         d[0] as u8, d[1] as u8, d[2] as u8, d[3] as u8,
                     ]));
                 }
             }
-            2 => todo!("depth 2"),
+            2 => {
+                // 48 words
+                todo!("depth 2");
+            }
             3 => {
+                // 32 words
                 let bit_15 = self.status.intersects(MdecStatus::DATA_OUTPUT_BIT15_SET) as u16;
                 for d in data.chunks(2) {
                     let [r, g, b, _] = d[0].to_le_bytes();
