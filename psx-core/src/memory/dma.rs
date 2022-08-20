@@ -395,10 +395,11 @@ impl Dma {
             return (0, true);
         }
 
-        let block_size = channel.block_control & 0xFFFF;
-        let blocks = channel.block_control >> 16;
+        let mut block_size = channel.block_control & 0xFFFF;
+        if block_size == 0 {
+            block_size = 0x10000;
+        }
         log::info!("CD-ROM DMA: block size: {:04X}", block_size);
-        assert!(blocks == 1);
 
         // word align
         let mut address = channel.base_address & 0xFFFFFC;
@@ -417,7 +418,6 @@ impl Dma {
             address += 4;
         }
 
-        // TODO: is it ok to clear this?
         channel.block_control = 0;
         channel.base_address = address;
 
