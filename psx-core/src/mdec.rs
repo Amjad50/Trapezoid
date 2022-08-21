@@ -114,11 +114,17 @@ pub enum BlockType {
     Cb,
 }
 
+#[derive(Clone, Copy)]
+pub struct FifoBlockState {
+    pub block_type: BlockType,
+    pub index: usize,
+    pub is_24bit: bool,
+}
+
 struct FifoBlock {
-    block_type: BlockType,
     data: [u32; 48],
     size: usize,
-    current_index: usize,
+    state: FifoBlockState,
 }
 
 pub struct Mdec {
@@ -445,7 +451,24 @@ impl Mdec {
             2 => {
                 // 48 words
                 size = 48;
-                //todo!("depth 2");
+                let mut data_iter = data.iter();
+
+                let mut word_buffer = [0; 4];
+                let mut word_buffer_i = 0;
+                while let Some(color) = data_iter.next() {
+                    let [r, g, b, _] = color.to_le_bytes();
+                    let current_color = [r, g, b];
+
+                    for c in current_color {
+                        word_buffer[word_buffer_i] = c;
+                        word_buffer_i += 1;
+                        if word_buffer_i == 4 {
+                            out_data[i] = u32::from_le_bytes(word_buffer);
+                            word_buffer_i = 0;
+                            i += 1;
+                        }
+                    }
+                }
             }
             3 => {
                 // 32 words
@@ -472,10 +495,13 @@ impl Mdec {
         }
 
         self.out_fifo.push_back(FifoBlock {
-            block_type,
             data: out_data,
             size,
-            current_index: 0,
+            state: FifoBlockState {
+                block_type,
+                index: 0,
+                is_24bit: self.status.output_depth() == 2,
+            },
         });
     }
 
@@ -569,9 +595,9 @@ impl Mdec {
 impl Mdec {
     pub fn read_fifo(&mut self) -> u32 {
         if let Some(block) = self.out_fifo.front_mut() {
-            let out = block.data[block.current_index];
-            block.current_index += 1;
-            if block.current_index == block.size {
+            let out = block.data[block.state.index];
+            block.state.index += 1;
+            if block.state.index == block.size {
                 self.out_fifo.pop_front();
                 if self.out_fifo.is_empty() {
                     self.status.insert(MdecStatus::DATA_OUT_FIFO_EMPTY);
@@ -585,11 +611,15 @@ impl Mdec {
         }
     }
 
-    pub fn fifo_current_status(&self) -> (BlockType, usize) {
+    pub fn fifo_current_state(&self) -> FifoBlockState {
         if let Some(block) = self.out_fifo.front() {
-            (block.block_type, block.current_index)
+            block.state
         } else {
-            (BlockType::YCr, 0)
+            FifoBlockState {
+                block_type: BlockType::YCr,
+                index: 0,
+                is_24bit: false,
+            }
         }
     }
 }

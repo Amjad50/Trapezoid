@@ -236,19 +236,40 @@ impl Dma {
             // Because the mdec is not running in sync with DMA, we store the
             // `Current Block` details for each fifo, and we can request them like this to compute
             // the location of the write.
-            let (ty, index) = dma_bus.mdec.fifo_current_status();
+            let fifo_state = dma_bus.mdec.fifo_current_state();
             // TODO: read whole buffer
             let data = dma_bus.mdec.read_fifo();
 
+            // TODO: test for 24 bit mode
+            // this specifies the re-order arrangement.
+            //
+            // In 24 bit mode, the data is arranged as follows:
+            // each row in a single block is:
+            // 111111
+            // where each character is 1 word. Each row is 8 pixels, where each
+            // pixel is 3 byte, thus 24 bytes per row (6 words).
+            //
+            // The rows of data will come one after another:
+            // 111111 111111 ...
+            // But the result we want is
+            // 111111 222222 111111 ...
+            // So the base of re-order is to split the blocks into 6 words chunks
+            // and interlace them.
+            //
+            // This is the same for 15 bit mode but with 4 words instead of 6.
+            let row_size = if fifo_state.is_24bit { 6 } else { 4 };
+            // 8 pixels in height
+            let block_size = row_size * 8;
+
             let offset;
-            match ty {
+            match fifo_state.block_type {
                 mdec::BlockType::Y1 | mdec::BlockType::Y3 => {
-                    let base_index = index as i32 / 4;
-                    offset = base_index * 4;
+                    let base_index = fifo_state.index as i32 / 4;
+                    offset = base_index * row_size;
                 }
                 mdec::BlockType::Y2 | mdec::BlockType::Y4 => {
-                    let base_index = index as i32 / 4;
-                    offset = base_index * 4 + 4 - 32;
+                    let base_index = fifo_state.index as i32 / 4;
+                    offset = base_index * row_size + row_size - block_size;
                 }
                 mdec::BlockType::YCr => {
                     offset = 0;
