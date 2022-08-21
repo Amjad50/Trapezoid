@@ -226,8 +226,8 @@ impl Cdrom {
 
                     self.reset_command();
                 }
-                0x06 => {
-                    // ReadN
+                0x06 | 0x1B => {
+                    // ReadN/ReadS
 
                     if self.command_state.is_none() {
                         // FIRST
