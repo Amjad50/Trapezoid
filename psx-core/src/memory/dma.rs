@@ -6,7 +6,7 @@ use super::BusLine;
 bitflags::bitflags! {
     #[derive(Default)]
     struct ChannelControl: u32 {
-        const DIRECTION                = 0b00000000000000000000000000000001;
+        const DIRECTION_FROM_RAM       = 0b00000000000000000000000000000001;
         const ADDRESS_STEP_DIRECTION   = 0b00000000000000000000000000000010;
         const CHOPPING_ENABLED         = 0b00000000000000000000000100000000;
         const SYNC_MODE                = 0b00000000000000000000011000000000;
@@ -165,7 +165,7 @@ impl Dma {
         // must be from main ram
         assert!(channel
             .channel_control
-            .intersects(ChannelControl::DIRECTION));
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
         // must be forward
         assert!(channel.channel_control.address_step() == 4);
         // must be sync mode 1
@@ -206,10 +206,10 @@ impl Dma {
         channel: &mut DmaChannel,
         dma_bus: &mut super::DmaBus,
     ) -> (u32, bool) {
-        // must be from main ram
+        // must be to main ram
         assert!(!channel
             .channel_control
-            .intersects(ChannelControl::DIRECTION));
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
         // must be forward
         assert!(channel.channel_control.address_step() == 4);
         // must be sync mode 1
@@ -306,7 +306,7 @@ impl Dma {
                 // Gpu VRAM load/store
                 let direction_from_main_ram = channel
                     .channel_control
-                    .intersects(ChannelControl::DIRECTION);
+                    .intersects(ChannelControl::DIRECTION_FROM_RAM);
                 let address_step = channel.channel_control.address_step();
 
                 // TODO: check if the max is 16 or not
@@ -397,7 +397,7 @@ impl Dma {
         // must be to main ram
         assert!(!channel
             .channel_control
-            .intersects(ChannelControl::DIRECTION));
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
         // must be forward
         assert!(channel.channel_control.address_step() == 4);
         // must be sync mode 0
@@ -461,7 +461,7 @@ impl Dma {
         // must be from main ram (for now, TODO: fix this)
         assert!(channel
             .channel_control
-            .intersects(ChannelControl::DIRECTION));
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
         // must be forward
         assert!(channel.channel_control.address_step() == 4);
         // TODO: implement chopping
@@ -500,7 +500,7 @@ impl Dma {
         // must be to main ram
         assert!(!channel
             .channel_control
-            .intersects(ChannelControl::DIRECTION));
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
         // must be backwards
         assert!(channel.channel_control.address_step() == -4);
         // must be sync mode 0
