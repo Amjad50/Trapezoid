@@ -16,6 +16,7 @@ use crate::cdrom::Cdrom;
 use crate::controller_mem_card::ControllerAndMemoryCard;
 use crate::cpu::CpuBusProvider;
 use crate::gpu::Gpu;
+use crate::mdec::Mdec;
 use crate::spu::SpuRegisters;
 use crate::timers::Timers;
 
@@ -143,6 +144,7 @@ struct DmaBus {
     pub main_ram: MainRam,
     pub cdrom: Cdrom,
     pub gpu: Gpu,
+    pub mdec: Mdec,
 }
 
 pub struct CpuBus {
@@ -192,6 +194,7 @@ impl CpuBus {
                 cdrom: Cdrom::default(),
                 gpu: Gpu::new(device, queue),
                 main_ram: MainRam::default(),
+                mdec: Mdec::default(),
             },
 
             scratchpad: Scratchpad::default(),
@@ -343,6 +346,7 @@ impl BusLine for CpuBus {
             0x1F801080..=0x1F8010FC => self.dma.read_u32(addr & 0xFF),
             0x1F801100..=0x1F80112F => self.timers.read_u32(addr & 0xFF),
             0x1F801810..=0x1F801814 => self.dma_bus.gpu.read_u32(addr & 0xF),
+            0x1F801820..=0x1F801824 => self.dma_bus.mdec.read_u32(addr & 0xF),
             0x1F801C00..=0x1F802000 => self.spu_registers.read_u32((addr & 0xFFF) - 0xC00),
             0xFFFE0130 => self.cache_control.read_u32(addr),
             _ => {
@@ -365,6 +369,7 @@ impl BusLine for CpuBus {
             0x1F801080..=0x1F8010FC => self.dma.write_u32(addr & 0xFF, data),
             0x1F801100..=0x1F80112F => self.timers.write_u32(addr & 0xFF, data),
             0x1F801810..=0x1F801814 => self.dma_bus.gpu.write_u32(addr & 0xF, data),
+            0x1F801820..=0x1F801824 => self.dma_bus.mdec.write_u32(addr & 0xF, data),
             0x1F801C00..=0x1F802000 => self.spu_registers.write_u32((addr & 0xFFF) - 0xC00, data),
             0xFFFE0130 => self.cache_control.write_u32(addr, data),
             _ => {

@@ -1,10 +1,12 @@
+use crate::mdec;
+
 use super::interrupts::InterruptRequester;
 use super::BusLine;
 
 bitflags::bitflags! {
     #[derive(Default)]
     struct ChannelControl: u32 {
-        const DIRECTION                = 0b00000000000000000000000000000001;
+        const DIRECTION_FROM_RAM       = 0b00000000000000000000000000000001;
         const ADDRESS_STEP_DIRECTION   = 0b00000000000000000000000000000010;
         const CHOPPING_ENABLED         = 0b00000000000000000000000100000000;
         const SYNC_MODE                = 0b00000000000000000000011000000000;
@@ -156,6 +158,144 @@ impl Default for Dma {
 /// All Dma handles are of type `fn(&mut DmaChannel, &mut super::DmaBus) -> (u32, bool)`
 /// The return values are `(The number of cpu cycles spent, Is dma finished)`
 impl Dma {
+    fn perform_mdec_in_channel0_dma(
+        channel: &mut DmaChannel,
+        dma_bus: &mut super::DmaBus,
+    ) -> (u32, bool) {
+        // must be from main ram
+        assert!(channel
+            .channel_control
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
+        // must be forward
+        assert!(channel.channel_control.address_step() == 4);
+        // must be sync mode 1
+        assert!(channel.channel_control.sync_mode() == 1);
+        // make sure there is no chopping, so we can finish this in one go
+        // TODO: implement chopping
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::CHOPPING_ENABLED));
+
+        // TODO: check if the max is 32 or not
+        let block_size = channel.block_control & 0xFFFF;
+        let blocks = channel.block_control >> 16;
+
+        // word align
+        let mut address = channel.base_address & 0xFFFFFC;
+
+        for _ in 0..block_size {
+            let data = dma_bus.main_ram.read_u32(address);
+            // TODO: write to params directly
+            dma_bus.mdec.write_u32(0, data);
+
+            // step
+            address += 4;
+        }
+
+        // NOTE: treat 0 as 1, and do not overflow
+        let blocks = blocks.saturating_sub(1);
+
+        channel.block_control &= 0xFFFF;
+        channel.block_control |= blocks << 16;
+        channel.base_address = address;
+
+        (block_size, blocks == 0)
+    }
+
+    fn perform_mdec_out_channel1_dma(
+        channel: &mut DmaChannel,
+        dma_bus: &mut super::DmaBus,
+    ) -> (u32, bool) {
+        // must be to main ram
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
+        // must be forward
+        assert!(channel.channel_control.address_step() == 4);
+        // must be sync mode 1
+        assert!(channel.channel_control.sync_mode() == 1);
+        // make sure there is no chopping, so we can finish this in one go
+        // TODO: implement chopping
+        assert!(!channel
+            .channel_control
+            .intersects(ChannelControl::CHOPPING_ENABLED));
+
+        // TODO: check if the max is 32 or not
+        let block_size = channel.block_control & 0xFFFF;
+        let blocks = channel.block_control >> 16;
+
+        // word align
+        let mut address = channel.base_address & 0xFFFFFC;
+
+        for _ in 0..block_size {
+            // DOCS: If there's data in the output fifo, then the Current Block bits
+            // are always set to the current output block number (ie. Y1..Y4; or
+            // Y for mono) (this information is apparently passed to the DMA1
+            // controller, so that it knows if and how it must re-order the data in RAM).
+            //
+            // Because the mdec is not running in sync with DMA, we store the
+            // `Current Block` details for each fifo, and we can request them like this to compute
+            // the location of the write.
+            let fifo_state = dma_bus.mdec.fifo_current_state();
+            // TODO: read whole buffer
+            let data = dma_bus.mdec.read_fifo();
+
+            // TODO: test for 24 bit mode
+            // this specifies the re-order arrangement.
+            //
+            // In 24 bit mode, the data is arranged as follows:
+            // each row in a single block is:
+            // 111111
+            // where each character is 1 word. Each row is 8 pixels, where each
+            // pixel is 3 byte, thus 24 bytes per row (6 words).
+            //
+            // The rows of data will come one after another:
+            // 111111 111111 ...
+            // But the result we want is
+            // 111111 222222 111111 ...
+            // So the base of re-order is to split the blocks into 6 words chunks
+            // and interlace them.
+            //
+            // This is the same for 15 bit mode but with 4 words instead of 6.
+            let row_size = if fifo_state.is_24bit { 6 } else { 4 };
+            // 8 pixels in height
+            let block_size = row_size * 8;
+
+            let offset;
+            match fifo_state.block_type {
+                mdec::BlockType::Y1 | mdec::BlockType::Y3 => {
+                    let base_index = fifo_state.index as i32 / 4;
+                    offset = base_index * row_size;
+                }
+                mdec::BlockType::Y2 | mdec::BlockType::Y4 => {
+                    let base_index = fifo_state.index as i32 / 4;
+                    offset = base_index * row_size + row_size - block_size;
+                }
+                mdec::BlockType::YCr => {
+                    offset = 0;
+                }
+                _ => unreachable!(),
+            }
+
+            // The location of the write, this is result of the re-ordering
+            // of the MDEC blocks.
+            let effective_address = (address as i32 + (offset * 4)) as u32;
+            dma_bus.main_ram.write_u32(effective_address, data);
+
+            // step
+            address += 4;
+        }
+
+        // NOTE: treat 0 as 1, and do not overflow
+        let blocks = blocks.saturating_sub(1);
+
+        channel.block_control &= 0xFFFF;
+        channel.block_control |= blocks << 16;
+        channel.base_address = address;
+
+        (block_size, blocks == 0)
+    }
+
     fn perform_gpu_channel2_dma(
         channel: &mut DmaChannel,
         dma_bus: &mut super::DmaBus,
@@ -166,37 +306,28 @@ impl Dma {
                 // Gpu VRAM load/store
                 let direction_from_main_ram = channel
                     .channel_control
-                    .intersects(ChannelControl::DIRECTION);
+                    .intersects(ChannelControl::DIRECTION_FROM_RAM);
                 let address_step = channel.channel_control.address_step();
 
                 // TODO: check if the max is 16 or not
                 let block_size = channel.block_control & 0xFFFF;
                 let blocks = channel.block_control >> 16;
-                // transfer one block only
-                let mut remaining_length = block_size;
 
                 let mut address = channel.base_address & 0xFFFFFC;
 
-                let next_address = |remaining_length: &mut u32, address: &mut u32| {
-                    *remaining_length -= 1;
-                    let (r, overflow) = (*address as i32).overflowing_add(address_step);
-                    assert!(!overflow);
-                    *address = r as u32;
-                };
-
                 if direction_from_main_ram {
-                    while remaining_length > 0 {
+                    for _ in 0..block_size {
                         let data = dma_bus.main_ram.read_u32(address);
                         dma_bus.gpu.write_u32(0, data);
                         // step
-                        next_address(&mut remaining_length, &mut address);
+                        address = (address as i32 + address_step as i32) as u32;
                     }
                 } else {
-                    while remaining_length > 0 {
+                    for _ in 0..block_size {
                         let data = dma_bus.gpu.read_u32(0);
                         dma_bus.main_ram.write_u32(address, data);
                         // step
-                        next_address(&mut remaining_length, &mut address);
+                        address = (address as i32 + address_step as i32) as u32;
                     }
                 }
 
@@ -206,7 +337,7 @@ impl Dma {
                 channel.block_control |= blocks << 16;
                 channel.base_address = address;
 
-                (remaining_length, blocks == 0)
+                (block_size, blocks == 0)
             }
             2 => {
                 // Linked list mode, to sending GP0 commands
@@ -266,7 +397,7 @@ impl Dma {
         // must be to main ram
         assert!(!channel
             .channel_control
-            .intersects(ChannelControl::DIRECTION));
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
         // must be forward
         assert!(channel.channel_control.address_step() == 4);
         // must be sync mode 0
@@ -285,10 +416,11 @@ impl Dma {
             return (0, true);
         }
 
-        let block_size = channel.block_control & 0xFFFF;
-        let blocks = channel.block_control >> 16;
+        let mut block_size = channel.block_control & 0xFFFF;
+        if block_size == 0 {
+            block_size = 0x10000;
+        }
         log::info!("CD-ROM DMA: block size: {:04X}", block_size);
-        assert!(blocks == 1);
 
         // word align
         let mut address = channel.base_address & 0xFFFFFC;
@@ -307,7 +439,6 @@ impl Dma {
             address += 4;
         }
 
-        // TODO: is it ok to clear this?
         channel.block_control = 0;
         channel.base_address = address;
 
@@ -330,7 +461,7 @@ impl Dma {
         // must be from main ram (for now, TODO: fix this)
         assert!(channel
             .channel_control
-            .intersects(ChannelControl::DIRECTION));
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
         // must be forward
         assert!(channel.channel_control.address_step() == 4);
         // TODO: implement chopping
@@ -369,7 +500,7 @@ impl Dma {
         // must be to main ram
         assert!(!channel
             .channel_control
-            .intersects(ChannelControl::DIRECTION));
+            .intersects(ChannelControl::DIRECTION_FROM_RAM));
         // must be backwards
         assert!(channel.channel_control.address_step() == -4);
         // must be sync mode 0
@@ -433,6 +564,8 @@ impl Dma {
                 log::info!("channel {} doing DMA", i);
 
                 let (cycles_to_delay, finished) = match i {
+                    0 => Self::perform_mdec_in_channel0_dma(channel, dma_bus),
+                    1 => Self::perform_mdec_out_channel1_dma(channel, dma_bus),
                     2 => Self::perform_gpu_channel2_dma(channel, dma_bus),
                     3 => Self::perform_cdrom_channel3_dma(channel, dma_bus),
                     4 => Self::perform_spu_channel4_dma(channel, dma_bus),
