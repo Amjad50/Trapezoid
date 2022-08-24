@@ -135,9 +135,16 @@ impl Cpu {
                 self.should_print_prompt = true;
                 let mut tokens = cmd.trim().split_whitespace();
                 let cmd = tokens.next();
-                let addr = tokens
-                    .next()
-                    .map(|a| u32::from_str_radix(a.trim_start_matches("0x"), 16));
+                let addr = tokens.next().and_then(|a| {
+                    let value = u32::from_str_radix(a.trim_start_matches("0x"), 16);
+                    match value {
+                        Ok(value) => Some(value),
+                        Err(_) => {
+                            println!("Invalid address: {}", a);
+                            None
+                        }
+                    }
+                });
 
                 match cmd {
                     Some("h") => {
@@ -147,7 +154,7 @@ impl Cpu {
                         println!("s - step");
                         println!("tt - enable trace");
                         println!("tf - disbale trace");
-                        println!("stack [n] - print stack [n entries]");
+                        println!("stack [0xn] - print stack [n entries in hex]");
                         println!("b <addr> - set breakpoint");
                         println!("rb <addr> - remove breakpoint");
                         println!("wb <addr> - set write breakpoint");
@@ -164,10 +171,7 @@ impl Cpu {
                     Some("tt") => self.set_instruction_trace(true),
                     Some("tf") => self.set_instruction_trace(false),
                     Some("stack") => {
-                        let n = match tokens.next() {
-                            Some(n) => n.parse::<u32>().unwrap(),
-                            None => 10,
-                        };
+                        let n = addr.unwrap_or(10);
                         let sp = self.regs.read_register(register::RegisterType::Sp.into());
                         println!("Stack: SP=0x{:08X}", sp);
                         for i in 0..n {
@@ -176,40 +180,28 @@ impl Cpu {
                     }
                     Some("b") => {
                         if let Some(addr) = addr {
-                            match addr {
-                                Ok(addr) => self.add_breakpoint(addr),
-                                Err(e) => println!("Invalid address: {}", e),
-                            }
+                            self.add_breakpoint(addr);
                         } else {
                             println!("Usage: b <address>");
                         }
                     }
                     Some("rb") => {
                         if let Some(addr) = addr {
-                            match addr {
-                                Ok(addr) => self.remove_breakpoint(addr),
-                                Err(e) => println!("Invalid address: {}", e),
-                            }
+                            self.remove_breakpoint(addr);
                         } else {
                             println!("Usage: rb <address>");
                         }
                     }
                     Some("wb") => {
                         if let Some(addr) = addr {
-                            match addr {
-                                Ok(addr) => self.add_write_breakpoint(addr),
-                                Err(e) => println!("Invalid address: {}", e),
-                            }
+                            self.add_write_breakpoint(addr);
                         } else {
                             println!("Usage: wb <address>");
                         }
                     }
                     Some("wrb") => {
                         if let Some(addr) = addr {
-                            match addr {
-                                Ok(addr) => self.remove_write_breakpoint(addr),
-                                Err(e) => println!("Invalid address: {}", e),
-                            }
+                            self.remove_write_breakpoint(addr);
                         } else {
                             println!("Usage: wrb <address>");
                         }
@@ -224,39 +216,24 @@ impl Cpu {
                     }
                     Some("m") | Some("m32") => {
                         if let Some(addr) = addr {
-                            match addr {
-                                Ok(addr) => {
-                                    let val = bus.read_u32(addr);
-                                    println!("[0x{:08X}] = 0x{:08X}", addr, val);
-                                }
-                                Err(e) => println!("Invalid address: {}", e),
-                            }
+                            let val = bus.read_u32(addr);
+                            println!("[0x{:08X}] = 0x{:08X}", addr, val);
                         } else {
                             println!("Usage: m/m32 <address>");
                         }
                     }
                     Some("m16") => {
                         if let Some(addr) = addr {
-                            match addr {
-                                Ok(addr) => {
-                                    let val = bus.read_u16(addr);
-                                    println!("[0x{:08X}] = 0x{:04X}", addr, val);
-                                }
-                                Err(e) => println!("Invalid address: {}", e),
-                            }
+                            let val = bus.read_u16(addr);
+                            println!("[0x{:08X}] = 0x{:04X}", addr, val);
                         } else {
                             println!("Usage: m16 <address>");
                         }
                     }
                     Some("m8") => {
                         if let Some(addr) = addr {
-                            match addr {
-                                Ok(addr) => {
-                                    let val = bus.read_u8(addr);
-                                    println!("[0x{:08X}] = 0x{:02X}", addr, val);
-                                }
-                                Err(e) => println!("Invalid address: {}", e),
-                            }
+                            let val = bus.read_u8(addr);
+                            println!("[0x{:08X}] = 0x{:02X}", addr, val);
                         } else {
                             println!("Usage: m8 <address>");
                         }
