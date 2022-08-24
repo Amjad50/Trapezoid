@@ -38,7 +38,9 @@ pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
     }
 }
 
-pub trait Gp0Command {
+/// Commands constructed in the frontend and sent to the gpu on the backend
+/// for rendering.
+pub trait Gp0Command: Send {
     fn new(data0: u32) -> Self
     where
         Self: Sized;

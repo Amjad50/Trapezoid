@@ -520,10 +520,6 @@ impl GpuContext {
         self.gpu_stat.load()
     }
 
-    pub(super) fn write_gpu_stat(&self, stat: GpuStat) {
-        self.gpu_stat.store(stat);
-    }
-
     pub(super) fn send_to_gpu_read(&self, value: u32) {
         self.gpu_read_sender.send(value).unwrap();
     }
