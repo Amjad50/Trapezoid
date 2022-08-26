@@ -14,6 +14,9 @@ use crossbeam::channel::Receiver;
 use instruction::{Instruction, Opcode};
 use register::Registers;
 
+use self::instruction_format::REG_NAMES;
+use self::register::Register;
+
 pub trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
     fn should_run_dma(&self) -> bool;
@@ -134,14 +137,35 @@ impl Cpu {
             if let Ok(cmd) = self.stdin_recv.try_recv() {
                 self.should_print_prompt = true;
                 let mut tokens = cmd.trim().split_whitespace();
-                let cmd = tokens.next();
+                let mut cmd = tokens.next();
+                let modifier = cmd.and_then(|c| {
+                    c.split_once('/').map(|(s1, s2)| {
+                        cmd = Some(s1);
+                        s2
+                    })
+                });
                 let addr = tokens.next().and_then(|a| {
-                    let value = u32::from_str_radix(a.trim_start_matches("0x"), 16);
-                    match value {
-                        Ok(value) => Some(value),
-                        Err(_) => {
-                            println!("Invalid address: {}", a);
-                            None
+                    if a.starts_with('$') {
+                        let register_name = &a[1..];
+                        let register = REG_NAMES
+                            .iter()
+                            .position(|&r| r == register_name)
+                            .map(|i| Register::from_byte(i as u8));
+                        match register {
+                            Some(r) => Some(self.regs.read_register(r)),
+                            None => {
+                                println!("Invalid register name: {}", register_name);
+                                None
+                            }
+                        }
+                    } else {
+                        let value = u32::from_str_radix(a.trim_start_matches("0x"), 16);
+                        match value {
+                            Ok(value) => Some(value),
+                            Err(_) => {
+                                println!("Invalid address: {}", a);
+                                None
+                            }
                         }
                     }
                 });
@@ -215,25 +239,37 @@ impl Cpu {
                         }
                     }
                     Some("m") | Some("m32") => {
+                        let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
                         if let Some(addr) = addr {
-                            let val = bus.read_u32(addr);
-                            println!("[0x{:08X}] = 0x{:08X}", addr, val);
+                            for i in 0..count {
+                                let addr = addr + i * 4;
+                                let val = bus.read_u32(addr);
+                                println!("[0x{:08X}] = 0x{:08X}", addr, val);
+                            }
                         } else {
                             println!("Usage: m/m32 <address>");
                         }
                     }
                     Some("m16") => {
+                        let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
                         if let Some(addr) = addr {
-                            let val = bus.read_u16(addr);
-                            println!("[0x{:08X}] = 0x{:04X}", addr, val);
+                            for i in 0..count {
+                                let addr = addr + i * 2;
+                                let val = bus.read_u16(addr);
+                                println!("[0x{:08X}] = 0x{:04X}", addr, val);
+                            }
                         } else {
                             println!("Usage: m16 <address>");
                         }
                     }
                     Some("m8") => {
+                        let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
                         if let Some(addr) = addr {
-                            let val = bus.read_u8(addr);
-                            println!("[0x{:08X}] = 0x{:02X}", addr, val);
+                            for i in 0..count {
+                                let addr = addr + i * 1;
+                                let val = bus.read_u8(addr);
+                                println!("[0x{:08X}] = 0x{:02X}", addr, val);
+                            }
                         } else {
                             println!("Usage: m8 <address>");
                         }
@@ -298,6 +334,12 @@ impl Cpu {
 
                 self.execute_instruction(&instruction, bus);
 
+                if self.step {
+                    self.set_pause(true);
+                    self.step = false;
+                    break;
+                }
+
                 // exit so that we can run dma
                 // Delaying the DMA can cause problems,
                 // since if the DMA's SyncMode is `0`, it should run between
@@ -316,11 +358,6 @@ impl Cpu {
                     break;
                 }
 
-                if self.step {
-                    self.set_pause(true);
-                    self.step = false;
-                    break;
-                }
                 // can be set with write breakpoint
                 if self.paused {
                     break;
