@@ -4,14 +4,14 @@ mod gpu_backend;
 mod gpu_context;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine};
-use std::{sync::Arc, thread::JoinHandle};
+use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
+use gpu_backend::GpuBackend;
+use gpu_context::GpuContext;
 
 use crossbeam::{
     atomic::AtomicCell,
     channel::{Receiver, Sender},
 };
-use gpu_backend::GpuBackend;
-use gpu_context::GpuContext;
 use vulkano::{
     command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer},
     device::{Device, Queue},
@@ -19,6 +19,8 @@ use vulkano::{
     sampler::Filter,
     sync::GpuFuture,
 };
+
+use std::{sync::Arc, thread::JoinHandle};
 
 bitflags::bitflags! {
     #[derive(Default)]
@@ -123,9 +125,9 @@ impl GpuStat {
 }
 
 enum BackendCommand {
-    Gp0Write(u32),
     Gp1Write(u32),
     BlitFront(bool),
+    GpuCommand(Box<dyn Gp0Command>),
 }
 
 pub struct Gpu {
@@ -136,6 +138,9 @@ pub struct Gpu {
     // handle the backend gpu thread
     _gpu_backend_thread_handle: JoinHandle<()>,
 
+    /// holds commands that needs extra parameter and complex, like sending
+    /// to/from VRAM, and rendering
+    current_command: Option<Box<dyn Gp0Command>>,
     // GPUREAD channel
     gpu_read_receiver: Receiver<u32>,
     // backend commands channel
@@ -179,6 +184,8 @@ impl Gpu {
             queue,
 
             _gpu_backend_thread_handle,
+
+            current_command: None,
             gpu_read_receiver,
             gpu_backend_sender,
             gpu_front_image_receiver,
@@ -369,6 +376,155 @@ impl Gpu {
         out.unwrap_or(0)
     }
 }
+impl Gpu {
+    /// handles creating Gp0 commands, and then when ready to be executed,
+    /// will be sent to the backend.
+    fn handle_gp0(&mut self, data: u32) {
+        log::trace!("GPU: GP0 write: {:08x}", data);
+        // if we still executing some command
+        if let Some(cmd) = self.current_command.as_mut() {
+            if cmd.still_need_params() {
+                log::trace!("gp0 extra param {:08X}", data);
+                cmd.add_param(data);
+                if !cmd.still_need_params() {
+                    // take the self reference from here, so that we can update the gpu_stat
+                    // without issues
+                    let cmd = self.current_command.take().unwrap();
+
+                    self.gpu_stat
+                        .fetch_update(|s| Some(s - GpuStat::READY_FOR_DMA_RECV))
+                        .unwrap();
+
+                    log::info!("executing command {:?}", cmd.cmd_type());
+                    self.gpu_backend_sender
+                        .send(BackendCommand::GpuCommand(cmd))
+                        .unwrap();
+
+                    // ready for next command
+                    self.gpu_stat
+                        .fetch_update(|s| {
+                            Some(s | GpuStat::READY_FOR_CMD_RECV | GpuStat::READY_FOR_DMA_RECV)
+                        })
+                        .unwrap();
+                }
+            } else {
+                unreachable!();
+            }
+        } else {
+            let mut cmd = instantiate_gp0_command(data);
+            log::info!("creating new command {:?}", cmd.cmd_type());
+            if cmd.still_need_params() {
+                self.current_command = Some(cmd);
+                self.gpu_stat
+                    .fetch_update(|s| Some(s - GpuStat::READY_FOR_CMD_RECV))
+                    .unwrap();
+            } else {
+                log::info!("executing command {:?}", cmd.cmd_type());
+                self.gpu_backend_sender
+                    .send(BackendCommand::GpuCommand(cmd))
+                    .unwrap();
+            }
+        }
+    }
+
+    /// Execute instructions we can from frontend, or else send to backend.
+    /// This allows for GPU_STAT register to be synced.
+    fn handle_gp1(&mut self, data: u32) {
+        let cmd = data >> 24;
+        log::trace!("gp1 command {:02X} data: {:08X}", cmd, data);
+        match cmd {
+            0x00 => {
+                // Reset Gpu
+                // TODO: check what we need to do in reset
+                self.gpu_stat.store(
+                    GpuStat::DISPLAY_DISABLED
+                        | GpuStat::INTERLACE_FIELD
+                        | GpuStat::READY_FOR_DMA_RECV
+                        | GpuStat::READY_FOR_CMD_RECV,
+                );
+            }
+            0x01 => {
+                // Reset command fifo buffer
+
+                // TODO: reset the sender buffer
+                if let Some(cmd) = &mut self.current_command {
+                    if let Gp0CmdType::CpuToVramBlit = cmd.cmd_type() {
+                        // flush vram write
+
+                        // FIXME: close the write here and flush
+                        //  do not add more data
+                        //while !cmd.exec_command(&mut self.gpu_context) {
+                        //    if cmd.still_need_params() {
+                        //        cmd.add_param(0);
+                        //    }
+                        //}
+                        self.current_command = None;
+                        todo!();
+                    }
+                }
+            }
+            0x02 => {
+                // Reset IRQ
+                self.gpu_stat
+                    .fetch_update(|s| Some(s.difference(GpuStat::INTERRUPT_REQUEST)))
+                    .unwrap();
+            }
+            0x03 => {
+                // Display enable
+                self.gpu_stat
+                    .fetch_update(|s| {
+                        if data & 1 == 1 {
+                            Some(s.union(GpuStat::DISPLAY_DISABLED))
+                        } else {
+                            Some(s.difference(GpuStat::DISPLAY_DISABLED))
+                        }
+                    })
+                    .unwrap();
+            }
+            0x04 => {
+                // DMA direction
+                // TODO: should also affect GpuStat::DMA_DATA_REQUEST
+                self.gpu_stat
+                    .fetch_update(|mut s| {
+                        s.remove(GpuStat::DMA_DIRECTION);
+                        s.bits |= (data & 3) << 29;
+                        Some(s)
+                    })
+                    .unwrap();
+            }
+            0x08 => {
+                // Display mode
+
+                // 17-18 Horizontal Resolution 1     (0=256, 1=320, 2=512, 3=640)
+                // 19    Vertical Resolution         (0=240, 1=480, when Bit22=1)
+                // 20    Video Mode                  (0=NTSC/60Hz, 1=PAL/50Hz)
+                // 21    Display Area Color Depth    (0=15bit, 1=24bit)
+                // 22    Vertical Interlace          (0=Off, 1=On)
+                let stat_bits_17_22 = data & 0x3F;
+                let stat_bit_16_horizontal_resolution_2 = (data >> 6) & 1;
+                let stat_bit_14_reverse_flag = (data >> 7) & 1;
+                // the inverse of the vertical interlace
+                let interlace_field = ((data >> 5) & 1) ^ 1;
+
+                self.gpu_stat
+                    .fetch_update(|mut s| {
+                        s.bits &= !0x7f6000;
+                        s.bits |= stat_bits_17_22 << 17;
+                        s.bits |= stat_bit_14_reverse_flag << 14;
+                        s.bits |= stat_bit_16_horizontal_resolution_2 << 16;
+                        s.bits |= interlace_field << 13;
+                        Some(s)
+                    })
+                    .unwrap();
+            }
+            _ => {
+                self.gpu_backend_sender
+                    .send(BackendCommand::Gp1Write(data))
+                    .unwrap();
+            }
+        }
+    }
+}
 
 impl BusLine for Gpu {
     fn read_u32(&mut self, addr: u32) -> u32 {
@@ -381,14 +537,12 @@ impl BusLine for Gpu {
 
     fn write_u32(&mut self, addr: u32, data: u32) {
         match addr {
-            0 => self
-                .gpu_backend_sender
-                .send(BackendCommand::Gp0Write(data))
-                .unwrap(),
-            4 => self
-                .gpu_backend_sender
-                .send(BackendCommand::Gp1Write(data))
-                .unwrap(),
+            0 => {
+                self.handle_gp0(data);
+            }
+            4 => {
+                self.handle_gp1(data);
+            }
             _ => unreachable!(),
         }
     }
