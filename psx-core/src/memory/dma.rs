@@ -264,11 +264,11 @@ impl Dma {
             let offset;
             match fifo_state.block_type {
                 mdec::BlockType::Y1 | mdec::BlockType::Y3 => {
-                    let base_index = fifo_state.index as i32 / 4;
+                    let base_index = fifo_state.index as i32 / row_size;
                     offset = base_index * row_size;
                 }
                 mdec::BlockType::Y2 | mdec::BlockType::Y4 => {
-                    let base_index = fifo_state.index as i32 / 4;
+                    let base_index = fifo_state.index as i32 / row_size;
                     offset = base_index * row_size + row_size - block_size;
                 }
                 mdec::BlockType::YCr => {
