@@ -30,6 +30,9 @@ use vulkano::{
     sync::{GpuFuture, NowFuture},
 };
 
+const COMPUTE_24BIT_ROW_OPERATIONS: u32 = 512 / 3;
+const COMPUTE_LOCAL_SIZE_XY: u32 = 8;
+
 mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
@@ -85,6 +88,9 @@ uint IN_W = 512;
 uint OUT_W = 1024;
 uint MAX_IN_X = (512 * 4 / 3) - 1;
 
+// perform a whole operation each time.
+uint ROW_OPERATIONS = IN_W / 3;
+
 layout(set = 0, binding = 0) readonly buffer InData {
     uint data[];
 } inImageData;
@@ -96,36 +102,24 @@ void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
 
-    if (x > MAX_IN_X) {
+    if (x >= ROW_OPERATIONS) {
         return;
     }
 
-    uint result_data = 0;
+    // convert every 3 words into 4 24bit pixels.
+    uint in1 = inImageData.data[y * IN_W + x * 3 + 0];
+    uint in2 = inImageData.data[y * IN_W + x * 3 + 1];
+    uint in3 = inImageData.data[y * IN_W + x * 3 + 2];
 
-    uint outBaseX = (x / 4) * 3;
-    uint type = x % 4;
+    uint out1 = in1 & 0xFFFFFF;
+    uint out2 = (in1 >> 24) | ((in2 & 0xFFFF) << 8);
+    uint out3 = (in2 >> 16) | ((in3 & 0xFF) << 16);
+    uint out4 = in3 >> 8;
 
-    if (type != 0) {
-        outBaseX += (type - 1);
-        uint d1 = inImageData.data[y * IN_W + outBaseX];
-
-        if (type == 3) {
-            result_data = d1 >> 8;
-        } else {
-            uint d2 = inImageData.data[y * IN_W + outBaseX + 1];
-
-            if (type == 1) {
-                result_data = (d1 >> 24) | ((d2 & 0xFFFF) << 8);
-            } else {
-                result_data = ((d1 >> 16) & 0xFFFF) | ((d2 & 0xFF) << 16);
-            }
-        }
-    } else {
-        uint d = inImageData.data[y * IN_W + outBaseX];
-        result_data = d;
-    }
-
-    outImageData.data[y * OUT_W + x] = result_data & 0x00FFFFFF;
+    outImageData.data[y * OUT_W + x * 4 + 0] = out1;
+    outImageData.data[y * OUT_W + x * 4 + 1] = out2;
+    outImageData.data[y * OUT_W + x * 4 + 2] = out3;
+    outImageData.data[y * OUT_W + x * 4 + 3] = out4;
 }"
     }
 }
@@ -334,7 +328,11 @@ impl FrontBlit {
                     0,
                     self.texture_24bit_desc_set.clone(),
                 )
-                .dispatch([(512 * 4 / 3) / 8 + 1, 512 / 8, 1])
+                .dispatch([
+                    COMPUTE_24BIT_ROW_OPERATIONS / COMPUTE_LOCAL_SIZE_XY,
+                    512 / COMPUTE_LOCAL_SIZE_XY,
+                    1,
+                ])
                 .unwrap()
                 .copy_buffer_to_image(
                     self.texture_24bit_out_buffer.clone(),
