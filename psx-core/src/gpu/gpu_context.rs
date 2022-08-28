@@ -915,8 +915,8 @@ impl GpuContext {
 
         let left = drawing_left;
         let top = drawing_top;
-        let height = drawing_bottom - drawing_top + 1;
-        let width = drawing_right - drawing_left + 1;
+        let height = drawing_bottom + 1 - drawing_top;
+        let width = drawing_right + 1 - drawing_left;
 
         if textured {
             if !self.allow_texture_disable {
@@ -1061,6 +1061,7 @@ impl GpuContext {
                 front_image.clone(),
                 topleft,
                 size,
+                gpu_stat.is_24bit_color_depth(),
                 self.gpu_future.take().unwrap(),
             )
             .then_signal_fence_and_flush()

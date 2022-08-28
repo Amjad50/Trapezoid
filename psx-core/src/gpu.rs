@@ -107,6 +107,10 @@ impl GpuStat {
         240 << self.intersects(Self::VERTICAL_RESOLUTION) as u32
     }
 
+    fn is_24bit_color_depth(&self) -> bool {
+        self.intersects(Self::DISPLAY_AREA_COLOR_DEPTH)
+    }
+
     fn is_ntsc_video_mode(&self) -> bool {
         !self.intersects(Self::VIDEO_MODE)
     }

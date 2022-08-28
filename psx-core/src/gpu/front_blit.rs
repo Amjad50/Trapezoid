@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use vulkano::{
-    buffer::{BufferUsage, ImmutableBuffer},
+    buffer::{BufferUsage, DeviceLocalBuffer, ImmutableBuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferExecFuture, CommandBufferUsage,
         PrimaryAutoCommandBuffer, SubpassContents,
@@ -12,7 +12,7 @@ use vulkano::{
     format::{ClearValue, Format},
     image::{
         view::{ImageView, ImageViewCreateInfo},
-        ImageAccess, StorageImage,
+        ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage,
     },
     pipeline::{
         graphics::{
@@ -20,7 +20,7 @@ use vulkano::{
             vertex_input::BuffersDefinition,
             viewport::{Viewport, ViewportState},
         },
-        GraphicsPipeline, Pipeline, PipelineBindPoint,
+        ComputePipeline, GraphicsPipeline, Pipeline, PipelineBindPoint,
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     sampler::{
@@ -29,6 +29,9 @@ use vulkano::{
     },
     sync::{GpuFuture, NowFuture},
 };
+
+const COMPUTE_24BIT_ROW_OPERATIONS: u32 = 512 / 3;
+const COMPUTE_LOCAL_SIZE_XY: u32 = 8;
 
 mod vs {
     vulkano_shaders::shader! {
@@ -73,6 +76,54 @@ void main() {
     }
 }
 
+mod cs {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        src: "
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+uint IN_W = 512;
+uint OUT_W = 1024;
+uint MAX_IN_X = (512 * 4 / 3) - 1;
+
+// perform a whole operation each time.
+uint ROW_OPERATIONS = IN_W / 3;
+
+layout(set = 0, binding = 0) readonly buffer InData {
+    uint data[];
+} inImageData;
+layout(set = 0, binding = 1) writeonly buffer OutData {
+    uint data[];
+} outImageData;
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+
+    if (x >= ROW_OPERATIONS) {
+        return;
+    }
+
+    // convert every 3 words into 4 24bit pixels.
+    uint in1 = inImageData.data[y * IN_W + x * 3 + 0];
+    uint in2 = inImageData.data[y * IN_W + x * 3 + 1];
+    uint in3 = inImageData.data[y * IN_W + x * 3 + 2];
+
+    uint out1 = in1 & 0xFFFFFF;
+    uint out2 = (in1 >> 24) | ((in2 & 0xFFFF) << 8);
+    uint out3 = (in2 >> 16) | ((in3 & 0xFF) << 16);
+    uint out4 = in3 >> 8;
+
+    outImageData.data[y * OUT_W + x * 4 + 0] = out1;
+    outImageData.data[y * OUT_W + x * 4 + 1] = out2;
+    outImageData.data[y * OUT_W + x * 4 + 2] = out3;
+    outImageData.data[y * OUT_W + x * 4 + 3] = out4;
+}"
+    }
+}
+
 #[derive(Default, Debug, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 struct Vertex {
@@ -87,8 +138,14 @@ pub(super) struct FrontBlit {
 
     texture_image: Arc<StorageImage>,
 
+    texture_24bit_image: Arc<StorageImage>,
+    texture_24bit_in_buffer: Arc<DeviceLocalBuffer<[u16]>>,
+    texture_24bit_out_buffer: Arc<DeviceLocalBuffer<[u32]>>,
+    texture_24bit_desc_set: Arc<PersistentDescriptorSet>,
+
     render_pass: Arc<RenderPass>,
-    pipeline: Arc<GraphicsPipeline>,
+    g_pipeline: Arc<GraphicsPipeline>,
+    c_pipeline: Arc<ComputePipeline>,
 
     vertex_buffer: Arc<ImmutableBuffer<[Vertex]>>,
 }
@@ -104,6 +161,7 @@ impl FrontBlit {
     ) {
         let vs = vs::load(device.clone()).unwrap();
         let fs = fs::load(device.clone()).unwrap();
+        let cs = cs::load(device.clone()).unwrap();
 
         let render_pass = vulkano::single_pass_renderpass!(
             device.clone(),
@@ -122,7 +180,7 @@ impl FrontBlit {
         )
         .unwrap();
 
-        let pipeline = GraphicsPipeline::start()
+        let g_pipeline = GraphicsPipeline::start()
             .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
             .vertex_shader(vs.entry_point("main").unwrap(), ())
             .input_assembly_state(
@@ -133,6 +191,66 @@ impl FrontBlit {
             .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
             .build(device.clone())
             .unwrap();
+
+        let c_pipeline = ComputePipeline::new(
+            device.clone(),
+            cs.entry_point("main").unwrap(),
+            &(),
+            None,
+            |_| {},
+        )
+        .unwrap();
+
+        let texture_24bit_image = StorageImage::with_usage(
+            device.clone(),
+            ImageDimensions::Dim2d {
+                width: 1024,
+                height: 512,
+                array_layers: 1,
+            },
+            Format::B8G8R8A8_UNORM,
+            ImageUsage {
+                transfer_destination: true,
+                sampled: true,
+                ..ImageUsage::none()
+            },
+            ImageCreateFlags::none(),
+            Some(queue.family()),
+        )
+        .unwrap();
+
+        let texture_24bit_in_buffer = DeviceLocalBuffer::<[u16]>::array(
+            device.clone(),
+            1024 * 512,
+            BufferUsage {
+                transfer_destination: true,
+                storage_buffer: true,
+                ..BufferUsage::none()
+            },
+            [queue.family()],
+        )
+        .unwrap();
+
+        let texture_24bit_out_buffer = DeviceLocalBuffer::<[u32]>::array(
+            device.clone(),
+            1024 * 512,
+            BufferUsage {
+                transfer_source: true,
+                storage_buffer: true,
+                ..BufferUsage::none()
+            },
+            [queue.family()],
+        )
+        .unwrap();
+
+        let texture_24bit_desc_set = PersistentDescriptorSet::new(
+            c_pipeline.layout().set_layouts().get(0).unwrap().clone(),
+            [
+                WriteDescriptorSet::buffer(0, texture_24bit_in_buffer.clone()),
+                WriteDescriptorSet::buffer(1, texture_24bit_out_buffer.clone()),
+            ],
+        )
+        .unwrap();
 
         let (vertex_buffer, immutable_buffer_future) = ImmutableBuffer::from_iter(
             [
@@ -159,8 +277,13 @@ impl FrontBlit {
                 device,
                 queue,
                 texture_image: source_image,
+                texture_24bit_image,
+                texture_24bit_in_buffer,
+                texture_24bit_out_buffer,
+                texture_24bit_desc_set,
                 render_pass,
-                pipeline,
+                g_pipeline,
+                c_pipeline,
                 vertex_buffer,
             },
             immutable_buffer_future,
@@ -172,6 +295,7 @@ impl FrontBlit {
         dest_image: Arc<D>,
         topleft: [u32; 2],
         size: [u32; 2],
+        is_24bit_color_depth: bool,
         in_future: IF,
     ) -> CommandBufferExecFuture<IF, PrimaryAutoCommandBuffer>
     where
@@ -179,6 +303,45 @@ impl FrontBlit {
         IF: GpuFuture,
     {
         let [width, height] = dest_image.dimensions().width_height();
+
+        let mut source_image = self.texture_image.clone();
+
+        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
+            AutoCommandBufferBuilder::primary(
+                self.device.clone(),
+                self.queue.family(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
+
+        if is_24bit_color_depth {
+            builder
+                .copy_image_to_buffer(
+                    self.texture_image.clone(),
+                    self.texture_24bit_in_buffer.clone(),
+                )
+                .unwrap()
+                .bind_pipeline_compute(self.c_pipeline.clone())
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    self.c_pipeline.layout().clone(),
+                    0,
+                    self.texture_24bit_desc_set.clone(),
+                )
+                .dispatch([
+                    COMPUTE_24BIT_ROW_OPERATIONS / COMPUTE_LOCAL_SIZE_XY,
+                    512 / COMPUTE_LOCAL_SIZE_XY,
+                    1,
+                ])
+                .unwrap()
+                .copy_buffer_to_image(
+                    self.texture_24bit_out_buffer.clone(),
+                    self.texture_24bit_image.clone(),
+                )
+                .unwrap();
+
+            source_image = self.texture_24bit_image.clone();
+        }
 
         let sampler = Sampler::new(
             self.device.clone(),
@@ -192,17 +355,17 @@ impl FrontBlit {
         )
         .unwrap();
 
-        let layout = self.pipeline.layout().set_layouts().get(0).unwrap();
+        let layout = self.g_pipeline.layout().set_layouts().get(0).unwrap();
 
         let texture_image_view = ImageView::new(
-            self.texture_image.clone(),
+            source_image.clone(),
             ImageViewCreateInfo {
                 component_mapping: ComponentMapping {
                     r: ComponentSwizzle::Blue,
                     b: ComponentSwizzle::Red,
                     ..Default::default()
                 },
-                ..ImageViewCreateInfo::from_image(&self.texture_image)
+                ..ImageViewCreateInfo::from_image(&source_image)
             },
         )
         .unwrap();
@@ -227,14 +390,6 @@ impl FrontBlit {
 
         let push_constants = vs::ty::PushConstantData { topleft, size };
 
-        let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
-            AutoCommandBufferBuilder::primary(
-                self.device.clone(),
-                self.queue.family(),
-                CommandBufferUsage::OneTimeSubmit,
-            )
-            .unwrap();
-
         builder
             .begin_render_pass(framebuffer, SubpassContents::Inline, [ClearValue::None])
             .unwrap()
@@ -246,14 +401,14 @@ impl FrontBlit {
                     depth_range: 0.0..1.0,
                 }],
             )
-            .bind_pipeline_graphics(self.pipeline.clone())
+            .bind_pipeline_graphics(self.g_pipeline.clone())
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
-                self.pipeline.layout().clone(),
+                self.g_pipeline.layout().clone(),
                 0,
                 set,
             )
-            .push_constants(self.pipeline.layout().clone(), 0, push_constants)
+            .push_constants(self.g_pipeline.layout().clone(), 0, push_constants)
             .bind_vertex_buffers(0, self.vertex_buffer.clone())
             .draw(4, 1, 0, 0)
             .unwrap()
