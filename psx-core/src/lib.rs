@@ -14,9 +14,11 @@ mod tests;
 use std::{
     path::Path,
     sync::{
+        atomic::{AtomicU64, Ordering},
         mpsc::{channel, Receiver, Sender},
         Arc,
     },
+    time::Instant,
 };
 
 use cpu::Cpu;
@@ -36,6 +38,27 @@ enum PsxCommand {
     ChangeKeyState(DigitalControllerKey, bool),
 }
 
+// quick and dirty way to have atomic f64
+pub struct AtomicF64 {
+    storage: AtomicU64,
+}
+impl AtomicF64 {
+    pub fn new(value: f64) -> Self {
+        let as_u64 = value.to_bits();
+        Self {
+            storage: AtomicU64::new(as_u64),
+        }
+    }
+    pub fn store(&self, value: f64, ordering: Ordering) {
+        let as_u64 = value.to_bits();
+        self.storage.store(as_u64, ordering)
+    }
+    pub fn load(&self, ordering: Ordering) -> f64 {
+        let as_u64 = self.storage.load(ordering);
+        f64::from_bits(as_u64)
+    }
+}
+
 struct PsxBackend {
     bus: CpuBus,
     cpu: Cpu,
@@ -47,13 +70,24 @@ struct PsxBackend {
     excess_cpu_cycles: u32,
 
     cmd_rx: Receiver<PsxCommand>,
+
+    instant: Instant,
+    fps: Arc<AtomicF64>,
 }
 
 impl PsxBackend {
     pub fn run(&mut self) {
         loop {
+            let in_vblank = self.bus.gpu().in_vblank();
             for _ in 0..100 {
                 self.clock();
+            }
+            if !in_vblank && self.bus.gpu().in_vblank() {
+                self.fps.store(
+                    1.0 / self.instant.elapsed().as_secs_f64(),
+                    Ordering::Relaxed,
+                );
+                self.instant = Instant::now();
             }
 
             match self.cmd_rx.try_recv() {
@@ -90,6 +124,7 @@ impl PsxBackend {
 pub struct Psx {
     cmd_tx: Sender<PsxCommand>,
     gpu_renderer: GpuRenderer,
+    fps: Arc<AtomicF64>,
 }
 
 impl Psx {
@@ -104,11 +139,15 @@ impl Psx {
 
         let (cmd_tx, cmd_rx) = channel();
 
+        let fps = Arc::new(AtomicF64::new(0.0));
+
         let backend = PsxBackend {
             cpu: Cpu::new(),
             bus: CpuBus::new(bios, disk_file, device, queue),
             excess_cpu_cycles: 0,
             cmd_rx,
+            instant: Instant::now(),
+            fps: fps.clone(),
         };
 
         let gpu_renderer = backend.bus.gpu().create_renderer();
@@ -121,6 +160,7 @@ impl Psx {
         Ok(Self {
             cmd_tx,
             gpu_renderer,
+            fps,
         })
     }
 
@@ -137,5 +177,9 @@ impl Psx {
     {
         self.gpu_renderer
             .sync_gpu_and_blit_to_front(dest_image, full_vram, in_future);
+    }
+
+    pub fn emulation_fps(&self) -> f64 {
+        self.fps.load(Ordering::Relaxed)
     }
 }

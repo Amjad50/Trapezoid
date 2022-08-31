@@ -225,8 +225,9 @@ impl VkDisplay {
                 last_frame_time,
             } => {
                 surface.window().set_title(&format!(
-                    "PSX - FPS: {}",
-                    (1. / last_frame_time.elapsed().as_secs_f32()).round()
+                    "PSX - FPS: {}, EMU: {}",
+                    (1. / last_frame_time.elapsed().as_secs_f64()).round(),
+                    psx.emulation_fps().round()
                 ));
 
                 // reset timer

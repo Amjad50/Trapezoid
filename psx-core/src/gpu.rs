@@ -273,6 +273,10 @@ impl Gpu {
         (dot_clocks, hblank_clock)
     }
 
+    pub fn in_vblank(&self) -> bool {
+        self.in_vblank
+    }
+
     pub fn create_renderer(&self) -> GpuRenderer {
         GpuRenderer::new(
             self.device.clone(),
