@@ -225,10 +225,6 @@ impl CpuBus {
         &self.dma_bus.gpu
     }
 
-    pub fn gpu_mut(&mut self) -> &mut Gpu {
-        &mut self.dma_bus.gpu
-    }
-
     pub fn controller_mem_card_mut(&mut self) -> &mut ControllerAndMemoryCard {
         &mut self.controller_mem_card
     }

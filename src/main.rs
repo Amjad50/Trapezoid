@@ -297,8 +297,8 @@ fn main() {
     .unwrap();
 
     event_loop.run(move |event, _target, control_flow| {
-        if let Event::WindowEvent { event, .. } = event {
-            match event {
+        match event {
+            Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
                     return;
@@ -337,15 +337,12 @@ fn main() {
                     }
                 }
                 _ => {}
-            }
-        }
-        *control_flow = ControlFlow::Poll;
-
-        // do several clocks in one time to reduce latency of the `event_loop.run` method.
-        for _ in 0..100 {
-            if psx.clock() {
+            },
+            Event::MainEventsCleared => {
                 display.render_frame(&mut psx);
             }
+            _ => {}
         }
+        *control_flow = ControlFlow::Poll;
     });
 }
