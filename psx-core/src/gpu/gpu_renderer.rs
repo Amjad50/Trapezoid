@@ -9,14 +9,11 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-use super::BackendCommand;
-
 pub struct GpuRenderer {
     device: Arc<Device>,
     queue: Arc<Queue>,
 
-    // backend commands channel
-    gpu_backend_sender: Sender<BackendCommand>,
+    gpu_blit_cmd_sender: Sender<bool>,
     // channel for front image coming from backend
     gpu_front_image_receiver: Receiver<Arc<StorageImage>>,
 
@@ -28,14 +25,14 @@ impl GpuRenderer {
     pub(super) fn new(
         device: Arc<Device>,
         queue: Arc<Queue>,
-        gpu_backend_sender: Sender<BackendCommand>,
+        gpu_blit_cmd_sender: Sender<bool>,
         gpu_front_image_receiver: Receiver<Arc<StorageImage>>,
     ) -> Self {
         Self {
             device,
             queue,
 
-            gpu_backend_sender,
+            gpu_blit_cmd_sender,
             gpu_front_image_receiver,
 
             first_frame: true,
@@ -64,9 +61,7 @@ impl GpuRenderer {
         self.first_frame = false;
 
         // send command for next frame from now, so when we recv later, its mostly will be ready
-        self.gpu_backend_sender
-            .send(BackendCommand::BlitFront(full_vram))
-            .unwrap();
+        self.gpu_blit_cmd_sender.send(full_vram).unwrap();
 
         if let Some(img) = self.current_front_image.as_ref() {
             let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =

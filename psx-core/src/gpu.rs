@@ -131,7 +131,6 @@ impl GpuStat {
 
 enum BackendCommand {
     Gp1Write(u32),
-    BlitFront(bool),
     GpuCommand(Box<dyn Gp0Command>),
 }
 
@@ -150,6 +149,7 @@ pub struct Gpu {
     gpu_read_receiver: Receiver<u32>,
     // backend commands channel
     gpu_backend_sender: Sender<BackendCommand>,
+    gpu_blit_cmd_sender: Sender<bool>,
     // channel for front image coming from backend
     gpu_front_image_receiver: Receiver<Arc<StorageImage>>,
 
@@ -165,7 +165,8 @@ pub struct Gpu {
 impl Gpu {
     pub fn new(device: Arc<Device>, queue: Arc<Queue>) -> Self {
         let (gpu_read_sender, gpu_read_receiver) = crossbeam::channel::unbounded();
-        let (gpu_backend_sender, gpu_backend_receiver) = crossbeam::channel::unbounded();
+        let (gpu_backend_sender, gpu_backend_receiver) = crossbeam::channel::bounded(100);
+        let (gpu_blit_cmd_sender, gpu_blit_cmd_receiver) = crossbeam::channel::unbounded();
         let (gpu_front_image_sender, gpu_front_image_receiver) = crossbeam::channel::unbounded();
 
         let gpu_stat = Arc::new(AtomicCell::new(
@@ -178,6 +179,7 @@ impl Gpu {
             gpu_stat.clone(),
             gpu_read_sender,
             gpu_backend_receiver,
+            gpu_blit_cmd_receiver,
             gpu_front_image_sender,
         );
 
@@ -190,6 +192,7 @@ impl Gpu {
             current_command: None,
             gpu_read_receiver,
             gpu_backend_sender,
+            gpu_blit_cmd_sender,
             gpu_front_image_receiver,
 
             gpu_stat,
@@ -281,7 +284,7 @@ impl Gpu {
         GpuRenderer::new(
             self.device.clone(),
             self.queue.clone(),
-            self.gpu_backend_sender.clone(),
+            self.gpu_blit_cmd_sender.clone(),
             self.gpu_front_image_receiver.clone(),
         )
     }

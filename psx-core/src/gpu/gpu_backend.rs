@@ -8,6 +8,7 @@ use crossbeam::{
 use std::{
     sync::Arc,
     thread::{self, JoinHandle},
+    time::Duration,
 };
 use vulkano::{
     device::{Device, Queue},
@@ -18,6 +19,7 @@ pub struct GpuBackend {
     gpu_context: GpuContext,
 
     gpu_backend_receiver: Receiver<BackendCommand>,
+    gpu_blit_cmd_receiver: Receiver<bool>,
 }
 
 impl GpuBackend {
@@ -27,6 +29,7 @@ impl GpuBackend {
         gpu_stat: Arc<AtomicCell<GpuStat>>,
         gpu_read_sender: Sender<u32>,
         gpu_backend_receiver: Receiver<BackendCommand>,
+        gpu_blit_cmd_receiver: Receiver<bool>,
         gpu_front_image_sender: Sender<Arc<StorageImage>>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
@@ -39,6 +42,7 @@ impl GpuBackend {
                     gpu_front_image_sender,
                 ),
                 gpu_backend_receiver,
+                gpu_blit_cmd_receiver,
             };
             b.run();
         })
@@ -46,11 +50,17 @@ impl GpuBackend {
 
     fn run(mut self) {
         loop {
-            match self.gpu_backend_receiver.recv() {
-                Ok(BackendCommand::Gp1Write(data)) => self.run_gp1_command(data),
-                Ok(BackendCommand::BlitFront(full_vram)) => {
+            match self.gpu_blit_cmd_receiver.try_recv() {
+                Ok(full_vram) => {
                     self.gpu_context.blit_to_front(full_vram);
                 }
+                _ => {}
+            }
+            match self
+                .gpu_backend_receiver
+                .recv_timeout(Duration::from_millis(1))
+            {
+                Ok(BackendCommand::Gp1Write(data)) => self.run_gp1_command(data),
                 Ok(BackendCommand::GpuCommand(mut command)) => {
                     assert!(!command.still_need_params());
                     command.exec_command(&mut self.gpu_context);
