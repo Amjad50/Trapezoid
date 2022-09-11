@@ -1,7 +1,7 @@
 use std::{collections::HashSet, io::Write, process, thread};
 
 use crossbeam::channel::{Receiver, Sender};
-use rustyline::{error::ReadlineError, Config, Editor};
+use rustyline::{error::ReadlineError, history::History, Config, Editor};
 
 use crate::cpu::register;
 
@@ -53,16 +53,27 @@ impl Debugger {
         let (editor_tx, editor_rx) = crossbeam::channel::bounded(1);
 
         thread::spawn(move || {
+            let mut history = History::new();
             let mut editor = None;
 
             loop {
                 if let Ok(cmd) = editor_rx.recv() {
                     match cmd {
-                        EditorCmd::Start => editor = Some(create_editor()),
+                        EditorCmd::Start => {
+                            let mut ed = create_editor();
+                            // laod history
+                            std::mem::swap(ed.history_mut(), &mut history);
+                            editor = Some(ed);
+                        }
                         EditorCmd::Continue => {
                             assert!(editor.is_some());
                         }
-                        EditorCmd::Stop => continue,
+                        EditorCmd::Stop => {
+                            let mut ed = editor.take().unwrap();
+                            // save history
+                            std::mem::swap(ed.history_mut(), &mut history);
+                            continue;
+                        }
                     }
                     // flush all outputs
                     std::io::stdout().flush().unwrap();
