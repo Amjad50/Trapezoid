@@ -5,17 +5,38 @@ mod register;
 
 use std::collections::HashSet;
 use std::io::Write;
-use std::thread;
+use std::{process, thread};
 
 use crate::coprocessor::{Gte, SystemControlCoprocessor};
 use crate::memory::BusLine;
 
-use crossbeam::channel::Receiver;
+use crossbeam::channel::{Receiver, Sender};
 use instruction::{Instruction, Opcode};
 use register::Registers;
+use rustyline::error::ReadlineError;
+use rustyline::{Config, Editor};
 
 use self::instruction_format::REG_NAMES;
 use self::register::Register;
+
+/// Instructing the editor thread on what to do.
+///
+/// The reason for this, is that the `Editor` object transforms the terminal
+/// to raw mode, and thus if its created, we can't Ctrl-C to kill the emulator.
+/// For better user experience, we create the editor only when needed.
+enum EditorCmd {
+    /// Create a new editor and read input
+    Start,
+    /// Continue reading input
+    Continue,
+    /// Stop reading input and destroy the editor
+    Stop,
+}
+
+fn create_editor() -> Editor<()> {
+    let conf = Config::builder().auto_add_history(true).build();
+    Editor::with_config(conf).unwrap()
+}
 
 pub trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
@@ -54,21 +75,37 @@ pub struct Cpu {
     in_breakpoint: bool,
     // allow to execute one instruction only
     step: bool,
-    stdin_recv: Receiver<String>,
-    should_print_prompt: bool,
+    stdin_rx: Receiver<String>,
+    editor_tx: Sender<EditorCmd>,
 }
 
 impl Cpu {
     pub fn new() -> Self {
-        let (tx, rx) = crossbeam::channel::bounded(5);
+        let (stdin_tx, stdin_rx) = crossbeam::channel::bounded(1);
+        let (editor_tx, editor_rx) = crossbeam::channel::bounded(1);
 
-        // thread to collect stdin and not block the Cpu
         thread::spawn(move || {
-            let stdin = std::io::stdin();
+            let mut editor = None;
+
             loop {
-                let mut line = String::new();
-                stdin.read_line(&mut line).unwrap();
-                tx.send(line).unwrap();
+                if let Ok(cmd) = editor_rx.recv() {
+                    match cmd {
+                        EditorCmd::Start => editor = Some(create_editor()),
+                        EditorCmd::Continue => {
+                            assert!(editor.is_some());
+                        }
+                        EditorCmd::Stop => continue,
+                    }
+                    // flush all outputs
+                    std::io::stdout().flush().unwrap();
+                    match editor.as_mut().unwrap().readline("CPU> ") {
+                        Ok(line) => {
+                            stdin_tx.send(line).unwrap();
+                        }
+                        Err(ReadlineError::Interrupted) => process::exit(0),
+                        _ => {}
+                    }
+                }
             }
         });
 
@@ -87,8 +124,8 @@ impl Cpu {
             write_breakpoints: HashSet::new(),
             in_breakpoint: false,
             step: false,
-            stdin_recv: rx,
-            should_print_prompt: false,
+            stdin_rx,
+            editor_tx,
         }
     }
 
@@ -97,9 +134,21 @@ impl Cpu {
         println!("Instruction trace: {}", self.instruction_trace);
     }
 
+    /// Pause the CPU and instructs the editor thread to start reading commands.
+    /// Note: make sure you call this function after printing all the output you
+    /// need, otherwise the editor thread might print the prompt in between your prints.
     pub fn set_pause(&mut self, pause: bool) {
+        // only send command to editor thread
+        // if we are actually changing the state
+        if self.paused ^ pause {
+            if pause {
+                self.editor_tx.send(EditorCmd::Start).ok();
+            } else {
+                self.editor_tx.send(EditorCmd::Stop).ok();
+            }
+        }
+
         self.paused = pause;
-        self.should_print_prompt = pause;
     }
 
     pub fn add_breakpoint(&mut self, address: u32) {
@@ -128,14 +177,7 @@ impl Cpu {
 
     pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> u32 {
         if self.paused {
-            if self.should_print_prompt {
-                print!("CPU> ");
-                std::io::stdout().flush().unwrap();
-                self.should_print_prompt = false;
-            }
-
-            if let Ok(cmd) = self.stdin_recv.try_recv() {
-                self.should_print_prompt = true;
+            if let Ok(cmd) = self.stdin_rx.try_recv() {
                 let mut tokens = cmd.trim().split_whitespace();
                 let mut cmd = tokens.next();
                 let modifier = cmd.and_then(|c| {
@@ -278,12 +320,14 @@ impl Cpu {
                     Some(cmd) => println!("Unknown command: {}", cmd),
                     _ => (),
                 }
+                // make sure we send to the editor thread after we printed everything
+                // otherwise the editor thread might print the prompt in between
+                if self.paused {
+                    self.editor_tx.try_send(EditorCmd::Continue).ok();
+                }
             }
+
             return 0;
-        } else {
-            if !self.stdin_recv.is_empty() {
-                while self.stdin_recv.try_recv().is_ok() {}
-            }
         }
 
         let pending_interrupts = bus.pending_interrupts();
@@ -294,9 +338,9 @@ impl Cpu {
                 && !self.instruction_breakpoints.is_empty()
                 && self.instruction_breakpoints.contains(&self.regs.pc)
             {
-                self.set_pause(true);
                 println!("Breakpoint hit at {:08X}", self.regs.pc);
                 self.in_breakpoint = true;
+                self.set_pause(true);
                 break;
             }
             self.in_breakpoint = false;
@@ -976,11 +1020,11 @@ impl Cpu {
             self.cop0.write_bad_vaddr(addr);
         } else {
             if self.write_breakpoints.contains(&addr) {
-                self.set_pause(true);
                 println!(
                     "Write Breakpoint u32 hit {:08X} at {:08X}",
                     addr, self.regs.pc
                 );
+                self.set_pause(true);
             }
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
@@ -1009,11 +1053,11 @@ impl Cpu {
             self.cop0.write_bad_vaddr(addr);
         } else {
             if self.write_breakpoints.contains(&addr) {
-                self.set_pause(true);
                 println!(
                     "Write Breakpoint u16 hit {:08X} at {:08X}",
                     addr, self.regs.pc
                 );
+                self.set_pause(true);
             }
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
@@ -1031,12 +1075,12 @@ impl Cpu {
 
     fn bus_write_u8<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u8) {
         if self.write_breakpoints.contains(&addr) {
-            self.set_pause(true);
             // TODO: fix the `pc` here
             println!(
                 "Write Breakpoint u8 hit {:08X} at {:08X}",
                 addr, self.regs.pc
             );
+            self.set_pause(true);
         }
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}

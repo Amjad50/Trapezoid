@@ -16,3 +16,4 @@ vulkano-shaders = "0.29"
 bytemuck = { version = "1.9.1", features = ["derive"] }
 
 crossbeam = "0.8.1"
+rustyline = { version = "10.0.0", default-features = false }
