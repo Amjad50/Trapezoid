@@ -132,6 +132,7 @@ impl Registers {
 }
 
 impl Registers {
+    #[cfg(feature = "debugger")]
     pub fn debug_print(&self) {
         println!("Registers:");
 

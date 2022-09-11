@@ -282,7 +282,7 @@ impl Debugger {
             }
         }
 
-        return true;
+        true
     }
 
     pub fn trace_instruction(&mut self, pc: u32, jumping: bool, instruction: &Instruction) -> bool {

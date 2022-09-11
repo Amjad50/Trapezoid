@@ -1,3 +1,4 @@
+#[cfg(feature = "debugger")]
 mod debugger;
 mod instruction;
 mod instruction_format;
@@ -10,7 +11,45 @@ use crate::memory::BusLine;
 use instruction::{Instruction, Opcode};
 use register::Registers;
 
+#[cfg(feature = "debugger")]
 use self::debugger::Debugger;
+
+#[cfg(not(feature = "debugger"))]
+struct Debugger;
+
+#[cfg(not(feature = "debugger"))]
+// dummy implementation when the debugger is disabled
+impl Debugger {
+    #[inline]
+    pub fn new() -> Self {
+        Self
+    }
+
+    #[inline]
+    pub fn set_pause(&mut self, _pause: bool) {}
+
+    #[inline]
+    pub fn paused(&self) -> bool {
+        false
+    }
+
+    #[inline]
+    pub fn handle<P: CpuBusProvider>(&mut self, _regs: &Registers, _bus: &mut P) -> bool {
+        false
+    }
+
+    #[inline]
+    pub fn trace_instruction(
+        &mut self,
+        _pc: u32,
+        _jumping: bool,
+        _instruction: &Instruction,
+    ) -> bool {
+        false
+    }
+
+    pub fn trace_write(&mut self, _addr: u32) {}
+}
 
 pub trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
@@ -62,6 +101,7 @@ impl Cpu {
         self.debugger.set_pause(paused);
     }
 
+    #[cfg(feature = "debugger")]
     pub fn print_cpu_registers(&self) {
         self.regs.debug_print();
     }
