@@ -120,7 +120,7 @@ impl Debugger {
         }
 
         if let Ok(cmd) = self.stdin_rx.try_recv() {
-            let mut tokens = cmd.trim().split_whitespace();
+            let mut tokens = cmd.split_whitespace();
             let mut cmd = tokens.next();
             let modifier = cmd.and_then(|c| {
                 c.split_once('/').map(|(s1, s2)| {
@@ -129,8 +129,7 @@ impl Debugger {
                 })
             });
             let addr = tokens.next().and_then(|a| {
-                if a.starts_with('$') {
-                    let register_name = &a[1..];
+                if let Some(register_name) = a.strip_prefix('$') {
                     let register = GENERAL_REG_NAMES
                         .iter()
                         .position(|&r| r == register_name)
@@ -189,7 +188,12 @@ impl Debugger {
                     let sp = regs.read_register(register::RegisterType::Sp.into());
                     println!("Stack: SP=0x{:08X}", sp);
                     for i in 0..n {
-                        println!("    {:08X}", bus.read_u32(sp + i * 4));
+                        let d = Self::bus_read_u32(bus, sp + i * 4);
+                        if let Some(d) = d {
+                            println!("    {:08X}", d);
+                        } else {
+                            break;
+                        }
                     }
                 }
                 Some("b") => {
@@ -233,8 +237,12 @@ impl Debugger {
                     if let Some(addr) = addr {
                         for i in 0..count {
                             let addr = addr + i * 4;
-                            let val = bus.read_u32(addr);
-                            println!("[0x{:08X}] = 0x{:08X}", addr, val);
+                            let val = Self::bus_read_u32(bus, addr);
+                            if let Some(val) = val {
+                                println!("0x{:08X}: 0x{:08X}", addr, val);
+                            } else {
+                                break;
+                            }
                         }
                     } else {
                         println!("Usage: m/m32 <address>");
@@ -245,8 +253,12 @@ impl Debugger {
                     if let Some(addr) = addr {
                         for i in 0..count {
                             let addr = addr + i * 2;
-                            let val = bus.read_u16(addr);
-                            println!("[0x{:08X}] = 0x{:04X}", addr, val);
+                            let val = Self::bus_read_u16(bus, addr);
+                            if let Some(val) = val {
+                                println!("0x{:08X}: 0x{:04X}", addr, val);
+                            } else {
+                                break;
+                            }
                         }
                     } else {
                         println!("Usage: m16 <address>");
@@ -256,7 +268,7 @@ impl Debugger {
                     let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
                     if let Some(addr) = addr {
                         for i in 0..count {
-                            let addr = addr + i * 1;
+                            let addr = addr + i;
                             let val = bus.read_u8(addr);
                             println!("[0x{:08X}] = 0x{:02X}", addr, val);
                         }
@@ -353,5 +365,21 @@ impl Debugger {
     fn remove_write_breakpoint(&mut self, address: u32) {
         self.write_breakpoints.remove(&address);
         println!("Write Breakpoint removed: 0x{:08X}", address);
+    }
+
+    fn bus_read_u32<P: CpuBusProvider>(bus: &mut P, addr: u32) -> Option<u32> {
+        if addr % 4 != 0 {
+            println!("[0x{:08X}]: Address must be aligned to 4 bytes", addr);
+            return None;
+        }
+        Some(bus.read_u32(addr))
+    }
+
+    fn bus_read_u16<P: CpuBusProvider>(bus: &mut P, addr: u32) -> Option<u16> {
+        if addr % 2 != 0 {
+            println!("[0x{:08X}]: Address must be aligned to 2 bytes", addr);
+            return None;
+        }
+        Some(bus.read_u16(addr))
     }
 }
