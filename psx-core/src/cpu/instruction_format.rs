@@ -108,15 +108,18 @@ const fn opcode_str(opcode: Opcode) -> &'static str {
     }
 }
 
-pub const REG_NAMES: [&str; 32] = [
+pub const GENERAL_REG_NAMES: [&str; 32] = [
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
     "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
     "ra",
 ];
+pub const REG_PC_NAME: &str = "pc";
+pub const REG_HI_NAME: &str = "hi";
+pub const REG_LO_NAME: &str = "lo";
 
 impl fmt::Display for Register {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(REG_NAMES[self.idx() as usize])
+        f.write_str(GENERAL_REG_NAMES[self.idx() as usize])
     }
 }
 

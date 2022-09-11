@@ -16,7 +16,7 @@ use register::Registers;
 use rustyline::error::ReadlineError;
 use rustyline::{Config, Editor};
 
-use self::instruction_format::REG_NAMES;
+use self::instruction_format::{GENERAL_REG_NAMES, REG_HI_NAME, REG_LO_NAME, REG_PC_NAME};
 use self::register::Register;
 
 /// Instructing the editor thread on what to do.
@@ -189,16 +189,21 @@ impl Cpu {
                 let addr = tokens.next().and_then(|a| {
                     if a.starts_with('$') {
                         let register_name = &a[1..];
-                        let register = REG_NAMES
+                        let register = GENERAL_REG_NAMES
                             .iter()
                             .position(|&r| r == register_name)
                             .map(|i| Register::from_byte(i as u8));
                         match register {
                             Some(r) => Some(self.regs.read_register(r)),
-                            None => {
-                                println!("Invalid register name: {}", register_name);
-                                None
-                            }
+                            None => match register_name {
+                                REG_PC_NAME => Some(self.regs.pc),
+                                REG_HI_NAME => Some(self.regs.hi),
+                                REG_LO_NAME => Some(self.regs.lo),
+                                _ => {
+                                    println!("Invalid register name: {}", register_name);
+                                    None
+                                }
+                            },
                         }
                     } else {
                         let value = u32::from_str_radix(a.trim_start_matches("0x"), 16);
@@ -227,6 +232,7 @@ impl Cpu {
                         println!("wrb <addr> - remove write breakpoint");
                         println!("lb - list breakpoints");
                         println!("m[32/16/8] <addr> - print content of memory (default u32)");
+                        println!("p <addr>/<$reg> - print address or register value");
                     }
                     Some("r") => self.print_cpu_registers(),
                     Some("c") => self.set_pause(false),
@@ -314,6 +320,13 @@ impl Cpu {
                             }
                         } else {
                             println!("Usage: m8 <address>");
+                        }
+                    }
+                    Some("p") => {
+                        if let Some(addr) = addr {
+                            println!("0x{:08X}", addr);
+                        } else {
+                            println!("Usage: p <address>");
                         }
                     }
                     Some("") => {}
