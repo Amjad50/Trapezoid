@@ -174,6 +174,7 @@ impl Debugger {
                     println!("lb - list breakpoints");
                     println!("m[32/16/8] <addr> - print content of memory (default u32)");
                     println!("p <addr>/<$reg> - print address or register value");
+                    println!("i/[n] [addr] - disassemble instructions");
                 }
                 Some("r") => regs.debug_print(),
                 Some("c") => self.set_pause(false),
@@ -281,6 +282,29 @@ impl Debugger {
                         println!("0x{:08X}", addr);
                     } else {
                         println!("Usage: p <address>");
+                    }
+                }
+                Some("i") | Some("i/") => {
+                    let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
+                    let addr = addr.unwrap_or(regs.pc);
+
+                    let previous_instr_d = Self::bus_read_u32(bus, addr - 4);
+                    if let Some(previous_instr_d) = previous_instr_d {
+                        let mut previous_instr = Instruction::from_u32(previous_instr_d, addr - 4);
+
+                        for i in 0..count {
+                            let addr = addr + i * 4;
+                            // will always be aligned
+                            let val = Self::bus_read_u32(bus, addr).unwrap();
+                            let instr = Instruction::from_u32(val, addr);
+                            println!(
+                                "0x{:08X}: {}{}",
+                                addr,
+                                if previous_instr.is_branch() { "_" } else { "" },
+                                instr
+                            );
+                            previous_instr = instr;
+                        }
                     }
                 }
                 Some("") => {}

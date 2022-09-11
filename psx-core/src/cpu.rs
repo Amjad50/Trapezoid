@@ -116,7 +116,7 @@ impl Cpu {
 
         for _ in 0..clocks {
             if let Some(instruction) = self.bus_read_u32(bus, self.regs.pc) {
-                let instruction = Instruction::from_u32(instruction);
+                let instruction = Instruction::from_u32(instruction, self.regs.pc);
 
                 log::trace!(
                     "{:08X}: {}{}",
