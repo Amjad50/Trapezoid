@@ -183,6 +183,7 @@ impl Instruction {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_branch(&self) -> bool {
         match self.opcode {
             Opcode::J

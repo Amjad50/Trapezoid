@@ -1,16 +1,106 @@
 use std::{collections::HashSet, io::Write, process, thread};
 
 use crossbeam::channel::{Receiver, Sender};
-use rustyline::{error::ReadlineError, history::History, Config, Editor};
+use rustyline::{
+    completion::Completer, error::ReadlineError, highlight::Highlighter, hint::Hinter,
+    history::History, line_buffer::LineBuffer, validate::Validator, CompletionType, Config, Editor,
+};
 
 use crate::cpu::register;
 
 use super::{
     instruction::Instruction,
-    instruction_format::{GENERAL_REG_NAMES, REG_HI_NAME, REG_LO_NAME, REG_PC_NAME},
+    instruction_format::{ALL_REG_NAMES, GENERAL_REG_NAMES, REG_HI_NAME, REG_LO_NAME, REG_PC_NAME},
     register::{Register, Registers},
     CpuBusProvider,
 };
+
+use crate::memory::hw_registers::HW_REGISTERS;
+
+struct EditorHelper {
+    hw_registers: Vec<String>,
+    cpu_registers: Vec<String>,
+}
+
+impl EditorHelper {
+    fn new() -> Self {
+        Self {
+            hw_registers: HW_REGISTERS.keys().map(|name| name.to_string()).collect(),
+            cpu_registers: ALL_REG_NAMES.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+}
+
+impl Validator for EditorHelper {}
+impl Hinter for EditorHelper {
+    type Hint = String;
+
+    fn hint(&self, line: &str, pos: usize, _ctx: &rustyline::Context<'_>) -> Option<Self::Hint> {
+        if line.is_empty() || pos < line.len() || !(line.contains('@') || line.contains('$')) {
+            return None;
+        }
+
+        if let Some(i) = line.rfind(['@', '$']) {
+            let reg_type = line[i..].chars().next().unwrap();
+            let reg_name = &line[i + 1..];
+
+            let regs = if reg_type == '$' {
+                self.cpu_registers.iter()
+            } else {
+                self.hw_registers.iter()
+            };
+
+            regs.filter(|k| k.to_lowercase().starts_with(&reg_name.to_lowercase()))
+                .map(|k| k[reg_name.len()..].to_string())
+                .next()
+        } else {
+            None
+        }
+    }
+}
+impl Highlighter for EditorHelper {}
+impl Completer for EditorHelper {
+    type Candidate = String;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        if line.is_empty() || !(line.contains('@') || line.contains('$')) {
+            return Ok((0, Vec::with_capacity(0)));
+        }
+
+        let sub = &line[..pos];
+
+        if let Some(i) = sub.rfind(['@', '$']) {
+            let reg_type = sub[i..].chars().next().unwrap();
+            let reg_name = &sub[i + 1..];
+
+            let regs = if reg_type == '$' {
+                self.cpu_registers.iter()
+            } else {
+                self.hw_registers.iter()
+            };
+
+            let v = regs
+                .filter(|k| k.to_lowercase().starts_with(&reg_name.to_lowercase()))
+                .map(|k| k.to_string())
+                .collect();
+
+            Ok((i + 1, v))
+        } else {
+            Ok((0, Vec::with_capacity(0)))
+        }
+    }
+
+    fn update(&self, line: &mut LineBuffer, start: usize, elected: &str) {
+        let end = line.pos();
+        line.replace(start..end, elected);
+    }
+}
+impl rustyline::Helper for EditorHelper {}
 
 /// Instructing the editor thread on what to do.
 ///
@@ -26,9 +116,14 @@ enum EditorCmd {
     Stop,
 }
 
-fn create_editor() -> Editor<()> {
-    let conf = Config::builder().auto_add_history(true).build();
-    Editor::with_config(conf).unwrap()
+fn create_editor() -> Editor<EditorHelper> {
+    let conf = Config::builder()
+        .auto_add_history(true)
+        .completion_type(CompletionType::List)
+        .build();
+    let mut editor = Editor::with_config(conf).unwrap();
+    editor.set_helper(Some(EditorHelper::new()));
+    editor
 }
 
 pub struct Debugger {
@@ -157,6 +252,11 @@ impl Debugger {
                             }
                         },
                     }
+                } else if let Some(hw_register_name) = a.strip_prefix("@") {
+                    HW_REGISTERS.get(hw_register_name).copied().or_else(|| {
+                        println!("Invalid hardware register name: {}", hw_register_name);
+                        None
+                    })
                 } else {
                     let value = u32::from_str_radix(a.trim_start_matches("0x"), 16);
                     match value {
@@ -367,9 +467,15 @@ impl Debugger {
 
     pub fn trace_write(&mut self, addr: u32) {
         if self.write_breakpoints.contains(&addr) {
+            let hw_reg_name = HW_REGISTERS
+                .entries()
+                .find(|(_, &v)| v == addr)
+                .map(|(k, _)| format!(" [@{}]", k))
+                .unwrap_or("".to_string());
+
             println!(
-                "Write Breakpoint u32 hit {:08X} at {:08X}",
-                addr, self.current_pc
+                "Write Breakpoint u32 hit {:08X}{} at {:08X}",
+                addr, hw_reg_name, self.current_pc
             );
             self.set_pause(true);
         }

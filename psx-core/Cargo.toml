@@ -7,7 +7,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-debugger = ["dep:rustyline"]
+debugger = ["dep:rustyline", "dep:phf"]
 
 [dependencies]
 byteorder = "1.4.2"
@@ -20,3 +20,4 @@ bytemuck = { version = "1.9.1", features = ["derive"] }
 
 crossbeam = "0.8.1"
 rustyline = { version = "10.0.0", default-features = false, optional = true }
+phf = { version = "0.11.1", default-features = false, optional = true, features = ["macros"] }
