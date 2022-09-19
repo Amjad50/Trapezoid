@@ -9,7 +9,7 @@ use rustyline::{
 use crate::cpu::register;
 
 use super::{
-    instruction::Instruction,
+    instruction::{Instruction, Opcode},
     instruction_format::{ALL_REG_NAMES, GENERAL_REG_NAMES, REG_HI_NAME, REG_LO_NAME, REG_PC_NAME},
     register::{Register, Registers},
     CpuBusProvider,
@@ -129,6 +129,7 @@ fn create_editor() -> Editor<EditorHelper> {
 pub struct Debugger {
     instruction_trace: bool,
     paused: bool,
+    step_over_breakpoints: HashSet<u32>,
     instruction_breakpoints: HashSet<u32>,
     write_breakpoints: HashSet<u32>,
     // currently on top of breakpoint, so ignore it and continue when unpaused
@@ -186,6 +187,7 @@ impl Debugger {
         Self {
             instruction_trace: false,
             paused: false,
+            step_over_breakpoints: HashSet::new(),
             instruction_breakpoints: HashSet::new(),
             write_breakpoints: HashSet::new(),
             in_breakpoint: false,
@@ -275,6 +277,7 @@ impl Debugger {
                     println!("r - print registers");
                     println!("c - continue");
                     println!("s - step");
+                    println!("so - step-over");
                     println!("tt - enable trace");
                     println!("tf - disbale trace");
                     println!("stack [0xn] - print stack [n entries in hex]");
@@ -292,6 +295,19 @@ impl Debugger {
                 Some("s") => {
                     self.set_pause(false);
                     self.step = true;
+                }
+                Some("so") => {
+                    self.set_pause(false);
+
+                    // PC is always word aligned
+                    let instr = Self::bus_read_u32(bus, regs.pc).unwrap();
+                    let instr = Instruction::from_u32(instr, regs.pc);
+
+                    if let Opcode::Jal | Opcode::Jalr = instr.opcode {
+                        self.step_over_breakpoints.insert(regs.pc + 8);
+                    } else {
+                        self.step = true;
+                    }
                 }
                 Some("tt") => self.set_instruction_trace(true),
                 Some("tf") => self.set_instruction_trace(false),
@@ -434,6 +450,12 @@ impl Debugger {
 
     pub fn trace_instruction(&mut self, pc: u32, jumping: bool, instruction: &Instruction) -> bool {
         self.current_pc = pc;
+
+        if !self.step_over_breakpoints.is_empty() && self.step_over_breakpoints.contains(&pc) {
+            self.step_over_breakpoints.remove(&pc);
+            self.set_pause(true);
+            return true;
+        }
 
         if !self.in_breakpoint
             && !self.instruction_breakpoints.is_empty()
