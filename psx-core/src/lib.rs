@@ -25,6 +25,11 @@ use vulkano::{
 
 const MAX_CPU_CYCLES_TO_CLOCK: u32 = 1000;
 
+#[derive(Debug, Clone, Copy)]
+pub struct PsxConfig {
+    pub stdout_debug: bool,
+}
+
 pub struct Psx {
     bus: CpuBus,
     cpu: Cpu,
@@ -41,6 +46,7 @@ impl Psx {
     pub fn new<BiosPath: AsRef<Path>, DiskPath: AsRef<Path>>(
         bios_file_path: BiosPath,
         disk_file: Option<DiskPath>,
+        config: PsxConfig,
         device: Arc<Device>,
         queue: Arc<Queue>,
     ) -> Result<Self, ()> {
@@ -48,7 +54,7 @@ impl Psx {
 
         Ok(Self {
             cpu: Cpu::new(),
-            bus: CpuBus::new(bios, disk_file, device, queue),
+            bus: CpuBus::new(bios, disk_file, config, device, queue),
             excess_cpu_cycles: 0,
         })
     }

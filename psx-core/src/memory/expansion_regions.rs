@@ -1,3 +1,5 @@
+use crate::PsxConfig;
+
 use super::BusLine;
 
 // for now there is no external device to be hooked in PIO extension, so maybe
@@ -49,16 +51,24 @@ impl BusLine for ExpansionRegion1 {
     }
 }
 
-#[derive(Default)]
 struct DuartTTY {
     // TODO: add a way to display this buffer, maybe using another window?
     tty_buffer: String,
     line_temp_buffer: String,
+    config: PsxConfig,
 }
 
 // This is just the minimum for the TTY to work, as the duart is not used
 // for anything else
 impl DuartTTY {
+    fn new(config: PsxConfig) -> Self {
+        Self {
+            tty_buffer: String::new(),
+            line_temp_buffer: String::new(),
+            config,
+        }
+    }
+
     fn read(&self, addr: u32) -> u8 {
         match addr & 0xF {
             0x0 => todo!(),
@@ -99,7 +109,9 @@ impl DuartTTY {
 
                 // printing each line on line break to not get mixed with logs
                 if ch == '\n' {
-                    println!("DEBUG: {}", self.line_temp_buffer);
+                    if self.config.stdout_debug {
+                        println!("DEBUG: {}", self.line_temp_buffer);
+                    }
                     self.line_temp_buffer.clear();
                 } else {
                     self.line_temp_buffer.push(ch);
@@ -133,11 +145,11 @@ pub struct ExpansionRegion2 {
     tty_duart: DuartTTY,
 }
 
-impl Default for ExpansionRegion2 {
-    fn default() -> Self {
+impl ExpansionRegion2 {
+    pub fn new(config: PsxConfig) -> Self {
         Self {
             data: [0; 0x80],
-            tty_duart: DuartTTY::default(),
+            tty_duart: DuartTTY::new(config),
         }
     }
 }

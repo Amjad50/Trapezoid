@@ -21,6 +21,7 @@ use crate::gpu::Gpu;
 use crate::mdec::Mdec;
 use crate::spu::SpuRegisters;
 use crate::timers::Timers;
+use crate::PsxConfig;
 
 use dma::Dma;
 use expansion_regions::{ExpansionRegion1, ExpansionRegion2};
@@ -174,6 +175,7 @@ impl CpuBus {
     pub fn new<DiskPath: AsRef<Path>>(
         bios: Bios,
         disk_file: Option<DiskPath>,
+        config: PsxConfig,
         device: Arc<Device>,
         queue: Arc<Queue>,
     ) -> Self {
@@ -187,7 +189,7 @@ impl CpuBus {
 
             spu_registers: SpuRegisters::default(),
             expansion_region_1: ExpansionRegion1::default(),
-            expansion_region_2: ExpansionRegion2::default(),
+            expansion_region_2: ExpansionRegion2::new(config),
             dma: Dma::default(),
 
             timers: Timers::default(),

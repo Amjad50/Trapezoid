@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
-use psx_core::{DigitalControllerKey, Psx};
+use psx_core::{DigitalControllerKey, Psx, PsxConfig};
 
 use clap::Parser;
 use vulkano::{
@@ -274,6 +274,9 @@ struct PsxEmuArgs {
     /// Display the full vram
     #[clap(short, long)]
     vram: bool,
+    /// Print tty debug output to the console
+    #[clap(short, long)]
+    debug: bool,
 }
 
 fn main() {
@@ -291,6 +294,9 @@ fn main() {
     let mut psx = Psx::new(
         &args.bios,
         args.disk_file,
+        PsxConfig {
+            stdout_debug: args.debug,
+        },
         display.device.clone(),
         display.queue.clone(),
     )
