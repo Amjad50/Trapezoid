@@ -427,6 +427,7 @@ impl BusLine for CpuBus {
             0x1F800000..=0x1F8003FF => self.scratchpad.read_u8(addr & 0x3FF),
             0x1F801040 => self.controller_mem_card.read_u8(addr & 0xF),
             0x1F000000..=0x1F080000 => self.expansion_region_1.read_u8(addr & 0xFFFFF),
+            0x1F801080..=0x1F8010FF => self.dma.read_u8(addr & 0xFF),
             0x1F801800..=0x1F801803 => self.dma_bus.cdrom.read_u8(addr & 3),
             0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
@@ -445,6 +446,7 @@ impl BusLine for CpuBus {
             0x1F800000..=0x1F8003FF => self.scratchpad.write_u8(addr & 0x3FF, data),
             0x1F801040 => self.controller_mem_card.write_u8(addr & 0xF, data),
             0x1F000000..=0x1F080000 => self.expansion_region_1.write_u8(addr & 0xFFFFF, data),
+            0x1F801080..=0x1F8010FF => self.dma.write_u8(addr & 0xFF, data),
             0x1F801800..=0x1F801803 => self.dma_bus.cdrom.write_u8(addr & 3, data),
             0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),
             _ => {

@@ -43,8 +43,11 @@ impl DmaInterruptRegister {
     fn request_interrupt(&mut self, channel: u32) {
         assert!(channel < 7);
 
-        log::info!("requesting interrupt channel {}", channel);
-        self.bits |= 1 << (channel + 24);
+        // only set if enabled
+        if (self.bits >> 16) & (1 << channel) != 0 {
+            log::info!("requesting interrupt channel {}", channel);
+            self.bits |= 1 << (channel + 24);
+        }
     }
 
     #[inline]
@@ -646,6 +649,12 @@ impl BusLine for Dma {
                 let new_data = data & 0xFFFFFF;
                 // and the flags will be reset on write
                 let irq_flags_reset = data & 0x7F000000;
+
+                // if a "channel enable" bit is disabled, clear the flag as well
+                // read the enable and flip it, since 1 will reset the flag
+                let irq_enable_mask = ((old_interrupt >> 16) & 0x7F) ^ 0x7F;
+                let irq_flags_reset = irq_flags_reset | (irq_enable_mask << 24);
+
                 let new_interrupt = ((old_interrupt & 0xFF000000) & !irq_flags_reset) | new_data;
 
                 self.interrupt = DmaInterruptRegister::from_bits_truncate(new_interrupt);
@@ -668,11 +677,37 @@ impl BusLine for Dma {
         todo!()
     }
 
-    fn read_u8(&mut self, _addr: u32) -> u8 {
-        todo!()
+    fn read_u8(&mut self, addr: u32) -> u8 {
+        let u32_data = self.read_u32(addr & 0xFFFFFFFC);
+        let shift = (addr & 3) * 8;
+
+        ((u32_data >> shift) & 0xFF) as u8
     }
 
-    fn write_u8(&mut self, _addr: u32, _data: u8) {
-        todo!()
+    fn write_u8(&mut self, addr: u32, data: u8) {
+        match addr {
+            // most register, and interrupt flags
+            0x80..=0xF3 | 0xF7 => {
+                let aligned_addr = addr & 0xFFFFFFFC;
+                let current_u32 = self.read_u32(aligned_addr);
+                let shift = (addr & 3) * 8;
+                let new_u32 = (current_u32 & !(0xFF << shift)) | ((data as u32) << shift);
+                self.write_u32(aligned_addr, new_u32)
+            }
+            // the lower section of the interrrupt register
+            // is special becasue we don't want to reset interrupts.
+            0xF4..=0xF6 => {
+                let current_u32 = self.read_u32(0xF4);
+                let shift = (addr & 3) * 8;
+                let new_u32 = (current_u32 & !(0xFF << shift)) | ((data as u32) << shift);
+
+                // writing 1 to the interrupt flag will reset it
+                // and we don't want that if there is already interrupts
+                // so we convert them to 0
+                let new_u32 = new_u32 & !0xFF000000;
+                self.write_u32(0xF4, new_u32)
+            }
+            _ => unreachable!(),
+        }
     }
 }
