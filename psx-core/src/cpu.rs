@@ -1,4 +1,7 @@
+#[cfg(feature = "debugger")]
+mod debugger;
 mod instruction;
+mod instruction_format;
 mod instructions_table;
 mod register;
 
@@ -7,6 +10,46 @@ use crate::memory::BusLine;
 
 use instruction::{Instruction, Opcode};
 use register::Registers;
+
+#[cfg(feature = "debugger")]
+use self::debugger::Debugger;
+
+#[cfg(not(feature = "debugger"))]
+struct Debugger;
+
+#[cfg(not(feature = "debugger"))]
+// dummy implementation when the debugger is disabled
+impl Debugger {
+    #[inline]
+    pub fn new() -> Self {
+        Self
+    }
+
+    #[inline]
+    pub fn set_pause(&mut self, _pause: bool) {}
+
+    #[inline]
+    pub fn paused(&self) -> bool {
+        false
+    }
+
+    #[inline]
+    pub fn handle<P: CpuBusProvider>(&mut self, _regs: &Registers, _bus: &mut P) -> bool {
+        false
+    }
+
+    #[inline]
+    pub fn trace_instruction(
+        &mut self,
+        _pc: u32,
+        _jumping: bool,
+        _instruction: &Instruction,
+    ) -> bool {
+        false
+    }
+
+    pub fn trace_write(&mut self, _addr: u32) {}
+}
 
 pub trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
@@ -35,6 +78,8 @@ pub struct Cpu {
     jump_dest_next: Option<u32>,
 
     elapsed_cycles: u32,
+
+    debugger: Debugger,
 }
 
 impl Cpu {
@@ -47,18 +92,52 @@ impl Cpu {
             jump_dest_next: None,
 
             elapsed_cycles: 0,
+
+            debugger: Debugger::new(),
         }
     }
 
+    pub fn set_pause(&mut self, paused: bool) {
+        self.debugger.set_pause(paused);
+    }
+
+    #[cfg(feature = "debugger")]
+    pub fn print_cpu_registers(&self) {
+        self.regs.debug_print();
+    }
+
     pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> u32 {
+        if self.debugger.handle(&self.regs, bus) {
+            return 0;
+        }
+
         let pending_interrupts = bus.pending_interrupts();
         self.check_and_execute_interrupt(pending_interrupts);
 
         for _ in 0..clocks {
             if let Some(instruction) = self.bus_read_u32(bus, self.regs.pc) {
-                let instruction = Instruction::from_u32(instruction);
+                let instruction = Instruction::from_u32(instruction, self.regs.pc);
 
-                log::trace!("{:08X}: {:02X?}", self.regs.pc, instruction);
+                log::trace!(
+                    "{:08X}: {}{}",
+                    self.regs.pc,
+                    if self.jump_dest_next.is_some() {
+                        "_"
+                    } else {
+                        ""
+                    },
+                    instruction
+                );
+
+                // breakpoint hit
+                if self.debugger.trace_instruction(
+                    &self.regs,
+                    self.jump_dest_next.is_some(),
+                    &instruction,
+                ) {
+                    break;
+                }
+
                 self.regs.pc += 4;
                 if let Some(jump_dest) = self.jump_dest_next.take() {
                     log::trace!("pc jump {:08X}", jump_dest);
@@ -66,6 +145,10 @@ impl Cpu {
                 }
 
                 self.execute_instruction(&instruction, bus);
+
+                if self.debugger.paused() {
+                    break;
+                }
 
                 // exit so that we can run dma
                 // Delaying the DMA can cause problems,
@@ -230,6 +313,9 @@ impl Cpu {
 
     fn execute_instruction<P: CpuBusProvider>(&mut self, instruction: &Instruction, bus: &mut P) {
         match instruction.opcode {
+            Opcode::Nop => {
+                // nothing
+            }
             Opcode::Lb => {
                 self.execute_load(instruction, |s, computed_addr| {
                     Some(Self::sign_extend_8(s.bus_read_u8(bus, computed_addr)))
@@ -681,6 +767,7 @@ impl Cpu {
             return None;
         }
 
+        self.debugger.trace_read(addr, 32);
         Some(match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             _ => bus.read_u32(addr),
@@ -694,6 +781,7 @@ impl Cpu {
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
+            self.debugger.trace_write(addr, 32);
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
                 _ => bus.write_u32(addr, data),
@@ -709,6 +797,7 @@ impl Cpu {
             return None;
         }
 
+        self.debugger.trace_read(addr, 16);
         Some(match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             _ => bus.read_u16(addr),
@@ -720,6 +809,7 @@ impl Cpu {
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
+            self.debugger.trace_write(addr, 16);
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
                 _ => bus.write_u16(addr, data),
@@ -727,14 +817,16 @@ impl Cpu {
         }
     }
 
-    fn bus_read_u8<P: BusLine>(&self, bus: &mut P, addr: u32) -> u8 {
+    fn bus_read_u8<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> u8 {
+        self.debugger.trace_read(addr, 8);
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             _ => bus.read_u8(addr),
         }
     }
 
-    fn bus_write_u8<P: BusLine>(&self, bus: &mut P, addr: u32, data: u8) {
+    fn bus_write_u8<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u8) {
+        self.debugger.trace_write(addr, 8);
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
             _ => bus.write_u8(addr, data),

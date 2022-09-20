@@ -62,6 +62,11 @@ impl Register {
     pub fn from_byte(idx: u8) -> Self {
         Register { idx: idx & 0x1F }
     }
+
+    #[inline]
+    pub fn idx(&self) -> u8 {
+        self.idx
+    }
 }
 
 impl From<Register> for RegisterType {
@@ -123,5 +128,42 @@ impl Registers {
     pub fn write_ra(&mut self, data: u32) {
         // ra is at index 31
         self.general_regs[31] = data;
+    }
+}
+
+impl Registers {
+    #[cfg(feature = "debugger")]
+    pub fn debug_print(&self) {
+        println!("Registers:");
+
+        // print PC and AT
+        println!(
+            "pc: {:08X}\t{:>4}: {:08X}",
+            self.pc,
+            Register::from_byte(1),
+            self.general_regs[1]
+        );
+        // HI and LO
+        println!("hi: {:08X}\tlo: {:08X}", self.hi, self.lo);
+
+        // print all other registers except the last two
+        for i in 2..32 / 2 {
+            println!(
+                "{:>4}: {:08X}\t{:>4}: {:08X}",
+                Register::from_byte(i),
+                self.general_regs[i as usize],
+                // -2 offset because we are not printing 0 (ZERO) and 1 (AT)
+                Register::from_byte(i + 32 / 2 - 2),
+                self.general_regs[(i + 32 / 2 - 2) as usize]
+            );
+        }
+        // print the last two registers
+        println!(
+            "{:>4}: {:08X}\t{:>4}: {:08X}",
+            Register::from_byte(30),
+            self.general_regs[30],
+            Register::from_byte(31),
+            self.general_regs[31]
+        );
     }
 }

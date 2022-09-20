@@ -6,6 +6,8 @@ pub enum Opcode {
     Special,
     Invalid,
 
+    Nop,
+
     // (u) means unsigned, (t) means overflow trap, (i) means immediate
     Lb,
     Lbu,
@@ -103,8 +105,10 @@ pub enum Opcode {
     Swc(u8),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Instruction {
+    pub pc: u32,
+
     pub opcode: Opcode,
 
     pub imm5: u8,
@@ -120,7 +124,25 @@ pub struct Instruction {
 }
 
 impl Instruction {
-    pub fn from_u32(instruction: u32) -> Self {
+    pub fn from_u32(instruction: u32, pc: u32) -> Self {
+        if instruction == 0 {
+            return Self {
+                pc,
+
+                opcode: Opcode::Nop,
+                imm5: 0,
+                rd_raw: 0,
+                rd: Register::from_byte(0),
+                rt_raw: 0,
+                rt: Register::from_byte(0),
+                rs_raw: 0,
+                rs: Register::from_byte(0),
+                imm16: 0,
+                imm25: 0,
+                imm26: 0,
+            };
+        }
+
         let primary_identifier = (instruction >> 26) as u8;
         let secondary_identifier = instruction as u8 & 0x3F;
         let imm5 = (instruction >> 6) as u8 & 0x1F;
@@ -145,6 +167,8 @@ impl Instruction {
         };
 
         Self {
+            pc,
+
             opcode,
             imm5,
             rd_raw,
@@ -156,6 +180,25 @@ impl Instruction {
             imm16,
             imm25,
             imm26,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn is_branch(&self) -> bool {
+        match self.opcode {
+            Opcode::J
+            | Opcode::Jal
+            | Opcode::Jalr
+            | Opcode::Jr
+            | Opcode::Beq
+            | Opcode::Bne
+            | Opcode::Bgtz
+            | Opcode::Blez
+            | Opcode::Bltz
+            | Opcode::Bgez
+            | Opcode::Bltzal
+            | Opcode::Bgezal => true,
+            _ => false,
         }
     }
 }

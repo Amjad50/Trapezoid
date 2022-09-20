@@ -5,6 +5,9 @@ authors = ["Amjad Alsharafi <amjadsharafi10@gmail.com>"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["debugger"]
+debugger = ["psx-core/debugger"]
 
 [dependencies]
 psx-core = { path = "./psx-core", version = "*" }
