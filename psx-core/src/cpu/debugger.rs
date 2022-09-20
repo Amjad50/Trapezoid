@@ -135,6 +135,7 @@ pub struct Debugger {
     step_over_breakpoints: HashSet<u32>,
     instruction_breakpoints: HashSet<u32>,
     write_breakpoints: HashSet<u32>,
+    read_breakpoints: HashSet<u32>,
     // currently on top of breakpoint, so ignore it and continue when unpaused
     // so that we don't get stuck in one instruction.
     in_breakpoint: bool,
@@ -196,6 +197,7 @@ impl Debugger {
             step_over_breakpoints: HashSet::new(),
             instruction_breakpoints: HashSet::new(),
             write_breakpoints: HashSet::new(),
+            read_breakpoints: HashSet::new(),
             in_breakpoint: false,
             step: false,
             stdin_rx,
@@ -290,8 +292,10 @@ impl Debugger {
                     println!("bt/[limit] - print backtrace [top `limit` entries]");
                     println!("b <addr> - set breakpoint");
                     println!("rb <addr> - remove breakpoint");
-                    println!("wb <addr> - set write breakpoint");
-                    println!("wrb <addr> - remove write breakpoint");
+                    println!("bw <addr> - set write breakpoint");
+                    println!("rbw <addr> - remove write breakpoint");
+                    println!("br <addr> - set read breakpoint");
+                    println!("rbr <addr> - remove read breakpoint");
                     println!("lb - list breakpoints");
                     println!("m[32/16/8] <addr> - print content of memory (default u32)");
                     println!("p <addr>/<$reg> - print address or register value");
@@ -354,18 +358,32 @@ impl Debugger {
                         println!("Usage: rb <address>");
                     }
                 }
-                Some("wb") => {
+                Some("bw") => {
                     if let Some(addr) = addr {
                         self.add_write_breakpoint(addr);
                     } else {
-                        println!("Usage: wb <address>");
+                        println!("Usage: bw <address>");
                     }
                 }
-                Some("wrb") => {
+                Some("rbw") => {
                     if let Some(addr) = addr {
                         self.remove_write_breakpoint(addr);
                     } else {
-                        println!("Usage: wrb <address>");
+                        println!("Usage: rbw <address>");
+                    }
+                }
+                Some("br") => {
+                    if let Some(addr) = addr {
+                        self.add_read_breakpoint(addr);
+                    } else {
+                        println!("Usage: br <address>");
+                    }
+                }
+                Some("rbr") => {
+                    if let Some(addr) = addr {
+                        self.remove_read_breakpoint(addr);
+                    } else {
+                        println!("Usage: rbr <address>");
                     }
                 }
                 Some("lb") => {
@@ -374,6 +392,9 @@ impl Debugger {
                     }
                     for bp in self.write_breakpoints.iter() {
                         println!("Write Breakpoint: 0x{:08X}", bp);
+                    }
+                    for bp in self.read_breakpoints.iter() {
+                        println!("Read Breakpoint: 0x{:08X}", bp);
                     }
                 }
                 Some("m") | Some("m32") => {
@@ -542,7 +563,7 @@ impl Debugger {
         false
     }
 
-    pub fn trace_write(&mut self, addr: u32) {
+    pub fn trace_write(&mut self, addr: u32, bits: u32) {
         if self.write_breakpoints.contains(&addr) {
             let hw_reg_name = HW_REGISTERS
                 .entries()
@@ -551,8 +572,24 @@ impl Debugger {
                 .unwrap_or("".to_string());
 
             println!(
-                "Write Breakpoint u32 hit {:08X}{} at {:08X}",
-                addr, hw_reg_name, self.last_instruction.pc
+                "Write Breakpoint u{} hit {:08X}{} at {:08X}",
+                bits, addr, hw_reg_name, self.last_instruction.pc
+            );
+            self.set_pause(true);
+        }
+    }
+
+    pub fn trace_read(&mut self, addr: u32, bits: u32) {
+        if self.read_breakpoints.contains(&addr) {
+            let hw_reg_name = HW_REGISTERS
+                .entries()
+                .find(|(_, &v)| v == addr)
+                .map(|(k, _)| format!(" [@{}]", k))
+                .unwrap_or("".to_string());
+
+            println!(
+                "Read Breakpoint u{} hit {:08X}{} at {:08X}",
+                bits, addr, hw_reg_name, self.last_instruction.pc
             );
             self.set_pause(true);
         }
@@ -583,6 +620,16 @@ impl Debugger {
     fn remove_write_breakpoint(&mut self, address: u32) {
         self.write_breakpoints.remove(&address);
         println!("Write Breakpoint removed: 0x{:08X}", address);
+    }
+
+    fn add_read_breakpoint(&mut self, address: u32) {
+        self.read_breakpoints.insert(address);
+        println!("Read Breakpoint added: 0x{:08X}", address);
+    }
+
+    fn remove_read_breakpoint(&mut self, address: u32) {
+        self.read_breakpoints.remove(&address);
+        println!("Read Breakpoint removed: 0x{:08X}", address);
     }
 
     fn bus_read_u32<P: CpuBusProvider>(bus: &mut P, addr: u32) -> Option<u32> {

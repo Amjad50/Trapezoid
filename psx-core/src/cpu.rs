@@ -767,6 +767,7 @@ impl Cpu {
             return None;
         }
 
+        self.debugger.trace_read(addr, 32);
         Some(match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             _ => bus.read_u32(addr),
@@ -780,7 +781,7 @@ impl Cpu {
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
-            self.debugger.trace_write(addr);
+            self.debugger.trace_write(addr, 32);
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
                 _ => bus.write_u32(addr, data),
@@ -796,6 +797,7 @@ impl Cpu {
             return None;
         }
 
+        self.debugger.trace_read(addr, 16);
         Some(match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             _ => bus.read_u16(addr),
@@ -807,7 +809,7 @@ impl Cpu {
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
-            self.debugger.trace_write(addr);
+            self.debugger.trace_write(addr, 16);
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
                 _ => bus.write_u16(addr, data),
@@ -815,7 +817,8 @@ impl Cpu {
         }
     }
 
-    fn bus_read_u8<P: BusLine>(&self, bus: &mut P, addr: u32) -> u8 {
+    fn bus_read_u8<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> u8 {
+        self.debugger.trace_read(addr, 8);
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
             _ => bus.read_u8(addr),
@@ -823,7 +826,7 @@ impl Cpu {
     }
 
     fn bus_write_u8<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u8) {
-        self.debugger.trace_write(addr);
+        self.debugger.trace_write(addr, 8);
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
             _ => bus.write_u8(addr, data),
