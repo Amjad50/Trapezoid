@@ -131,7 +131,7 @@ impl Cpu {
 
                 // breakpoint hit
                 if self.debugger.trace_instruction(
-                    self.regs.pc,
+                    &self.regs,
                     self.jump_dest_next.is_some(),
                     &instruction,
                 ) {

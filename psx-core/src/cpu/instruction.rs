@@ -105,7 +105,7 @@ pub enum Opcode {
     Swc(u8),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Instruction {
     pub pc: u32,
 

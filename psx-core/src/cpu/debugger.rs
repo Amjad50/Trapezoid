@@ -129,6 +129,9 @@ fn create_editor() -> Editor<EditorHelper> {
 pub struct Debugger {
     instruction_trace: bool,
     paused: bool,
+
+    call_stack: Vec<u32>,
+
     step_over_breakpoints: HashSet<u32>,
     instruction_breakpoints: HashSet<u32>,
     write_breakpoints: HashSet<u32>,
@@ -140,7 +143,7 @@ pub struct Debugger {
     stdin_rx: Receiver<String>,
     editor_tx: Sender<EditorCmd>,
 
-    current_pc: u32,
+    last_instruction: Instruction,
 }
 
 impl Debugger {
@@ -187,6 +190,9 @@ impl Debugger {
         Self {
             instruction_trace: false,
             paused: false,
+
+            call_stack: Vec::new(),
+
             step_over_breakpoints: HashSet::new(),
             instruction_breakpoints: HashSet::new(),
             write_breakpoints: HashSet::new(),
@@ -195,7 +201,7 @@ impl Debugger {
             stdin_rx,
             editor_tx,
 
-            current_pc: 0,
+            last_instruction: Instruction::from_u32(0, 0),
         }
     }
 
@@ -281,6 +287,7 @@ impl Debugger {
                     println!("tt - enable trace");
                     println!("tf - disbale trace");
                     println!("stack [0xn] - print stack [n entries in hex]");
+                    println!("bt/[limit] - print backtrace [top `limit` entries]");
                     println!("b <addr> - set breakpoint");
                     println!("rb <addr> - remove breakpoint");
                     println!("wb <addr> - set write breakpoint");
@@ -322,6 +329,15 @@ impl Debugger {
                         } else {
                             break;
                         }
+                    }
+                }
+                Some("bt") => {
+                    let limit = modifier
+                        .and_then(|m| m.parse::<usize>().ok())
+                        .unwrap_or(self.call_stack.len());
+
+                    for (i, frame) in self.call_stack.iter().enumerate().rev().take(limit) {
+                        println!("#{:02}:      {:08X}", i, frame);
                     }
                 }
                 Some("b") => {
@@ -448,31 +464,68 @@ impl Debugger {
         true
     }
 
-    pub fn trace_instruction(&mut self, pc: u32, jumping: bool, instruction: &Instruction) -> bool {
-        self.current_pc = pc;
-
-        if !self.step_over_breakpoints.is_empty() && self.step_over_breakpoints.contains(&pc) {
-            self.step_over_breakpoints.remove(&pc);
+    pub fn trace_instruction(
+        &mut self,
+        regs: &Registers,
+        jumping: bool,
+        instruction: &Instruction,
+    ) -> bool {
+        if !self.step_over_breakpoints.is_empty() && self.step_over_breakpoints.contains(&regs.pc) {
+            self.step_over_breakpoints.remove(&regs.pc);
             self.set_pause(true);
             return true;
         }
 
         if !self.in_breakpoint
             && !self.instruction_breakpoints.is_empty()
-            && self.instruction_breakpoints.contains(&pc)
+            && self.instruction_breakpoints.contains(&regs.pc)
         {
-            println!("Breakpoint hit at {:08X}", pc);
+            println!("Breakpoint hit at {:08X}", regs.pc);
             self.in_breakpoint = true;
             self.set_pause(true);
             return true;
         }
 
+        // -- will execute after this point
+
         self.in_breakpoint = false;
+
+        if jumping {
+            match self.last_instruction.opcode {
+                Opcode::Jal | Opcode::Jalr => {
+                    self.call_stack.push(self.last_instruction.pc + 8);
+                }
+                Opcode::Jr => {
+                    // Sometimes, the return address is not always the last on the stack.
+                    // For example, when a program calls into the bios with
+                    // 0xA0,0xB0,0xC0 functions, an inner function might return
+                    // to the user space and not the main handler, which results
+                    // in a frame being stuck in the middle.
+                    //
+                    // That's why we have to check if the return address is any
+                    // of the previous frames.
+                    let target = regs.read_register(self.last_instruction.rs);
+
+                    if !self.call_stack.is_empty() {
+                        let mut c = 1;
+                        for x in self.call_stack.iter().rev() {
+                            if *x == target {
+                                self.call_stack.truncate(self.call_stack.len() - c);
+                                break;
+                            }
+
+                            c += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
 
         if self.instruction_trace {
             println!(
                 "{:08X}: {}{}",
-                pc,
+                instruction.pc,
                 if jumping { "_" } else { "" },
                 instruction
             );
@@ -482,6 +535,8 @@ impl Debugger {
             self.set_pause(true);
             self.step = false;
         }
+
+        self.last_instruction = instruction.clone();
 
         // even if we are in step breakpoint, we must execute the current instruction
         false
@@ -497,7 +552,7 @@ impl Debugger {
 
             println!(
                 "Write Breakpoint u32 hit {:08X}{} at {:08X}",
-                addr, hw_reg_name, self.current_pc
+                addr, hw_reg_name, self.last_instruction.pc
             );
             self.set_pause(true);
         }
