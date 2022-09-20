@@ -241,31 +241,48 @@ impl Cdrom {
                         self.command_state = Some(0);
 
                         self.command_delay_timer += CDROM_READ_COMMAND_DELAY;
+
+                        // reset data buffer
+                        self.read_data_buffer.clear();
                     } else {
                         // SECOND
 
-                        // wait until the data fifo buffer is empty
-                        log::info!(
-                            "cdrom cmd: ReadN: pushing sector {} to data fifo buffer",
-                            self.cursor_sector_position
-                        );
+                        // only refill the data if the buffer is taken, else
+                        // just interrupt
+                        if self.read_data_buffer.is_empty() {
+                            // convert from cursor pos to sector,seconds,minutes
+                            // for debugging
+                            let sector = self.cursor_sector_position % 75;
+                            let total_seconds = (self.cursor_sector_position / 75) + 2;
+                            let minutes = total_seconds / 60;
+                            let seconds = total_seconds % 60;
 
-                        let start;
-                        let end;
-                        if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
-                            // 12 to skip the sync patterns
-                            start = self.cursor_sector_position * 2352 + 12;
-                            end = start + 0x924;
-                        } else {
-                            // 12 + 3 + 1 + 8 to skip the sync patterns and the header
-                            start = self.cursor_sector_position * 2352 + 24;
-                            end = start + 0x800;
+                            // wait until the data fifo buffer is empty
+                            log::info!(
+                                "cdrom cmd: ReadN: pushing sector {} [{:02}:{:02}:{:02}] to data fifo buffer",
+                                self.cursor_sector_position,
+                                minutes,
+                                seconds,
+                                sector
+                            );
+
+                            let start;
+                            let end;
+                            if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
+                                // 12 to skip the sync patterns
+                                start = self.cursor_sector_position * 2352 + 12;
+                                end = start + 0x924;
+                            } else {
+                                // 12 + 3 + 1 + 8 to skip the sync patterns and the header
+                                start = self.cursor_sector_position * 2352 + 24;
+                                end = start + 0x800;
+                            }
+                            self.read_data_buffer
+                                .extend_from_slice(&self.disk_data[start..end]);
+
+                            // move to next sector
+                            self.cursor_sector_position += 1;
                         }
-                        self.read_data_buffer
-                            .extend_from_slice(&self.disk_data[start..end]);
-
-                        // move to next sector
-                        self.cursor_sector_position += 1;
 
                         self.write_to_response_fifo(self.status.bits);
                         self.request_interrupt_0_7(1);
@@ -461,7 +478,7 @@ impl Cdrom {
             self.cursor_sector_position = (total_seconds - 2) * 75 + sector;
 
             log::info!(
-                "cdrom seek: ({:02X}:{:02X}:{:02X}) => {:08X}",
+                "cdrom seek: ({:02}:{:02}:{:02}) => {:08X}",
                 minutes,
                 seconds,
                 sector,
@@ -605,6 +622,7 @@ impl Cdrom {
                 self.fifo_status.insert(FifosStatus::DATA_FIFO_NOT_EMPTY);
             }
         } else {
+            log::info!("clearing data fifo buffer");
             self.data_fifo_buffer_index = 0;
             self.data_fifo_buffer.clear();
             self.fifo_status.remove(FifosStatus::DATA_FIFO_NOT_EMPTY);
