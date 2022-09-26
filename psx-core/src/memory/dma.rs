@@ -20,6 +20,38 @@ bitflags::bitflags! {
     }
 }
 
+impl ChannelControl {
+    fn address_step(&self) -> i32 {
+        if self.intersects(Self::ADDRESS_STEP_DIRECTION) {
+            -4
+        } else {
+            4
+        }
+    }
+
+    fn sync_mode(&self) -> u32 {
+        (self.bits & Self::SYNC_MODE.bits) >> 9
+    }
+
+    fn in_progress(&self) -> bool {
+        self.intersects(Self::START_BUSY)
+    }
+
+    fn finish_transfer(&mut self) {
+        self.remove(Self::START_BUSY)
+    }
+
+    /// In words units
+    fn chopping_dma_window_size(&self) -> u32 {
+        1 << ((self.bits & Self::CHOPPING_DMA_WINDOW_SIZE.bits) >> 16)
+    }
+
+    /// In words units
+    fn chopping_cpu_window_size(&self) -> u8 {
+        1 << ((self.bits & Self::CHOPPING_CPU_WINDOW_SIZE.bits) >> 20)
+    }
+}
+
 bitflags::bitflags! {
     #[derive(Default)]
     struct DmaInterruptRegister: u32 {
@@ -57,28 +89,6 @@ impl DmaInterruptRegister {
                 && (((self.bits & DmaInterruptRegister::IRQ_ENABLE.bits) >> 16)
                     & ((self.bits & DmaInterruptRegister::IRQ_FLAGS.bits) >> 24)
                     != 0))
-    }
-}
-
-impl ChannelControl {
-    fn address_step(&self) -> i32 {
-        if self.intersects(Self::ADDRESS_STEP_DIRECTION) {
-            -4
-        } else {
-            4
-        }
-    }
-
-    fn sync_mode(&self) -> u32 {
-        (self.bits & Self::SYNC_MODE.bits) >> 9
-    }
-
-    fn in_progress(&self) -> bool {
-        self.intersects(Self::START_BUSY)
-    }
-
-    fn finish_transfer(&mut self) {
-        self.remove(Self::START_BUSY)
     }
 }
 
@@ -173,8 +183,7 @@ impl Dma {
         assert!(channel.channel_control.address_step() == 4);
         // must be sync mode 1
         assert!(channel.channel_control.sync_mode() == 1);
-        // make sure there is no chopping, so we can finish this in one go
-        // TODO: implement chopping
+        // chopping is only for sync mode 0
         assert!(!channel
             .channel_control
             .intersects(ChannelControl::CHOPPING_ENABLED));
@@ -217,8 +226,7 @@ impl Dma {
         assert!(channel.channel_control.address_step() == 4);
         // must be sync mode 1
         assert!(channel.channel_control.sync_mode() == 1);
-        // make sure there is no chopping, so we can finish this in one go
-        // TODO: implement chopping
+        // chopping is only for sync mode 0
         assert!(!channel
             .channel_control
             .intersects(ChannelControl::CHOPPING_ENABLED));
@@ -405,11 +413,6 @@ impl Dma {
         assert!(channel.channel_control.address_step() == 4);
         // must be sync mode 0
         assert!(channel.channel_control.sync_mode() == 0);
-        // make sure there is no chopping, so we can finish this in one go
-        // TODO: implement chopping
-        assert!(!channel
-            .channel_control
-            .intersects(ChannelControl::CHOPPING_ENABLED));
 
         // must be triggered manually
         if !channel
@@ -417,6 +420,18 @@ impl Dma {
             .intersects(ChannelControl::START_TRIGGER)
         {
             return (0, true);
+        }
+
+        let chopping = channel
+            .channel_control
+            .intersects(ChannelControl::CHOPPING_ENABLED);
+
+        if chopping {
+            log::info!(
+                "chopping enabled: CPU window: {:02X}, DMA window: {:02X}",
+                channel.channel_control.chopping_cpu_window_size(),
+                channel.channel_control.chopping_dma_window_size()
+            );
         }
 
         let mut block_size = channel.block_control & 0xFFFF;
@@ -442,8 +457,13 @@ impl Dma {
             address += 4;
         }
 
-        channel.block_control = 0;
-        channel.base_address = address;
+        // only update the address and block control if chopping is enabled.
+        // TODO: currently, we don't actually do chopping, the transfer
+        //       will finish in one go regardless
+        if chopping {
+            channel.block_control = 0;
+            channel.base_address = address;
+        }
 
         // chrom transfer rate:
         // BIOS: 24 clk/word
@@ -467,7 +487,7 @@ impl Dma {
             .intersects(ChannelControl::DIRECTION_FROM_RAM));
         // must be forward
         assert!(channel.channel_control.address_step() == 4);
-        // TODO: implement chopping
+        // chopping is only for sync mode 0
         assert!(!channel
             .channel_control
             .intersects(ChannelControl::CHOPPING_ENABLED));
@@ -508,10 +528,6 @@ impl Dma {
         assert!(channel.channel_control.address_step() == -4);
         // must be sync mode 0
         assert!(channel.channel_control.sync_mode() == 0);
-        // make sure there is no chopping, so we can finish this in one go
-        assert!(!channel
-            .channel_control
-            .intersects(ChannelControl::CHOPPING_ENABLED));
 
         // must be triggered manually
         if !channel
@@ -520,6 +536,10 @@ impl Dma {
         {
             return (0, true);
         }
+
+        let chopping = channel
+            .channel_control
+            .intersects(ChannelControl::CHOPPING_ENABLED);
 
         // word align
         let mut current = channel.base_address & 0xFFFFFC;
@@ -536,6 +556,11 @@ impl Dma {
             current = next;
         }
         dma_bus.main_ram.write_u32(current, 0xFFFFFF);
+
+        if chopping {
+            channel.block_control = 0;
+            channel.base_address = current;
+        }
 
         (n_entries, true)
     }
