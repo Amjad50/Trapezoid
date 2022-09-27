@@ -452,6 +452,12 @@ impl MemoryCard {
             }
             CardReadStage::End => {
                 assert_eq!(inp, 0);
+
+                // if we finished a write command successfully, flush it to disk.
+                if let CardCmd::Write = self.cmd {
+                    self.flush();
+                }
+
                 self.stage = CardReadStage::Command;
                 (0x4 | self.status, true)
             }
@@ -477,12 +483,10 @@ impl MemoryCard {
             }
         }
     }
-}
 
-impl Drop for MemoryCard {
-    fn drop(&mut self) {
+    /// Saves the data to disk
+    fn flush(&mut self) {
         fs::write(format!("memcard{}.mcd", self.id), &self.data[..]).unwrap();
-        println!("Saved memory card {}", self.id);
     }
 }
 
