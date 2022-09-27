@@ -345,6 +345,7 @@ impl BusLine for CpuBus {
             0xBFC00000..=0xBFC80000 => self.bios.read_u32(addr),
             0x1F800000..=0x1F8003FF => self.scratchpad.read_u32(addr & 0x3FF),
             0x1F801000..=0x1F801020 => self.mem_ctrl_1.read_u32(addr),
+            0x1F801044..=0x1F80104F => self.controller_mem_card.read_u32(addr & 0xF),
             0x1F801060 => self.mem_ctrl_2.read_u32(addr),
             0x1F801070..=0x1F801077 => self.interrupts.read_u32(addr & 0xF),
             0x1F801080..=0x1F8010FC => self.dma.read_u32(addr & 0xFF),

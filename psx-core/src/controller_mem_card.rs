@@ -417,8 +417,11 @@ impl ControllerAndMemoryCard {
 }
 
 impl BusLine for ControllerAndMemoryCard {
-    fn read_u32(&mut self, _addr: u32) -> u32 {
-        todo!()
+    fn read_u32(&mut self, addr: u32) -> u32 {
+        match addr {
+            0x4 => self.get_stat(),
+            _ => unreachable!(),
+        }
     }
 
     fn write_u32(&mut self, _addr: u32, _data: u32) {
@@ -465,6 +468,12 @@ impl BusLine for ControllerAndMemoryCard {
 
                 // zero, reset communication handlers
                 if data == 0 {
+                    self.trigger_baudrate_reload();
+                    self.transfered_bits = 0;
+                    self.tx_fifo.clear();
+                    self.rx_fifo.clear();
+                    self.clk_position_high = false;
+
                     self.communication_handlers[0].state = 0;
                     self.communication_handlers[1].state = 0;
                 }
