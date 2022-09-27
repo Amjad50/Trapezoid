@@ -1,7 +1,7 @@
 use crate::memory::{interrupts::InterruptRequester, BusLine};
 use bitflags::bitflags;
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fmt::Write};
 
 #[derive(Clone, Copy)]
 pub enum DigitalControllerKey {
@@ -188,21 +188,281 @@ impl Controller {
     }
 }
 
-#[derive(Default)]
-struct MemoryCard {}
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CardReadStage {
+    Command,
+    MemoryCardId1,
+    MemoryCardId2,
+    SendAddressMsb,
+    SendAddressLsb,
+    ConfirmAddressMsb,
+    ConfirmAddressLsb,
+    Data,
+    Checksum,
+    CommandAck1,
+    CommandAck2,
+    End,
+
+    CmdIdEnd1,
+    CmdIdEnd2,
+    CmdIdEnd3,
+    CmdIdEnd4,
+}
+
+enum CardCmd {
+    Read,
+    Write,
+    Id,
+}
+
+struct MemoryCard {
+    stage: CardReadStage,
+    cmd: CardCmd,
+    flag: u8,
+    address: u16,
+    read_pointer: u8,
+    checksum: u8,
+    status: u8,
+    previous: u8,
+    data: Box<[u8; 0x400 * 128]>,
+}
 
 impl MemoryCard {
     fn new() -> Self {
-        Self {}
+        let mut data = Box::new([0; 0x400 * 128]);
+
+        let block0 = &mut data[0..0x400 * 8];
+
+        // initialize the header, otherwise, the card will not be recognized
+        block0[0] = b'M';
+        block0[1] = b'C';
+        block0[0x7F] = 0xE;
+
+        Self {
+            stage: CardReadStage::Command,
+            cmd: CardCmd::Read, // anything for now, will be overridden on cmd start
+            flag: 0x08,         // flag must start with 8 when powering up and after formatting
+            read_pointer: 0,
+            address: 0,
+            checksum: 0,
+            status: 0,
+            previous: 0,
+            data,
+        }
     }
 
     fn start_access(&mut self) -> u8 {
-        // TODO: handle memory card
-        0xFF
+        self.stage = CardReadStage::Command;
+        self.read_pointer = 0;
+        self.address = 0;
+        self.checksum = 0;
+        self.status = 0;
+        self.previous = 0;
+        0
     }
 
-    fn exchange_bytes(&mut self, _inp: u8) -> (u8, bool) {
-        unreachable!()
+    fn exchange_bytes(&mut self, inp: u8) -> (u8, bool) {
+        match self.stage {
+            CardReadStage::Command => {
+                self.cmd = match inp {
+                    0x52 => CardCmd::Read,
+                    0x57 => CardCmd::Write,
+                    0x53 => CardCmd::Id,
+                    _ => unreachable!("invalid command"),
+                };
+                self.stage = CardReadStage::MemoryCardId1;
+                (self.flag, false)
+            }
+            CardReadStage::MemoryCardId1 => {
+                assert_eq!(inp, 0);
+                self.stage = CardReadStage::MemoryCardId2;
+                (0x5A, false)
+            }
+            CardReadStage::MemoryCardId2 => {
+                assert_eq!(inp, 0);
+                match self.cmd {
+                    CardCmd::Read | CardCmd::Write => {
+                        self.stage = CardReadStage::SendAddressMsb;
+                    }
+                    CardCmd::Id => {
+                        self.stage = CardReadStage::CommandAck1;
+                    }
+                }
+
+                (0x5D, false)
+            }
+            CardReadStage::SendAddressMsb => {
+                // start of checksum
+                self.checksum = inp;
+                self.previous = inp;
+                self.address = (inp as u16) << 8;
+                self.stage = CardReadStage::SendAddressLsb;
+                (self.previous, false)
+            }
+            CardReadStage::SendAddressLsb => {
+                self.checksum ^= inp;
+                self.address |= inp as u16;
+                match self.cmd {
+                    CardCmd::Read => {
+                        self.stage = CardReadStage::CommandAck1;
+                    }
+                    CardCmd::Write => {
+                        self.stage = CardReadStage::Data;
+                    }
+                    _ => unreachable!("Id command cannot send Address"),
+                }
+
+                // invalid address
+                if (self.address & !0x3FF) != 0 {
+                    self.status = 0xFF;
+                }
+
+                (self.previous, false)
+            }
+            CardReadStage::ConfirmAddressMsb => {
+                assert_eq!(inp, 0);
+
+                self.stage = CardReadStage::ConfirmAddressLsb;
+                // invalid address
+                if self.status == 0xFF {
+                    (0xFF, false)
+                } else {
+                    ((self.address >> 8) as u8, false)
+                }
+            }
+            CardReadStage::ConfirmAddressLsb => {
+                assert_eq!(inp, 0);
+                // invalid address
+                if self.status == 0xFF {
+                    self.stage = CardReadStage::Command;
+                    // abort transfer for Read commands
+                    (0xFF, true)
+                } else {
+                    self.stage = CardReadStage::Data;
+                    (self.address as u8, false)
+                }
+            }
+            CardReadStage::Data => {
+                let r = match self.cmd {
+                    CardCmd::Read => {
+                        assert_eq!(inp, 0);
+                        let addr = self.address as usize * 128 + self.read_pointer as usize;
+                        let data = self.data[addr];
+                        self.checksum ^= data;
+                        data
+                    }
+                    CardCmd::Write => {
+                        if self.read_pointer == 0 {
+                            // reset flag on write
+                            self.flag = 0x00;
+                        }
+                        // valid address
+                        if self.status != 0xFF {
+                            self.checksum ^= inp;
+                            let addr = self.address as usize * 128 + self.read_pointer as usize;
+                            self.data[addr] = inp;
+                        }
+                        // return previous and set it
+                        std::mem::replace(&mut self.previous, inp)
+                    }
+                    _ => unreachable!("Id command cannot send/recv Data"),
+                };
+
+                self.read_pointer += 1;
+
+                // for debugging
+                if self.read_pointer == 128 {
+                    let mut buf = String::new();
+                    for i in 0..128 {
+                        let addr = self.address as usize * 128 + i as usize;
+                        let data = self.data[addr];
+                        write!(buf, "{:02X} ", data).unwrap();
+                    }
+                    log::info!(
+                        "[{}]: address: 0x{:04X}\n {}",
+                        if let CardCmd::Read = self.cmd {
+                            'R'
+                        } else {
+                            'W'
+                        },
+                        self.address,
+                        buf
+                    );
+                    self.stage = CardReadStage::Checksum;
+                }
+
+                (r, false)
+            }
+            CardReadStage::Checksum => match self.cmd {
+                CardCmd::Read => {
+                    assert_eq!(inp, 0);
+                    self.stage = CardReadStage::End;
+                    self.status = 0x47; // Good
+                    (self.checksum, false)
+                }
+                CardCmd::Write => {
+                    if self.status == 0 {
+                        if self.checksum == inp {
+                            self.status = 0x47; // Good
+                        } else {
+                            self.status = 0x4E; // Bad checksum
+                        }
+                    } else {
+                        self.status = 0xFF;
+                    }
+                    self.stage = CardReadStage::CommandAck1;
+                    (self.previous, false)
+                }
+                _ => unreachable!("Id command cannot send/recv Checksum"),
+            },
+            CardReadStage::CommandAck1 => {
+                assert_eq!(inp, 0);
+                // late /ACK after this byte-pair on Read command
+                self.stage = CardReadStage::CommandAck2;
+                (0x5C, false)
+            }
+            CardReadStage::CommandAck2 => {
+                assert_eq!(inp, 0);
+                match self.cmd {
+                    CardCmd::Read => {
+                        self.stage = CardReadStage::ConfirmAddressMsb;
+                    }
+                    CardCmd::Write => {
+                        self.stage = CardReadStage::End;
+                    }
+                    CardCmd::Id => {
+                        self.stage = CardReadStage::CmdIdEnd1;
+                    }
+                }
+
+                (0x5D, false)
+            }
+            CardReadStage::End => {
+                assert_eq!(inp, 0);
+                self.stage = CardReadStage::Command;
+                (0x4 | self.status, true)
+            }
+            CardReadStage::CmdIdEnd1 => {
+                assert_eq!(inp, 0);
+                self.stage = CardReadStage::CmdIdEnd2;
+                (0x04, false)
+            }
+            CardReadStage::CmdIdEnd2 => {
+                assert_eq!(inp, 0);
+                self.stage = CardReadStage::CmdIdEnd3;
+                (0x00, false)
+            }
+            CardReadStage::CmdIdEnd3 => {
+                assert_eq!(inp, 0);
+                self.stage = CardReadStage::CmdIdEnd4;
+                (0x00, false)
+            }
+            CardReadStage::CmdIdEnd4 => {
+                assert_eq!(inp, 0);
+                self.stage = CardReadStage::Command;
+                (0x80, true)
+            }
+        }
     }
 }
 
@@ -242,7 +502,7 @@ impl CommunicationHandler {
                     }
                     out
                 }
-                _ => unreachable!(),
+                _ => unreachable!("invalid inp {}", inp),
             },
             1 => {
                 let (result, done) = self.controller.exchange_bytes(inp);
