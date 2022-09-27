@@ -1,7 +1,7 @@
 use crate::memory::{interrupts::InterruptRequester, BusLine};
 use bitflags::bitflags;
 
-use std::{collections::VecDeque, fmt::Write};
+use std::{collections::VecDeque, fmt::Write, fs};
 
 #[derive(Clone, Copy)]
 pub enum DigitalControllerKey {
@@ -216,6 +216,7 @@ enum CardCmd {
 }
 
 struct MemoryCard {
+    id: u8,
     stage: CardReadStage,
     cmd: CardCmd,
     flag: u8,
@@ -228,17 +229,29 @@ struct MemoryCard {
 }
 
 impl MemoryCard {
-    fn new() -> Self {
+    fn new(id: u8) -> Self {
         let mut data = Box::new([0; 0x400 * 128]);
 
         let block0 = &mut data[0..0x400 * 8];
 
-        // initialize the header, otherwise, the card will not be recognized
         block0[0] = b'M';
         block0[1] = b'C';
         block0[0x7F] = 0xE;
 
+        // TODO: move to managed folder with resources
+        fs::read(format!("memcard{}.mcd", id))
+            .and_then(|m| {
+                if m.len() == 0x400 * 128 {
+                    println!("Loaded memory card {}", id);
+                    data.copy_from_slice(&m);
+                }
+
+                Ok(())
+            })
+            .ok();
+
         Self {
+            id,
             stage: CardReadStage::Command,
             cmd: CardCmd::Read, // anything for now, will be overridden on cmd start
             flag: 0x08,         // flag must start with 8 when powering up and after formatting
@@ -466,6 +479,13 @@ impl MemoryCard {
     }
 }
 
+impl Drop for MemoryCard {
+    fn drop(&mut self) {
+        fs::write(format!("memcard{}.mcd", self.id), &self.data[..]).unwrap();
+        println!("Saved memory card {}", self.id);
+    }
+}
+
 /// Groups the controller and memory_card components for communication
 struct CommunicationHandler {
     /// which component we are communicating with now
@@ -475,11 +495,12 @@ struct CommunicationHandler {
 }
 
 impl CommunicationHandler {
-    fn new(controller_connected: bool) -> Self {
+    /// `id` is used to indicate which memory card file to save/load from
+    fn new(id: u8, controller_connected: bool) -> Self {
         Self {
             state: 0,
             controller: Controller::new(controller_connected),
-            memory_card: MemoryCard::new(),
+            memory_card: MemoryCard::new(id),
         }
     }
 }
@@ -561,8 +582,8 @@ impl Default for ControllerAndMemoryCard {
             rx_fifo: VecDeque::new(),
 
             communication_handlers: [
-                CommunicationHandler::new(true),
-                CommunicationHandler::new(false),
+                CommunicationHandler::new(0, true),
+                CommunicationHandler::new(1, false),
             ],
         }
     }
