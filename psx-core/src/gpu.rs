@@ -282,14 +282,14 @@ impl Gpu {
         self.in_vblank
     }
 
-    pub fn sync_gpu_and_blit_to_front<D, IF>(
+    pub fn sync_gpu_and_blit_to_front<D>(
         &mut self,
         dest_image: Arc<D>,
         full_vram: bool,
-        in_future: IF,
-    ) where
+        in_future: Box<dyn GpuFuture>,
+    ) -> Box<dyn GpuFuture>
+    where
         D: ImageAccess + 'static,
-        IF: GpuFuture,
     {
         // if we have a previous image, then we are not in the first frame,
         // so there should be an image in the channel.
@@ -346,11 +346,10 @@ impl Gpu {
                 .unwrap()
                 .then_signal_fence_and_flush()
                 .unwrap()
-                .wait(None)
-                .unwrap();
+                .boxed()
         } else {
             // we must flush the future even if we are not using it.
-            in_future.flush().unwrap();
+            in_future
         }
     }
 }

@@ -87,14 +87,18 @@ impl Psx {
             .change_controller_key_state(key, pressed);
     }
 
-    pub fn blit_to_front<D, IF>(&mut self, dest_image: Arc<D>, full_vram: bool, in_future: IF)
+    pub fn blit_to_front<D>(
+        &mut self,
+        dest_image: Arc<D>,
+        full_vram: bool,
+        in_future: Box<dyn GpuFuture>,
+    ) -> Box<dyn GpuFuture>
     where
         D: ImageAccess + 'static,
-        IF: GpuFuture,
     {
         self.bus
             .gpu_mut()
-            .sync_gpu_and_blit_to_front(dest_image, full_vram, in_future);
+            .sync_gpu_and_blit_to_front(dest_image, full_vram, in_future)
     }
 
     pub fn pause_cpu(&mut self) {

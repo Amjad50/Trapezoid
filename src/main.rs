@@ -28,6 +28,7 @@ enum DisplayType {
         surface: Arc<Surface<Window>>,
         swapchain: Arc<Swapchain<Window>>,
         images: Vec<Arc<SwapchainImage<Window>>>,
+        future: Option<Box<dyn GpuFuture>>,
         full_vram_display: bool,
         last_frame_time: Instant,
     },
@@ -131,13 +132,14 @@ impl VkDisplay {
         };
 
         Self {
-            device,
+            device: device.clone(),
             queue,
             display_type: DisplayType::Windowed {
                 surface,
                 swapchain,
                 images,
                 full_vram_display,
+                future: Some(sync::now(device).boxed()),
                 last_frame_time: Instant::now(),
             },
         }
@@ -222,8 +224,12 @@ impl VkDisplay {
                 images,
                 full_vram_display,
                 surface,
+                future,
                 last_frame_time,
             } => {
+                let mut current_future = future.take().unwrap();
+                current_future.cleanup_finished();
+
                 surface.window().set_title(&format!(
                     "PSX - FPS: {}",
                     (1. / last_frame_time.elapsed().as_secs_f32()).round()
@@ -248,12 +254,19 @@ impl VkDisplay {
 
                 let current_image = images[image_num].clone();
 
-                psx.blit_to_front(current_image, *full_vram_display, acquire_future);
+                let current_future = psx.blit_to_front(
+                    current_image,
+                    *full_vram_display,
+                    current_future.join(acquire_future).boxed(),
+                );
 
-                sync::now(self.device.clone())
-                    .then_swapchain_present(self.queue.clone(), swapchain.clone(), image_num)
-                    .flush()
-                    .unwrap();
+                *future = Some(
+                    current_future
+                        .then_swapchain_present(self.queue.clone(), swapchain.clone(), image_num)
+                        .then_signal_fence_and_flush()
+                        .unwrap()
+                        .boxed(),
+                );
             }
             DisplayType::Headless => {}
         }
