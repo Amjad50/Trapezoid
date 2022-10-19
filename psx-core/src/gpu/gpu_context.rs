@@ -373,7 +373,7 @@ impl GpuContext {
 
         // create multiple pipelines, one for each semi_transparency_mode
         // TODO: is there a better way to do this?
-        let polygon_pipelines = (0..4)
+        let polygon_pipelines = (0..5)
             .map(|transparency_mode| {
                 GraphicsPipeline::start()
                     .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertexFull>())
@@ -391,7 +391,7 @@ impl GpuContext {
             .collect::<Vec<_>>();
 
         // multiple pipelines
-        let polyline_pipelines = (0..4)
+        let polyline_pipelines = (0..5)
             .map(|transparency_mode| {
                 GraphicsPipeline::start()
                     .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertexFull>())
@@ -683,7 +683,7 @@ impl GpuContext {
     /// used to create a specific pipeline for it.
     fn create_color_blend_state(semi_transparency_mode: u8) -> ColorBlendState {
         // Mode 3 has no blend, so it is used for non_transparent draws
-        let blend = match semi_transparency_mode & 3 {
+        let blend = match semi_transparency_mode {
             0 => Some(AttachmentBlend {
                 color_op: BlendOp::Add,
                 color_source: BlendFactor::SrcAlpha,
@@ -709,6 +709,18 @@ impl GpuContext {
                 alpha_destination: BlendFactor::Zero,
             }),
             3 => None,
+            // NOTE: this is not a valid semi_transparency_mode, but we
+            //       used it to create a faster path for non-textured mode 3
+            //
+            // faster path for mode 3 non-textured
+            4 => Some(AttachmentBlend {
+                color_op: BlendOp::Add,
+                color_source: BlendFactor::ConstantAlpha,
+                color_destination: BlendFactor::One,
+                alpha_op: BlendOp::Add,
+                alpha_source: BlendFactor::One,
+                alpha_destination: BlendFactor::Zero,
+            }),
             _ => unreachable!(),
         };
         ColorBlendState {
@@ -721,7 +733,10 @@ impl GpuContext {
                 },
                 color_write_enable: StateMode::Fixed(true),
             }],
-            blend_constants: StateMode::Fixed([0.0, 0.0, 0.0, 0.0]),
+            blend_constants: match semi_transparency_mode {
+                4 => StateMode::Fixed([0.0, 0.0, 0.0, 0.25]),
+                _ => StateMode::Fixed([0.0, 0.0, 0.0, 0.0]),
+            },
         }
     }
 
@@ -928,7 +943,12 @@ impl GpuContext {
         let mut semi_transparency_mode = if textured {
             texture_params.semi_transparency_mode
         } else {
-            gpu_stat.semi_transparency_mode()
+            let s = gpu_stat.semi_transparency_mode();
+            if s == 3 {
+                4 // special faster path for mode 3 non-textured
+            } else {
+                s
+            }
         };
 
         let mut semi_transparent_mode_3 = false;
