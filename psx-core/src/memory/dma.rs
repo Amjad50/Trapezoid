@@ -477,20 +477,20 @@ impl Dma {
     // TODO: implement this, now its just an empty handler that trigger interrupt
     fn perform_spu_channel4_dma(
         channel: &mut DmaChannel,
-        _dma_bus: &mut super::DmaBus,
+        dma_bus: &mut super::DmaBus,
     ) -> (u32, bool) {
         // must be sync mode 1
         assert!(channel.channel_control.sync_mode() == 1);
-        // must be from main ram (for now, TODO: fix this)
-        assert!(channel
-            .channel_control
-            .intersects(ChannelControl::DIRECTION_FROM_RAM));
-        // must be forward
-        assert!(channel.channel_control.address_step() == 4);
         // chopping is only for sync mode 0
         assert!(!channel
             .channel_control
             .intersects(ChannelControl::CHOPPING_ENABLED));
+
+        let direction_from_main_ram = channel
+            .channel_control
+            .intersects(ChannelControl::DIRECTION_FROM_RAM);
+
+        let address_step = channel.channel_control.address_step();
 
         // TODO: check if the max is 16 or not
         let block_size = channel.block_control & 0xFFFF;
@@ -498,8 +498,19 @@ impl Dma {
 
         let mut address = channel.base_address & 0xFFFFFC;
 
-        // transfer one block only
-        address += 4 * block_size;
+        if direction_from_main_ram {
+            for _ in 0..block_size {
+                let data = dma_bus.main_ram.read_u32(address);
+                let low = data as u16;
+                let high = (data >> 16) as u16;
+                dma_bus.spu.write_u16(0x1A8, low);
+                dma_bus.spu.write_u16(0x1A8, high);
+                // step
+                address = (address as i32 + address_step as i32) as u32;
+            }
+        } else {
+            todo!("support DMA from SPU to main ram");
+        }
 
         let blocks = blocks - 1;
 
@@ -507,7 +518,7 @@ impl Dma {
         channel.block_control |= blocks << 16;
         channel.base_address = address;
 
-        (0, blocks == 0)
+        (block_size, blocks == 0)
     }
 
     // Some control flags are ignored here like:

@@ -448,7 +448,7 @@ impl Voice {
         let left_output =
             (mono_output * self.current_vol_left as i32 / 0x8000).clamp(-0x8000, 0x7FFF);
         let right_output =
-            (mono_output * self.current_vol_right as i32 / 0x800).clamp(-0x8000, 0x7FFF);
+            (mono_output * self.current_vol_right as i32 / 0x8000).clamp(-0x8000, 0x7FFF);
 
         (endx_set, mono_output, left_output, right_output)
     }
@@ -569,7 +569,9 @@ impl Spu {
                 RamTransferMode::Stop => {
                     self.stat.remove(SpuStat::DATA_TRANSFER_BUSY_FLAG);
                 }
-                RamTransferMode::ManualWrite => {
+                // For now use the same buffer
+                // TODO: add DMA special fast write
+                RamTransferMode::ManualWrite | RamTransferMode::DmaWrite => {
                     if self.data_fifo.is_empty() {
                         self.stat.remove(SpuStat::DATA_TRANSFER_BUSY_FLAG);
                     } else {
@@ -582,7 +584,6 @@ impl Spu {
                         // reset the busy flag on the next round
                     }
                 }
-                RamTransferMode::DmaWrite => todo!(),
                 RamTransferMode::DmaRead => todo!(),
             }
 
@@ -893,9 +894,11 @@ impl BusLine for Spu {
             }
             0x1A8 => {
                 log::info!("sound ram data transfer fifo {:04X}", data);
-                if self.data_fifo.len() == 32 {
-                    panic!("sound ram data transfer fifo overflow");
-                }
+                // TODO: this check is removed for now since the DMA uses
+                //       the same buffer for writes
+                //if self.data_fifo.len() == 32 {
+                //    panic!("sound ram data transfer fifo overflow");
+                //}
                 self.data_fifo.push_back(data);
             }
             0x1AA => {
