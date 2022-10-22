@@ -222,7 +222,7 @@ struct Voice {
 impl Voice {
     fn key_on(&mut self) {
         self.i_adpcm_current_address = self.adpcm_start_address as usize * 4;
-        self.i_cached_sample_index = 0;
+        self.i_cached_sample_index = 28;
         self.i_adpcm_decoder.old = 0;
         self.i_adpcm_decoder.older = 0;
         self.adpcm_repeat_address = self.adpcm_start_address;
@@ -405,8 +405,12 @@ impl Voice {
 
         let mut endx_set = false;
 
-        if self.i_cached_sample_index == 0 {
+        if self.i_cached_sample_index >= 28 {
             endx_set = self.fetch_and_decode_next_sample_block(ram);
+
+            // keep the bottom to not disturb the pitch modulation
+            self.i_adpcm_pitch_counter &= 0x3FFF;
+            self.i_cached_sample_index = 0;
         }
 
         let current_index = self.i_cached_sample_index;
@@ -426,11 +430,6 @@ impl Voice {
         // Counter.Bit3..11 are used as 8bit gaussian interpolation index
 
         self.i_cached_sample_index = next_sample as usize;
-        if self.i_cached_sample_index >= 28 {
-            // keep the bottom to not disturb the pitch modulation
-            self.i_adpcm_pitch_counter &= 0x3FFF;
-            self.i_cached_sample_index = 0;
-        }
 
         let current_sample = self.i_cached_28_samples_block[current_index];
 
