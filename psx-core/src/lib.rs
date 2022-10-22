@@ -101,6 +101,10 @@ impl Psx {
             .sync_gpu_and_blit_to_front(dest_image, full_vram, in_future)
     }
 
+    pub fn take_audio_buffer(&mut self) -> Vec<i16> {
+        self.bus.spu_mut().take_audio_buffer()
+    }
+
     pub fn pause_cpu(&mut self) {
         self.cpu.set_pause(true);
         #[cfg(feature = "debugger")]
