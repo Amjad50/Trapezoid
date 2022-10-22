@@ -270,11 +270,9 @@ impl Voice {
 
                 // until sustain level
                 let sustain_level_mul = (self.adsr_config.bits() & 0b1111) as u16 + 1;
-                // FIXME: at max, this will reach 0x8000, which is negative
-                //        and beyound the range of adsr_vol (0..0x7FFF)
-                //        maybe (-1) or clamp?
-                assert!(sustain_level_mul != 0x10);
-                target_level = sustain_level_mul * 0x800;
+                // the max level will be 0x8000, which is outside the range
+                // so clamp it.
+                target_level = (sustain_level_mul * 0x800).max(0x7FFF);
             }
             ADSRState::Sustain => {
                 mode = self.adsr_config.contains(ADSRConfig::SUSTAIN_MODE);
@@ -589,8 +587,6 @@ impl Spu {
 
             let mut mixed_audio_left = 0;
             let mut mixed_audio_right = 0;
-            let mut count_mix_left = 0;
-            let mut count_mix_right = 0;
 
             for i in 0..24 {
                 let pitch_mod = self.pitch_mod_channel_flag.get(i);
@@ -607,27 +603,15 @@ impl Spu {
 
                 let final_left_output = (left_output * self.current_main_vol_left as i32 / 0x8000)
                     .clamp(-0x8000, 0x7FFF);
-                if final_left_output != 0 {
-                    mixed_audio_left += final_left_output;
-                    count_mix_left += 1;
-                }
+                mixed_audio_left += final_left_output;
                 let final_right_output = (right_output * self.current_main_vol_right as i32
                     / 0x8000)
                     .clamp(-0x8000, 0x7FFF);
-                if final_right_output != 0 {
-                    mixed_audio_right += final_right_output;
-                    count_mix_right += 1;
-                }
+                mixed_audio_right += final_right_output;
 
                 if reached_endx {
                     self.endx_flag.set(i, true);
                 }
-            }
-            if count_mix_left != 0 {
-                mixed_audio_left /= count_mix_left;
-            }
-            if count_mix_right != 0 {
-                mixed_audio_right /= count_mix_right;
             }
 
             self.out_audio_buffer
