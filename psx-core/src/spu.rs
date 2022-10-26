@@ -577,6 +577,7 @@ impl Spu {
                         for d in self.data_fifo.drain(..) {
                             self.spu_ram[self.i_ram_transfer_address] = d;
                             self.i_ram_transfer_address += 1;
+                            self.i_ram_transfer_address &= 0x3FFFF
                         }
                         // reset the busy flag on the next round
                     }
