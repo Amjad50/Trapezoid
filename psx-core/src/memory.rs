@@ -314,9 +314,7 @@ impl CpuBus {
     }
 
     pub fn clock_components(&mut self, cpu_cycles: u32) {
-        // almost 2 GPU clocks per 1 CPU
-        let (dot_clocks, hblank_clock) =
-            self.dma_bus.gpu.clock(&mut self.interrupts, cpu_cycles * 2);
+        let (dot_clocks, hblank_clock) = self.dma_bus.gpu.clock(&mut self.interrupts, cpu_cycles);
 
         self.dma_bus.spu.clock(&mut self.interrupts, cpu_cycles);
 

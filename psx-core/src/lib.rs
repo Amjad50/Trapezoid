@@ -61,28 +61,54 @@ impl Psx {
         })
     }
 
-    pub fn clock_frame(&mut self) {
+    #[inline(always)]
+    fn common_clock(&mut self) -> (bool, u32) {
+        let mut added_clock = 0;
+        if self.excess_cpu_cycles == 0 {
+            // this number doesn't mean anything
+            // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
+            let cpu_cycles = self.cpu.clock(&mut self.bus, 32);
+            if cpu_cycles == 0 {
+                return (true, 0);
+            }
+            // the DMA is running of the CPU
+            self.excess_cpu_cycles = cpu_cycles + self.bus.clock_dma();
+            added_clock = self.excess_cpu_cycles;
+        }
+
+        let cpu_cycles_to_run = self.excess_cpu_cycles.min(MAX_CPU_CYCLES_TO_CLOCK);
+        self.excess_cpu_cycles -= cpu_cycles_to_run;
+        self.bus.clock_components(cpu_cycles_to_run);
+
+        (false, added_clock)
+    }
+
+    pub fn clock_based_on_audio(&mut self) {
         // sync the CPU clocks to the SPU so that the audio would be clearer.
         const CYCLES_PER_FRAME: u32 = 564480;
 
         while self.cpu_frame_cycles < CYCLES_PER_FRAME {
-            if self.excess_cpu_cycles == 0 {
-                // this number doesn't mean anything
-                // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
-                let cpu_cycles = self.cpu.clock(&mut self.bus, 32);
-                if cpu_cycles == 0 {
-                    return;
-                }
-                // the DMA is running of the CPU
-                self.excess_cpu_cycles = cpu_cycles + self.bus.clock_dma();
-                self.cpu_frame_cycles += self.excess_cpu_cycles;
+            let (halted, added_clock) = self.common_clock();
+            if halted {
+                return;
             }
-
-            let cpu_cycles_to_run = self.excess_cpu_cycles.min(MAX_CPU_CYCLES_TO_CLOCK);
-            self.excess_cpu_cycles -= cpu_cycles_to_run;
-            self.bus.clock_components(cpu_cycles_to_run);
+            self.cpu_frame_cycles += added_clock;
         }
         self.cpu_frame_cycles -= CYCLES_PER_FRAME;
+    }
+
+    pub fn clock_based_on_video(&mut self) {
+        let mut prev_vblank = self.bus.gpu().in_vblank();
+        let mut current_vblank = prev_vblank;
+
+        while !current_vblank || prev_vblank {
+            if self.common_clock().0 {
+                return;
+            }
+
+            prev_vblank = current_vblank;
+            current_vblank = self.bus.gpu().in_vblank();
+        }
     }
 
     pub fn change_controller_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {

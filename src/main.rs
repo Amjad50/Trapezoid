@@ -375,7 +375,7 @@ fn main() {
         // clock for one frame, this may take more time than one frame
         // and would result in low UI response, but currently, the FPS is generally
         // good, so it shouldn't be a big issue.
-        psx.clock_frame();
+        psx.clock_based_on_video();
         let audio_buffer = psx.take_audio_buffer();
         audio_player.queue(&audio_buffer);
 
