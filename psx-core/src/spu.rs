@@ -82,7 +82,8 @@ impl AdpcmDecoder {
         let filter = shift_filter >> 4;
 
         // only 5 filters supported in SPU ADPCM
-        assert!(filter <= 4);
+        // for some reason, some games audio will be outside the range 0-4
+        let filter = filter % 5;
 
         let f0 = ADPCM_TABLE_POS[filter as usize];
         let f1 = ADPCM_TABLE_NEG[filter as usize];
@@ -710,7 +711,7 @@ impl BusLine for Spu {
             0x1C0..=0x1FE => self.reverb_config[(addr - 0x1C0) as usize / 2],
             //0x1C0..=0x1FF => todo!("u16 read reverb configuration {:03X}", addr),
             0x200..=0x25E => {
-                let voice_idx = (addr >> 2) as usize;
+                let voice_idx = ((addr >> 2) & 23) as usize;
                 if addr & 0x2 == 0 {
                     self.voices[voice_idx].current_vol_left as u16
                 } else {
