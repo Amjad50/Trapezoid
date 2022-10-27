@@ -39,6 +39,7 @@ pub struct Psx {
     /// a lot of CPU cycles, clocking the components with this many CPU cycles
     /// will crash the emulator, so we split clocking across multiple `clock` calls.
     excess_cpu_cycles: u32,
+    cpu_frame_cycles: u32,
 }
 
 impl Psx {
@@ -56,29 +57,32 @@ impl Psx {
             cpu: Cpu::new(),
             bus: CpuBus::new(bios, disk_file, config, device, queue),
             excess_cpu_cycles: 0,
+            cpu_frame_cycles: 0,
         })
     }
 
-    /// return `true` on the beginning of VBLANK
-    pub fn clock(&mut self) -> bool {
-        let in_vblank_old = self.bus.gpu().in_vblank();
+    pub fn clock_frame(&mut self) {
+        // sync the CPU clocks to the SPU so that the audio would be clearer.
+        const CYCLES_PER_FRAME: u32 = 564480;
 
-        if self.excess_cpu_cycles == 0 {
-            // this number doesn't mean anything
-            // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
-            let cpu_cycles = self.cpu.clock(&mut self.bus, 32);
-            if cpu_cycles == 0 {
-                return true;
+        while self.cpu_frame_cycles < CYCLES_PER_FRAME {
+            if self.excess_cpu_cycles == 0 {
+                // this number doesn't mean anything
+                // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
+                let cpu_cycles = self.cpu.clock(&mut self.bus, 32);
+                if cpu_cycles == 0 {
+                    return;
+                }
+                // the DMA is running of the CPU
+                self.excess_cpu_cycles = cpu_cycles + self.bus.clock_dma();
+                self.cpu_frame_cycles += self.excess_cpu_cycles;
             }
-            // the DMA is running of the CPU
-            self.excess_cpu_cycles = cpu_cycles + self.bus.clock_dma();
+
+            let cpu_cycles_to_run = self.excess_cpu_cycles.min(MAX_CPU_CYCLES_TO_CLOCK);
+            self.excess_cpu_cycles -= cpu_cycles_to_run;
+            self.bus.clock_components(cpu_cycles_to_run);
         }
-
-        let cpu_cycles_to_run = self.excess_cpu_cycles.min(MAX_CPU_CYCLES_TO_CLOCK);
-        self.excess_cpu_cycles -= cpu_cycles_to_run;
-        self.bus.clock_components(cpu_cycles_to_run);
-
-        self.bus.gpu().in_vblank() && !in_vblank_old
+        self.cpu_frame_cycles -= CYCLES_PER_FRAME;
     }
 
     pub fn change_controller_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {

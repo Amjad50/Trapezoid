@@ -17,6 +17,8 @@ clap = { version = "3.0.0", features = ["derive"] }
 vulkano = "0.29"
 winit = "0.26"
 vulkano-win = "0.29"
+ringbuf = { version = "0.3.1", default-features = false, features = ["alloc"] }
+cpal = { version = "0.14.0", default-features = false }
 
 [workspace]
 members = [
