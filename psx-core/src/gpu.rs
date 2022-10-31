@@ -162,6 +162,8 @@ pub struct Gpu {
     dot: u32,
     drawing_odd: bool,
     in_vblank: bool,
+
+    cpu_cycles_counter: u32,
 }
 
 impl Gpu {
@@ -203,6 +205,7 @@ impl Gpu {
             dot: 0,
             drawing_odd: false,
             in_vblank: false,
+            cpu_cycles_counter: 0,
         }
     }
 
@@ -212,8 +215,15 @@ impl Gpu {
     pub fn clock(
         &mut self,
         interrupt_requester: &mut impl InterruptRequester,
-        cycles: u32,
+        cpu_cycles: u32,
     ) -> (u32, bool) {
+        // The GPU clock is CPU*11/7 == 53.222400MHz
+        // The FPS is determined by the mode, NTSC is 60~Hz, PAL is 50~Hz
+        self.cpu_cycles_counter += cpu_cycles * 11;
+
+        let cycles = self.cpu_cycles_counter / 7;
+        self.cpu_cycles_counter %= 7;
+
         let gpu_stat = self.gpu_stat.load();
         let max_dots = if gpu_stat.is_ntsc_video_mode() {
             3413

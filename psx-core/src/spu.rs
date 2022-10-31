@@ -1,48 +1,931 @@
-use byteorder::{ByteOrder, LittleEndian};
+use std::{
+    collections::VecDeque,
+    ops::{Deref, DerefMut},
+};
 
-use crate::memory::BusLine;
+use crate::memory::{interrupts::InterruptRequester, BusLine};
 
-// TODO: properly implement sound registers
-pub struct SpuRegisters {
-    data: [u8; 0x400],
+const CPU_CLOCKS_PER_SPU: u32 = 0x300;
+
+enum RamTransferMode {
+    Stop,
+    ManualWrite,
+    DmaWrite,
+    DmaRead,
 }
 
-impl Default for SpuRegisters {
+bitflags::bitflags! {
+    #[derive(Default)]
+    struct SpuControl: u16 {
+        const CD_AUDIO_ENABLE         = 0b0000000000000001;
+        const EXTERNAL_AUDIO_ENABLE   = 0b0000000000000010;
+        const CD_AUDIO_REVERB         = 0b0000000000000100;
+        const EXTERNAL_AUDIO_REVERB   = 0b0000000000001000;
+        const SOUND_RAM_TRANSFER_MODE = 0b0000000000110000;
+        const IRQ9_ENABLE             = 0b0000000001000000;
+        const REVERB_MASTER_ENABLE    = 0b0000000010000000;
+        const NOISE_FREQ_STEP         = 0b0000001100000000;
+        const NOICE_FREQ_SHIFT        = 0b0011110000000000;
+        const MUTE_SPU                = 0b0100000000000000;
+        const SPU_ENABLE              = 0b1000000000000000;
+    }
+}
+
+impl SpuControl {
+    fn ram_transfer_mode(&self) -> RamTransferMode {
+        match self.bits() & Self::SOUND_RAM_TRANSFER_MODE.bits() {
+            0b000000 => RamTransferMode::Stop,
+            0b010000 => RamTransferMode::ManualWrite,
+            0b100000 => RamTransferMode::DmaWrite,
+            0b110000 => RamTransferMode::DmaRead,
+            _ => unreachable!(),
+        }
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Default)]
+    struct SpuStat: u16 {
+        const CURRENT_SPU_MODE                 = 0b0000000000111111;
+        const IRQ_FLAG                         = 0b0000000001000000;
+        /// Data Transfer DMA Read/Write Request ;seems to be same as SPUCNT.Bit5 (?)
+        /// looks like it is clearned when in manual mode
+        const DATA_TRANSFER_USING_DMA          = 0b0000000010000000;
+        const DATA_TRANSFER_DMA_READ_REQ       = 0b0000000100000000;
+        const DATA_TRANSFER_DMA_WRITE_REQ      = 0b0000001000000000;
+        const DATA_TRANSFER_BUSY_FLAG          = 0b0000010000000000;
+        const WRITE_FIRST_SECOND_H_CAPTURE_BUF = 0b0000100000000000;
+        // const UNUSED                        = 0b1111000000000000;
+    }
+}
+
+const ADPCM_TABLE_POS: &[i32; 5] = &[0, 60, 115, 98, 122];
+const ADPCM_TABLE_NEG: &[i32; 5] = &[0, 0, -52, -55, -60];
+
+#[derive(Default, Clone, Copy)]
+struct AdpcmDecoder {
+    old: i32,
+    older: i32,
+}
+
+impl AdpcmDecoder {
+    /// Decode ADPCM block
+    ///
+    /// `in_block` must be 16 bytes long (8 elements)
+    fn decode_block(&mut self, in_block: &[u16], out: &mut [i16; 28]) {
+        assert_eq!(in_block.len(), 8);
+
+        let shift_filter = in_block[0] & 0xFF;
+
+        // adpcm decoding...
+        let shift_factor = 12 - (shift_filter & 0xf);
+        let filter = shift_filter >> 4;
+
+        // only 5 filters supported in SPU ADPCM
+        // for some reason, some games audio will be outside the range 0-4
+        let filter = filter % 5;
+
+        let f0 = ADPCM_TABLE_POS[filter as usize];
+        let f1 = ADPCM_TABLE_NEG[filter as usize];
+
+        for i in 0..28 / 4 {
+            // 4 samples together
+            let mut adpcm_16bit_chunk = in_block[i + 1];
+            for j in 0..4 {
+                let adpcm_4bit_sample = adpcm_16bit_chunk & 0xF;
+                let mut sample = adpcm_4bit_sample as i32;
+                // convert to signed 32 from 4 bit
+                if sample & 0x8 != 0 {
+                    sample = ((sample as u32) | 0xfffffff0) as i32;
+                }
+                // shift
+                sample = sample << shift_factor;
+                // apply adpcm filter
+                sample = sample + (self.old * f0 + self.older * f1 + 32) / 64;
+                sample = sample.clamp(-0x8000, 0x7fff);
+
+                self.older = self.old;
+                self.old = sample;
+
+                out[i * 4 + j] = sample as i16;
+
+                // next nibble
+                adpcm_16bit_chunk >>= 4;
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct VoicesFlag {
+    bits: u32,
+}
+
+impl VoicesFlag {
+    fn get(&self, index: usize) -> bool {
+        self.bits & (1 << index) != 0
+    }
+
+    fn set(&mut self, index: usize, value: bool) {
+        self.bits &= !(1 << index);
+        self.bits |= (value as u32) << index;
+    }
+
+    fn bus_set_all(&mut self, value: u32) {
+        // only 24 bits are used
+        self.bits = value & 0xFFFFFF;
+    }
+
+    fn get_all(&self) -> u32 {
+        self.bits
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Default)]
+    struct ADSRConfig: u32 {
+        const SUSTAIN_LEVEL                    = 0b00000000000000000000000000001111;
+        // decay step is fixed (-8)
+        // decay direction is fixed (decrease)
+        // decay mode is fixed (exponential)
+        const DECAY_SHIFT                      = 0b00000000000000000000000011110000;
+        const ATTACK_STEP                      = 0b00000000000000000000001100000000;
+        // attack direction is fixed (increase)
+        const ATTACK_SHIFT                     = 0b00000000000000000111110000000000;
+        const ATTACK_MODE                      = 0b00000000000000001000000000000000;
+        // release step is fixed (-8)
+        // release direction is fixed (decrease)
+        const RELEASE_SHIFT                    = 0b00000000000111110000000000000000;
+        const RELEASE_MODE                     = 0b00000000001000000000000000000000;
+        const SUSTAIN_STEP                     = 0b00000000110000000000000000000000;
+        const SUSTAIN_SHIFT                    = 0b00011111000000000000000000000000;
+        const SUSTAIN_DIRECTION                = 0b01000000000000000000000000000000;
+        const SUSTAIN_MODE                     = 0b10000000000000000000000000000000;
+        // const UNUSED                        = 0b00100000000000000000000000000000;
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+enum ADSRState {
+    Attack,
+    Decay,
+    Sustain,
+    #[default]
+    Release,
+}
+
+#[derive(Default, Clone, Copy)]
+struct Voice {
+    volume_left: u16,
+    volume_right: u16,
+
+    current_vol_left: i16,
+    current_vol_right: i16,
+
+    /// pitch
+    adpcm_sample_rate: u16,
+    /// `i_` here and in many places means `internal`,
+    /// which is not part of the SPU external API (Bus access)
+    ///
+    /// The current volume is used for sweep envelope
+    i_adpcm_pitch_counter: u32,
+
+    adpcm_start_address: u16,
+    adpcm_repeat_address: u16,
+    /// internal register to keep track of the current adpcm address
+    /// since `adpcm_start_address` is not updated
+    i_adpcm_current_address: usize,
+
+    i_adpcm_decoder: AdpcmDecoder,
+
+    adsr_config: ADSRConfig,
+
+    i_adsr_state: ADSRState,
+
+    /// This is also refer to `ADSRLevel`
+    ///
+    /// DOCS: The register is read/writeable, writing allows to let the
+    /// ADSR generator to "jump" to a specific volume level. But, ACTUALLY,
+    /// the ADSR generator does overwrite the setting (from another internal
+    /// register) whenever applying a new Step?!
+    ///
+    /// FIXME: currently, we are directly using this, we should use internal register
+    adsr_current_vol: u16,
+
+    i_cached_28_samples_block: [i16; 28],
+    // 0 means that there is no cached block, so we must fetch,decode,cache it
+    // and use the first sample
+    i_cached_sample_index: usize,
+
+    i_adsr_cycle_counter: u32,
+}
+
+impl Voice {
+    fn key_on(&mut self) {
+        self.i_adpcm_current_address = self.adpcm_start_address as usize * 4;
+        self.i_cached_sample_index = 28;
+        self.i_adpcm_decoder.old = 0;
+        self.i_adpcm_decoder.older = 0;
+        self.adpcm_repeat_address = self.adpcm_start_address;
+        self.i_adsr_state = ADSRState::Attack;
+        self.i_adsr_cycle_counter = 0;
+        self.adsr_current_vol = 0;
+    }
+
+    fn key_off(&mut self) {
+        self.i_adsr_state = ADSRState::Release;
+        // TODO: not sure if this is correct, but noticed Sustain is normally done with
+        //       very long cycle times and small steps, so I think we shouldn't wait for it.
+        self.i_adsr_cycle_counter = 0;
+    }
+
+    /// returns
+    /// - `mode`: 0=linear, 1=exponential
+    /// - `direction`: 0=increase, 1=decrease
+    /// - `shift`
+    /// - `step`
+    /// - `target_level`
+    fn get_adsr_current_info(&self) -> (bool, bool, u8, i16, u16) {
+        const STEPS_POS: &[i16; 4] = &[7, 6, 5, 4];
+        const STEPS_NEG: &[i16; 4] = &[-8, -7, -6, -5];
+
+        let mode;
+        let direction;
+        let shift;
+        let step;
+        let target_level;
+        match self.i_adsr_state {
+            ADSRState::Attack => {
+                mode = self.adsr_config.contains(ADSRConfig::ATTACK_MODE);
+                direction = false; // always increase
+                shift = ((self.adsr_config.bits() >> 10) & 0b11111) as u8;
+                let step_i = (self.adsr_config.bits() >> 8) & 0b11;
+                step = STEPS_POS[step_i as usize];
+                target_level = 0x7FFF;
+            }
+            ADSRState::Decay => {
+                mode = true; // always exponential
+                direction = true; // always decrease
+                shift = ((self.adsr_config.bits() >> 4) & 0b1111) as u8;
+                step = -8; // always -8
+
+                // until sustain level
+                let sustain_level_mul = (self.adsr_config.bits() & 0b1111) as u16 + 1;
+                // the max level will be 0x8000, which is outside the range
+                // so clamp it.
+                target_level = (sustain_level_mul * 0x800).max(0x7FFF);
+            }
+            ADSRState::Sustain => {
+                mode = self.adsr_config.contains(ADSRConfig::SUSTAIN_MODE);
+                direction = self.adsr_config.contains(ADSRConfig::SUSTAIN_DIRECTION);
+                shift = ((self.adsr_config.bits() >> 24) & 0b11111) as u8;
+                let step_i = (self.adsr_config.bits() >> 22) & 0b11;
+                step = if direction {
+                    STEPS_NEG[step_i as usize]
+                } else {
+                    STEPS_POS[step_i as usize]
+                };
+                target_level = 0; // not important, there is no target level
+                                  // will not switch until Key off
+            }
+            ADSRState::Release => {
+                mode = self.adsr_config.contains(ADSRConfig::RELEASE_MODE);
+                direction = true; // always decrease
+                shift = ((self.adsr_config.bits() >> 16) & 0b11111) as u8;
+                step = -8; // always -8
+                target_level = 0; // until 0
+            }
+        }
+
+        (mode, direction, shift, step, target_level)
+    }
+
+    fn clock_adsr(&mut self) {
+        // ADSR operation
+        //
+        //  AdsrCycles = 1 SHL Max(0,ShiftValue-11)
+        //  AdsrStep = StepValue SHL Max(0,11-ShiftValue)
+        //  IF exponential AND increase AND AdsrLevel>6000h THEN AdsrCycles=AdsrCycles*4
+        //  IF exponential AND decrease THEN AdsrStep=AdsrStep*AdsrLevel/8000h
+        //  Wait(AdsrCycles)              ;cycles counted at 44.1kHz clock
+        //  AdsrLevel=AdsrLevel+AdsrStep  ;saturated to 0..+7FFFh
+        // FIXME: we are waiting first, then adding the step together with the
+        //        rest, not sure if this is correct, but for now its simpler
+        if self.i_adsr_cycle_counter > 0 {
+            self.i_adsr_cycle_counter -= 1;
+            return;
+        }
+
+        let (mode_exponential, direction_decrease, shift, step, target_level) =
+            self.get_adsr_current_info();
+
+        let mut adsr_cycles = 1 << shift.saturating_sub(11) as u32;
+        let mut adsr_step = step << (11u8).saturating_sub(shift) as u32;
+
+        // fake exponential
+        if mode_exponential {
+            if direction_decrease {
+                adsr_step = (adsr_step as i32 * self.adsr_current_vol as i32 / 0x8000)
+                    .clamp(-0x8000, 0x7FFF) as i16;
+            } else if self.adsr_current_vol > 0x6000 {
+                adsr_cycles *= 4;
+            }
+        }
+        self.i_adsr_cycle_counter = adsr_cycles;
+
+        // should wait here
+        self.adsr_current_vol =
+            ((self.adsr_current_vol as i16).saturating_add(adsr_step)).clamp(0, 0x7FFF) as u16;
+
+        if (direction_decrease && self.adsr_current_vol <= target_level)
+            || (!direction_decrease && self.adsr_current_vol >= target_level)
+        {
+            match self.i_adsr_state {
+                ADSRState::Attack => {
+                    self.i_adsr_state = ADSRState::Decay;
+                }
+                ADSRState::Decay => {
+                    self.i_adsr_state = ADSRState::Sustain;
+                }
+                ADSRState::Sustain => {
+                    // do nothing
+                }
+                ADSRState::Release => {
+                    // do nothing
+                }
+            }
+        }
+    }
+
+    /// returns `true` if `ENDX` should be set
+    ///
+    /// This may set ADSR mode to `Release` when encountering the flags `End+Mute`
+    fn fetch_and_decode_next_sample_block(&mut self, ram: &SpuRam) -> bool {
+        let mut endx_set = false;
+
+        // 16 bytes block
+        let adpcm_block = &ram[self.i_adpcm_current_address..self.i_adpcm_current_address + 8];
+        // move to next block
+        self.i_adpcm_current_address += 8;
+
+        let flags = adpcm_block[0] >> 8;
+
+        // handle flags/looping/etc.
+        let loop_end = flags & 1 == 1;
+        let loop_repeat = flags & 2 == 2;
+        let loop_start = flags & 4 == 4;
+
+        if loop_start {
+            self.adpcm_repeat_address = (self.i_adpcm_current_address / 4) as u16;
+        }
+        if loop_end {
+            self.i_adpcm_current_address = self.adpcm_repeat_address as usize * 4;
+            endx_set = true;
+            if loop_repeat {
+                // `End+Repeat`: jump to Loop-address, set ENDX flag
+            } else {
+                // `End+Mute`: jump to Loop-address, set ENDX flag, Release, Env=0000h
+                // FIXME: not sure what `Env=0000h` means
+                self.i_adsr_state = ADSRState::Release;
+            }
+        }
+
+        self.i_adpcm_decoder
+            .decode_block(&adpcm_block, &mut self.i_cached_28_samples_block);
+
+        endx_set
+    }
+
+    /// returns
+    /// - `true` if `ENDX` should be set
+    /// - `mono_output` can be used for capture
+    /// - `left_output`
+    /// - `right_output`
+    fn clock(&mut self, ram: &SpuRam) -> (bool, i32, i32, i32) {
+        self.clock_adsr();
+
+        let mut endx_set = false;
+
+        if self.i_cached_sample_index >= 28 {
+            endx_set = self.fetch_and_decode_next_sample_block(ram);
+
+            // keep the bottom to not disturb the pitch modulation
+            self.i_adpcm_pitch_counter &= 0x3FFF;
+            self.i_cached_sample_index = 0;
+        }
+
+        let current_index = self.i_cached_sample_index;
+
+        let mut step = self.adpcm_sample_rate;
+
+        // clamp
+        if step > 0x3FFF {
+            step = 0x4000;
+        }
+
+        // handle sample rate
+        self.i_adpcm_pitch_counter += step as u32;
+        // Counter.Bit12 and up indicates the current sample (within a ADPCM block).
+        let next_sample = self.i_adpcm_pitch_counter >> 12;
+        // TODO: add pitch modulation
+        // Counter.Bit3..11 are used as 8bit gaussian interpolation index
+
+        self.i_cached_sample_index = next_sample as usize;
+
+        let current_sample = self.i_cached_28_samples_block[current_index];
+
+        // This `mono output` can be used in the capture buffer, the remaining
+        // volume control and sweep are not included in the capture buffer data.
+        let mono_output =
+            (current_sample as i32 * self.adsr_current_vol as i32 / 0x8000).clamp(-0x8000, 0x7FFF);
+
+        // TODO: implement sweep
+        #[allow(unused)]
+        let sweep_mode = self.volume_left & 0x8000 == 0x8000;
+
+        let left_output =
+            (mono_output * self.current_vol_left as i32 / 0x8000).clamp(-0x8000, 0x7FFF);
+        let right_output =
+            (mono_output * self.current_vol_right as i32 / 0x8000).clamp(-0x8000, 0x7FFF);
+
+        (endx_set, mono_output, left_output, right_output)
+    }
+}
+
+#[repr(transparent)]
+struct SpuRam {
+    data: Box<[u16; 0x40000]>,
+}
+
+impl Deref for SpuRam {
+    type Target = [u16; 0x40000];
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl DerefMut for SpuRam {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
+    }
+}
+
+impl Default for SpuRam {
     fn default() -> Self {
-        Self { data: [0; 0x400] }
+        Self {
+            data: Box::new([0; 0x40000]),
+        }
     }
 }
 
-impl BusLine for SpuRegisters {
-    fn read_u32(&mut self, addr: u32) -> u32 {
-        let index = addr as usize;
+#[derive(Default)]
+pub struct Spu {
+    main_vol_left: u16,
+    main_vol_right: u16,
 
-        LittleEndian::read_u32(&self.data[index..index + 4])
+    reverb_out_vol_left: u16,
+    reverb_out_vol_right: u16,
+    reverb_work_base: u16,
+
+    cd_vol_left: u16,
+    cd_vol_right: u16,
+
+    external_vol_left: u16,
+    external_vol_right: u16,
+
+    current_main_vol_left: i16,
+    current_main_vol_right: i16,
+
+    ram_transfer_control: u16,
+    ram_transfer_address: u16,
+    i_ram_transfer_address: usize,
+    ram_irq_address: u16,
+
+    data_fifo: VecDeque<u16>,
+
+    control: SpuControl,
+    stat: SpuStat,
+
+    key_on_flag: VoicesFlag,
+    key_off_flag: VoicesFlag,
+    // should the voice be pitch modulated
+    pitch_mod_channel_flag: VoicesFlag,
+    // should the voice be in noise mode or not
+    noise_channel_mode_flag: VoicesFlag,
+    // should the voice be used in reverb
+    reverb_channel_mode_flag: VoicesFlag,
+    // updated by the SPU
+    // The bits get CLEARED when setting the corresponding KEY ON bits.
+    // The bits get SET when reaching an LOOP-END flag in ADPCM header.bit0.
+    endx_flag: VoicesFlag,
+
+    voices: [Voice; 24],
+
+    reverb_config: [u16; 0x20],
+
+    spu_ram: SpuRam,
+
+    /// internal timer to know when to run the SPU.
+    /// The SPU runs at 44100Hz, which is CPU_CLOCK / 0x300
+    /// I guess the CPU clock was designed around the SPU?
+    cpu_clock_timer: u32,
+
+    /// Output audio stereo in 44100Hz 16PCM
+    out_audio_buffer: Vec<i16>,
+}
+
+impl Spu {
+    // TODO: add interrupt handling
+    pub fn clock(&mut self, _interrupt_requester: &mut impl InterruptRequester, cycles: u32) {
+        self.cpu_clock_timer += cycles;
+
+        loop {
+            if self.cpu_clock_timer < CPU_CLOCKS_PER_SPU {
+                break;
+            }
+            self.cpu_clock_timer -= CPU_CLOCKS_PER_SPU;
+
+            // the order of SPU handling is
+            // - voice1
+            // - write cd left
+            // - write cd right
+            // - write voice 1 to capture
+            // - write voice 3 to capture
+            // - voice2..24
+            // Maybe it is starting from voice2? so that writing will be at the end?
+            //
+            // anyway, the order doesn't matter since there is no dependancy between them
+            // except that each voice depend on the previous one in pitch modulation
+
+            // reflect the spu stat
+            self.stat.remove(SpuStat::CURRENT_SPU_MODE);
+            self.stat |= SpuStat::from_bits_truncate(self.control.bits() & 0x3F);
+
+            // handle memory transfers
+            match self.control.ram_transfer_mode() {
+                RamTransferMode::Stop => {
+                    self.stat.remove(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                }
+                // For now use the same buffer
+                // TODO: add DMA special fast write
+                RamTransferMode::ManualWrite | RamTransferMode::DmaWrite => {
+                    if self.data_fifo.is_empty() {
+                        self.stat.remove(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                    } else {
+                        self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+
+                        for d in self.data_fifo.drain(..) {
+                            self.spu_ram[self.i_ram_transfer_address] = d;
+                            self.i_ram_transfer_address += 1;
+                            self.i_ram_transfer_address &= 0x3FFFF
+                        }
+                        // reset the busy flag on the next round
+                    }
+                }
+                RamTransferMode::DmaRead => todo!(),
+            }
+
+            let mut mixed_audio_left = 0;
+            let mut mixed_audio_right = 0;
+
+            for i in 0..24 {
+                let pitch_mod = self.pitch_mod_channel_flag.get(i);
+                let noise_mode = self.noise_channel_mode_flag.get(i);
+                let _reverb_mode = self.reverb_channel_mode_flag.get(i);
+
+                assert!(!pitch_mod);
+                assert!(!noise_mode);
+                //assert!(!_reverb_mode);
+
+                // handle voices
+                let (reached_endx, _mono_output, left_output, right_output) =
+                    self.voices[i].clock(&self.spu_ram);
+
+                let final_left_output = (left_output * self.current_main_vol_left as i32 / 0x8000)
+                    .clamp(-0x8000, 0x7FFF);
+                mixed_audio_left += final_left_output;
+                let final_right_output = (right_output * self.current_main_vol_right as i32
+                    / 0x8000)
+                    .clamp(-0x8000, 0x7FFF);
+                mixed_audio_right += final_right_output;
+
+                if reached_endx {
+                    self.endx_flag.set(i, true);
+                }
+            }
+
+            self.out_audio_buffer
+                .push(mixed_audio_left.clamp(-0x8000, 0x7FFF) as i16);
+            self.out_audio_buffer
+                .push(mixed_audio_right.clamp(-0x8000, 0x7FFF) as i16);
+        }
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
-        let index = addr as usize;
+    pub fn take_audio_buffer(&mut self) -> Vec<i16> {
+        let mut out = Vec::with_capacity(self.out_audio_buffer.len());
+        out.extend_from_slice(&self.out_audio_buffer);
+        self.out_audio_buffer.clear();
+        out
+    }
+}
 
-        LittleEndian::write_u32(&mut self.data[index..index + 4], data)
+impl BusLine for Spu {
+    fn read_u32(&mut self, addr: u32) -> u32 {
+        match addr {
+            0x000..=0x17F => todo!("u32 read voice register {:03X}", addr),
+            0x180..=0x187 => todo!("u32 read spu control {:03X}", addr),
+            0x188..=0x19F => todo!("u32 read voice flags {:03X}", addr),
+            0x1A0..=0x1BF => todo!("u32 read spu  control {:03X}", addr),
+            0x1C0..=0x1FF => todo!("u32 read reverb configuration {:03X}", addr),
+            0x200..=0x25F => todo!("u32 read voice internal reg {:03X}", addr),
+            0x260..=0x2FF => unreachable!("u32 read unknown {:03X}", addr),
+            _ => unreachable!(),
+        }
+    }
+
+    fn write_u32(&mut self, addr: u32, _data: u32) {
+        match addr {
+            0x000..=0x17F => todo!("u32 write voice register {:03X}", addr),
+            0x180..=0x187 => todo!("u32 write spu control {:03X}", addr),
+            0x188..=0x19F => todo!("u32 write voice flags {:03X}", addr),
+            0x1A0..=0x1BF => todo!("u32 write spu  control {:03X}", addr),
+            0x1C0..=0x1FF => todo!("u32 write reverb configuration {:03X}", addr),
+            0x200..=0x25F => todo!("u32 write voice internal reg {:03X}", addr),
+            0x260..=0x2FF => unreachable!("u32 write unknown {:03X}", addr),
+            _ => unreachable!(),
+        }
     }
 
     fn read_u16(&mut self, addr: u32) -> u16 {
-        let index = addr as usize;
-
-        LittleEndian::read_u16(&self.data[index..index + 2])
+        match addr {
+            0x000..=0x17E => {
+                let reg = addr & 0xF;
+                let voice_idx = (addr >> 4) as usize;
+                match reg {
+                    0x0 => self.voices[voice_idx].volume_left,
+                    0x2 => self.voices[voice_idx].volume_right,
+                    0x4 => self.voices[voice_idx].adpcm_sample_rate,
+                    0x6 => self.voices[voice_idx].adpcm_start_address,
+                    0x8 => self.voices[voice_idx].adsr_config.bits() as u16,
+                    0xA => (self.voices[voice_idx].adsr_config.bits() >> 16) as u16,
+                    0xC => self.voices[voice_idx].adsr_current_vol,
+                    0xE => self.voices[voice_idx].adpcm_repeat_address,
+                    _ => unreachable!(),
+                }
+            }
+            0x180 => self.main_vol_left,
+            0x182 => self.main_vol_right,
+            0x184 => self.reverb_out_vol_left,
+            0x186 => self.reverb_out_vol_right,
+            // key on and key off should be treated as write only, reading
+            // will only return the last written value
+            0x188 => self.key_on_flag.get_all() as u16,
+            0x18A => (self.key_on_flag.get_all() >> 16) as u16,
+            0x18C => self.key_off_flag.get_all() as u16,
+            0x18E => (self.key_off_flag.get_all() >> 16) as u16,
+            0x190 => self.pitch_mod_channel_flag.get_all() as u16,
+            0x192 => (self.pitch_mod_channel_flag.get_all() >> 16) as u16,
+            0x194 => self.noise_channel_mode_flag.get_all() as u16,
+            0x196 => (self.noise_channel_mode_flag.get_all() >> 16) as u16,
+            0x198 => self.reverb_channel_mode_flag.get_all() as u16,
+            0x19A => (self.reverb_channel_mode_flag.get_all() >> 16) as u16,
+            0x19C => self.endx_flag.get_all() as u16,
+            0x19E => (self.endx_flag.get_all() >> 16) as u16,
+            0x180..=0x187 => todo!("u16 read spu control {:03X}", addr),
+            0x188..=0x19F => todo!("u16 read voice flags {:03X}", addr),
+            0x1A0 => unreachable!("u16 read unknown {:03X}", addr),
+            0x1A2 => self.reverb_work_base,
+            0x1A4 => self.ram_irq_address,
+            0x1A6 => self.ram_transfer_address,
+            0x1AA => self.control.bits(),
+            0x1AC => self.ram_transfer_control << 1,
+            0x1AE => self.stat.bits(),
+            0x1B0 => self.cd_vol_left,
+            0x1B2 => self.cd_vol_right,
+            0x1B4 => self.external_vol_left,
+            0x1B6 => self.external_vol_right,
+            0x1B8 => self.current_main_vol_left as u16,
+            0x1BA => self.current_main_vol_right as u16,
+            0x1A2..=0x1BF => todo!("u16 read spu  control {:03X}", addr),
+            0x1C0..=0x1FE => self.reverb_config[(addr - 0x1C0) as usize / 2],
+            //0x1C0..=0x1FF => todo!("u16 read reverb configuration {:03X}", addr),
+            0x200..=0x25E => {
+                let voice_idx = ((addr >> 2) & 23) as usize;
+                if addr & 0x2 == 0 {
+                    self.voices[voice_idx].current_vol_left as u16
+                } else {
+                    self.voices[voice_idx].current_vol_right as u16
+                }
+            }
+            0x260..=0x2FF => unreachable!("u16 read unknown {:03X}", addr),
+            _ => unreachable!(),
+        }
     }
 
     fn write_u16(&mut self, addr: u32, data: u16) {
-        let index = addr as usize;
+        match addr {
+            0x000..=0x17E => {
+                let reg = addr & 0xF;
+                let voice_idx = (addr >> 4) as usize;
+                log::info!(
+                    "u16 write voice {}, reg {:01X} = {:04X}",
+                    voice_idx,
+                    reg,
+                    data
+                );
+                match reg {
+                    0x0 => {
+                        self.voices[voice_idx].volume_left = data;
+                        // volume mode
+                        if data & 0x8000 == 0 {
+                            self.voices[voice_idx].current_vol_left = (data * 2) as i16;
+                        }
+                    }
+                    0x2 => {
+                        self.voices[voice_idx].volume_right = data;
+                        // volume mode
+                        if data & 0x8000 == 0 {
+                            self.voices[voice_idx].current_vol_right = (data * 2) as i16;
+                        }
+                    }
+                    0x4 => self.voices[voice_idx].adpcm_sample_rate = data,
+                    0x6 => self.voices[voice_idx].adpcm_start_address = data,
+                    0x8 => {
+                        let f = self.voices[voice_idx].adsr_config.bits();
+                        self.voices[voice_idx].adsr_config =
+                            ADSRConfig::from_bits_truncate((f & 0xFFFF0000) | data as u32);
+                    }
+                    0xA => {
+                        let f = self.voices[voice_idx].adsr_config.bits();
+                        self.voices[voice_idx].adsr_config =
+                            ADSRConfig::from_bits_truncate((f & 0xFFFF) | ((data as u32) << 16));
+                    }
+                    0xC => self.voices[voice_idx].adsr_current_vol = data,
+                    0xE => self.voices[voice_idx].adpcm_repeat_address = data,
+                    _ => unreachable!(),
+                }
+            }
+            0x180 => {
+                self.main_vol_left = data;
+                // volume mode
+                if data & 0x8000 == 0 {
+                    self.current_main_vol_left = (data * 2) as i16;
+                }
+            }
+            0x182 => {
+                self.main_vol_right = data;
+                // volume mode
+                if data & 0x8000 == 0 {
+                    self.current_main_vol_right = (data * 2) as i16;
+                }
+            }
+            0x184 => self.reverb_out_vol_left = data,
+            0x186 => self.reverb_out_vol_right = data,
+            0x188 => {
+                let f = self.key_on_flag.get_all();
+                self.key_on_flag.bus_set_all((f & 0xFFFF0000) | data as u32);
 
-        LittleEndian::write_u16(&mut self.data[index..index + 2], data)
+                for i in 0..16 {
+                    if self.key_on_flag.get(i) {
+                        self.endx_flag.set(i, false);
+                        self.voices[i].key_on();
+                    }
+                }
+            }
+            0x18A => {
+                let f = self.key_on_flag.get_all();
+                self.key_on_flag
+                    .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+
+                for i in 16..24 {
+                    if self.key_on_flag.get(i) {
+                        self.endx_flag.set(i, false);
+                        self.voices[i].key_on();
+                    }
+                }
+            }
+            0x18C => {
+                let f = self.key_off_flag.get_all();
+                self.key_off_flag
+                    .bus_set_all((f & 0xFFFF0000) | data as u32);
+
+                for i in 0..16 {
+                    if self.key_off_flag.get(i) {
+                        self.voices[i].key_off();
+                    }
+                }
+            }
+            0x18E => {
+                let f = self.key_off_flag.get_all();
+                self.key_off_flag
+                    .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+
+                for i in 16..24 {
+                    if self.key_off_flag.get(i) {
+                        self.voices[i].key_off();
+                    }
+                }
+            }
+            0x190 => {
+                let f = self.pitch_mod_channel_flag.get_all();
+                self.pitch_mod_channel_flag
+                    .bus_set_all((f & 0xFFFF0000) | data as u32);
+            }
+            0x192 => {
+                let f = self.pitch_mod_channel_flag.get_all();
+                self.pitch_mod_channel_flag
+                    .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+            }
+            0x194 => {
+                let f = self.noise_channel_mode_flag.get_all();
+                self.noise_channel_mode_flag
+                    .bus_set_all((f & 0xFFFF0000) | data as u32);
+            }
+            0x196 => {
+                let f = self.noise_channel_mode_flag.get_all();
+                self.noise_channel_mode_flag
+                    .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+            }
+            0x198 => {
+                let f = self.reverb_channel_mode_flag.get_all();
+                self.reverb_channel_mode_flag
+                    .bus_set_all((f & 0xFFFF0000) | data as u32);
+            }
+            0x19A => {
+                let f = self.reverb_channel_mode_flag.get_all();
+                self.reverb_channel_mode_flag
+                    .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+            }
+            // channel enable should be read only
+            // writing to it will save the data, but it doesn't have any affect
+            // on the hardware functionality, and will be overwritten by the hardware
+            0x19C => {
+                let f = self.endx_flag.get_all();
+                self.endx_flag.bus_set_all((f & 0xFFFF0000) | data as u32);
+            }
+            0x19E => {
+                let f = self.endx_flag.get_all();
+                self.endx_flag
+                    .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+            }
+            0x1A0 => unreachable!("u16 write unknown {:03X}", addr),
+            0x1A2 => self.reverb_work_base = data,
+            0x1A4 => self.ram_irq_address = data,
+            0x1A6 => {
+                log::info!("sound ram data transfer address {:04X}", data);
+                self.ram_transfer_address = data;
+                self.i_ram_transfer_address = data as usize * 4;
+            }
+            0x1A8 => {
+                log::info!("sound ram data transfer fifo {:04X}", data);
+                // TODO: this check is removed for now since the DMA uses
+                //       the same buffer for writes
+                //if self.data_fifo.len() == 32 {
+                //    panic!("sound ram data transfer fifo overflow");
+                //}
+                self.data_fifo.push_back(data);
+            }
+            0x1AA => {
+                // TODO: handle ack
+                self.control = SpuControl::from_bits_truncate(data);
+                log::info!("spu control {:04X}", data);
+            }
+            0x1AC => {
+                self.ram_transfer_control = (data >> 1) & 7;
+                assert!(self.ram_transfer_control == 2);
+            }
+            0x1AE => unreachable!("u16 write SpuStat is not supported"),
+            0x1B0 => self.cd_vol_left = data,
+            0x1B2 => self.cd_vol_right = data,
+            0x1B4 => self.external_vol_left = data,
+            0x1B6 => self.external_vol_right = data,
+            0x1B8 | 0x1BA => unreachable!("u16 write current volume is not supported {:03X}", addr),
+            0x1A2..=0x1BF => todo!("u16 write spu  control {:03X}", addr),
+            0x1C0..=0x1FE => self.reverb_config[(addr - 0x1C0) as usize / 2] = data,
+            //0x1C0..=0x1FF => todo!("u16 write reverb configuration {:03X}", addr),
+            // TODO: not sure if this is writable, since its internal current vol
+            0x200..=0x25F => todo!("u16 write voice internal reg {:03X}", addr),
+            0x260..=0x2FF => unreachable!("u16 write unknown {:03X}", addr),
+            _ => unreachable!(),
+        }
     }
 
     fn read_u8(&mut self, _addr: u32) -> u8 {
         todo!()
     }
 
-    fn write_u8(&mut self, _addr: u32, _data: u8) {
-        todo!()
+    fn write_u8(&mut self, addr: u32, _data: u8) {
+        // The SPU is connected to a 16bit databus.
+        // 8bit/16bit/32bit reads and 16bit/32bit writes are implemented.
+        // However, 8bit writes are NOT implemented: 8bit writes to
+        // ODD addresses are simply ignored (without causing any exceptions),
+        // 8bit writes to EVEN addresses are executed as 16bit writes
+        // (eg. "movp r1,12345678h, movb [spu_port],r1" will write 5678h instead of 78h).
+        //
+        // TODO: implement this behavior of 8bit writes, we need to get access
+        //       to the whole 32bit word from the CPU
+
+        todo!("spu corrupt 8bit write addr: {:03X}", addr);
     }
 }

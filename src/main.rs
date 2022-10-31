@@ -1,5 +1,8 @@
+mod audio;
+
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
+use audio::AudioPlayer;
 use psx_core::{DigitalControllerKey, Psx, PsxConfig};
 
 use clap::Parser;
@@ -287,6 +290,9 @@ struct PsxEmuArgs {
     /// Display the full vram
     #[clap(short, long)]
     vram: bool,
+    /// Play audio
+    #[clap(short, long)]
+    audio: bool,
     /// Print tty debug output to the console
     #[clap(short, long)]
     debug: bool,
@@ -314,6 +320,11 @@ fn main() {
         display.queue.clone(),
     )
     .unwrap();
+
+    let mut audio_player = AudioPlayer::new(44100);
+    if args.audio {
+        audio_player.play();
+    }
 
     event_loop.run(move |event, _target, control_flow| {
         if let Event::WindowEvent { event, .. } = event {
@@ -366,14 +377,15 @@ fn main() {
         }
         *control_flow = ControlFlow::Poll;
 
-        // do several clocks in one time to reduce latency of the `event_loop.run` method.
-        for _ in 0..100 {
-            if psx.clock() {
-                display.render_frame(&mut psx);
-                // break, so that when we are in debug mode, it will not hang
-                // since it will return `true` always in that case.
-                break;
-            }
+        // clock for one frame, this may take more time than one frame
+        // and would result in low UI response, but currently, the FPS is generally
+        // good, so it shouldn't be a big issue.
+        psx.clock_based_on_video();
+        let audio_buffer = psx.take_audio_buffer();
+        if args.audio {
+            audio_player.queue(&audio_buffer);
         }
+
+        display.render_frame(&mut psx);
     });
 }

@@ -39,6 +39,7 @@ pub struct Psx {
     /// a lot of CPU cycles, clocking the components with this many CPU cycles
     /// will crash the emulator, so we split clocking across multiple `clock` calls.
     excess_cpu_cycles: u32,
+    cpu_frame_cycles: u32,
 }
 
 impl Psx {
@@ -56,29 +57,58 @@ impl Psx {
             cpu: Cpu::new(),
             bus: CpuBus::new(bios, disk_file, config, device, queue),
             excess_cpu_cycles: 0,
+            cpu_frame_cycles: 0,
         })
     }
 
-    /// return `true` on the beginning of VBLANK
-    pub fn clock(&mut self) -> bool {
-        let in_vblank_old = self.bus.gpu().in_vblank();
-
+    #[inline(always)]
+    fn common_clock(&mut self) -> (bool, u32) {
+        let mut added_clock = 0;
         if self.excess_cpu_cycles == 0 {
             // this number doesn't mean anything
             // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
             let cpu_cycles = self.cpu.clock(&mut self.bus, 32);
             if cpu_cycles == 0 {
-                return true;
+                return (true, 0);
             }
             // the DMA is running of the CPU
             self.excess_cpu_cycles = cpu_cycles + self.bus.clock_dma();
+            added_clock = self.excess_cpu_cycles;
         }
 
         let cpu_cycles_to_run = self.excess_cpu_cycles.min(MAX_CPU_CYCLES_TO_CLOCK);
         self.excess_cpu_cycles -= cpu_cycles_to_run;
         self.bus.clock_components(cpu_cycles_to_run);
 
-        self.bus.gpu().in_vblank() && !in_vblank_old
+        (false, added_clock)
+    }
+
+    pub fn clock_based_on_audio(&mut self) {
+        // sync the CPU clocks to the SPU so that the audio would be clearer.
+        const CYCLES_PER_FRAME: u32 = 564480;
+
+        while self.cpu_frame_cycles < CYCLES_PER_FRAME {
+            let (halted, added_clock) = self.common_clock();
+            if halted {
+                return;
+            }
+            self.cpu_frame_cycles += added_clock;
+        }
+        self.cpu_frame_cycles -= CYCLES_PER_FRAME;
+    }
+
+    pub fn clock_based_on_video(&mut self) {
+        let mut prev_vblank = self.bus.gpu().in_vblank();
+        let mut current_vblank = prev_vblank;
+
+        while !current_vblank || prev_vblank {
+            if self.common_clock().0 {
+                return;
+            }
+
+            prev_vblank = current_vblank;
+            current_vblank = self.bus.gpu().in_vblank();
+        }
     }
 
     pub fn change_controller_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {
@@ -99,6 +129,10 @@ impl Psx {
         self.bus
             .gpu_mut()
             .sync_gpu_and_blit_to_front(dest_image, full_vram, in_future)
+    }
+
+    pub fn take_audio_buffer(&mut self) -> Vec<i16> {
+        self.bus.spu_mut().take_audio_buffer()
     }
 
     pub fn pause_cpu(&mut self) {
