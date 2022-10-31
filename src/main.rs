@@ -290,6 +290,9 @@ struct PsxEmuArgs {
     /// Display the full vram
     #[clap(short, long)]
     vram: bool,
+    /// Play audio
+    #[clap(short, long)]
+    audio: bool,
     /// Print tty debug output to the console
     #[clap(short, long)]
     debug: bool,
@@ -319,7 +322,9 @@ fn main() {
     .unwrap();
 
     let mut audio_player = AudioPlayer::new(44100);
-    audio_player.play();
+    if args.audio {
+        audio_player.play();
+    }
 
     event_loop.run(move |event, _target, control_flow| {
         if let Event::WindowEvent { event, .. } = event {
@@ -377,7 +382,9 @@ fn main() {
         // good, so it shouldn't be a big issue.
         psx.clock_based_on_video();
         let audio_buffer = psx.take_audio_buffer();
-        audio_player.queue(&audio_buffer);
+        if args.audio {
+            audio_player.queue(&audio_buffer);
+        }
 
         display.render_frame(&mut psx);
     });
