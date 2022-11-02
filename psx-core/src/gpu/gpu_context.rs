@@ -638,10 +638,14 @@ impl GpuContext {
     }
 
     pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
-        self.check_and_flush_buffered_draws(None);
-
         let mut width = size.0;
         let mut height = size.1;
+
+        if width * height == 0 {
+            return;
+        }
+        self.check_and_flush_buffered_draws(None);
+
         // TODO: I'm not sure if we should support wrapping, but for now
         //       we do not, since we would need to do extra clean draws
         if top_left.0 + width > 1024 {

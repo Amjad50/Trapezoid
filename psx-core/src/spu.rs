@@ -367,6 +367,7 @@ impl Voice {
         let adpcm_block = &ram[self.i_adpcm_current_address..self.i_adpcm_current_address + 8];
         // move to next block
         self.i_adpcm_current_address += 8;
+        self.i_adpcm_current_address &= 0x3FFFF;
 
         let flags = adpcm_block[0] >> 8;
 
