@@ -549,6 +549,7 @@ impl Cpu {
                 self.regs.write_register(instruction.rt, result);
             }
             Opcode::Mult => {
+                self.elapsed_cycles += 5;
                 let rs = self.regs.read_register(instruction.rs) as i32 as i64;
                 let rt = self.regs.read_register(instruction.rt) as i32 as i64;
 
@@ -558,6 +559,7 @@ impl Cpu {
                 self.regs.lo = result as u32;
             }
             Opcode::Multu => {
+                self.elapsed_cycles += 5;
                 let rs = self.regs.read_register(instruction.rs) as u64;
                 let rt = self.regs.read_register(instruction.rt) as u64;
 
@@ -567,6 +569,7 @@ impl Cpu {
                 self.regs.lo = result as u32;
             }
             Opcode::Div => {
+                self.elapsed_cycles += 10;
                 let rs = self.regs.read_register(instruction.rs) as i32 as i64;
                 let rt = self.regs.read_register(instruction.rt) as i32 as i64;
 
@@ -584,6 +587,7 @@ impl Cpu {
                 }
             }
             Opcode::Divu => {
+                self.elapsed_cycles += 10;
                 let rs = self.regs.read_register(instruction.rs) as u64;
                 let rt = self.regs.read_register(instruction.rt) as u64;
 
@@ -758,7 +762,7 @@ impl Cpu {
 
 impl Cpu {
     fn bus_read_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u32> {
-        self.elapsed_cycles += 1;
+        self.elapsed_cycles += 2;
 
         if addr % 4 != 0 {
             self.execute_exception(Exception::AddressErrorLoad);
@@ -790,6 +794,7 @@ impl Cpu {
     }
 
     fn bus_read_u16<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u16> {
+        self.elapsed_cycles += 1;
         if addr % 2 != 0 {
             self.execute_exception(Exception::AddressErrorLoad);
             self.cop0.write_bad_vaddr(addr);
@@ -805,6 +810,7 @@ impl Cpu {
     }
 
     fn bus_write_u16<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u16) {
+        self.elapsed_cycles += 1;
         if addr % 2 != 0 {
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
@@ -818,6 +824,7 @@ impl Cpu {
     }
 
     fn bus_read_u8<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> u8 {
+        self.elapsed_cycles += 1;
         self.debugger.trace_read(addr, 8);
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
@@ -826,6 +833,7 @@ impl Cpu {
     }
 
     fn bus_write_u8<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u8) {
+        self.elapsed_cycles += 1;
         self.debugger.trace_write(addr, 8);
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
