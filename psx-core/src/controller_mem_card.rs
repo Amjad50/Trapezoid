@@ -123,21 +123,48 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ControllerMode {
+    ReadButtons,
+    Config,
+    SetLed,
+    GetLed,
+    SetRumble,
+    GetWhateverValues,
+    GetVariableResponseA,
+    GetVariableResponseB,
+}
+
 /// Emulate Digital pad controller communication
 struct Controller {
     state: u8,
     device_id: u16,
     digital_switches: u16,
     connected: bool,
+    current_mode: ControllerMode,
+    in_config: bool,
+
+    led: bool,
+    rumble_config: [u8; 6],
+
+    /// Internal value with many purposes in the input state flow
+    /// Used to store a value that may be used later in the flow
+    cache_value: u8,
 }
 
 impl Controller {
     fn new(connected: bool) -> Self {
         Self {
             state: 0,
+            in_config: false,
+            current_mode: ControllerMode::ReadButtons,
             device_id: 0x5A41,        // digital controller
             digital_switches: 0xFFFF, // all released
             connected,
+
+            led: false,
+            rumble_config: [0xFF; 6],
+            cache_value: 0,
         }
     }
 
@@ -160,30 +187,254 @@ impl Controller {
         }
     }
 
-    fn exchange_bytes(&mut self, inp: u8) -> (u8, bool) {
+    fn exchange_bytes_normal(&mut self, inp: u8) -> (u8, bool) {
         match self.state {
             1 => {
-                assert_eq!(inp, 0x42);
+                self.current_mode = match inp {
+                    0x42 => ControllerMode::ReadButtons,
+                    0x43 => ControllerMode::Config,
+                    _ => unreachable!(),
+                };
+
                 self.state = 2;
                 ((self.device_id & 0xFF) as u8, false)
             }
             2 => {
-                // TODO: handle mutlitap support
-                assert_eq!(inp, 0);
+                // if `inp == 1`, then `multitap` is enabled
+                // but this is not a multitap controller, so will return
+                // the normal `device id`
+                assert!(inp == 0 || inp == 1);
                 self.state = 3;
                 (((self.device_id >> 8) & 0xFF) as u8, false)
             }
             3 => {
-                // TODO: handle rumble support
+                match self.current_mode {
+                    ControllerMode::ReadButtons => {
+                        // TODO: handle rumble
+                    }
+                    ControllerMode::Config => {
+                        assert!(inp == 1 || inp == 0);
+                        self.cache_value = inp;
+                    }
+                    _ => unreachable!(),
+                }
                 self.state = 4;
                 ((self.digital_switches & 0xFF) as u8, false)
             }
             4 => {
-                // TODO: handle rumble support
+                match self.current_mode {
+                    ControllerMode::ReadButtons => {
+                        // TODO: handle rumble
+                    }
+                    ControllerMode::Config => {
+                        assert_eq!(inp, 0);
+                        self.in_config = self.cache_value == 1;
+                    }
+                    _ => unreachable!(),
+                }
                 self.state = 0;
                 (((self.digital_switches >> 8) & 0xFF) as u8, true)
             }
+            // TODO: handle for analog input
             _ => unreachable!(),
+        }
+    }
+
+    fn exchange_bytes_config(&mut self, inp: u8) -> (u8, bool) {
+        match self.state {
+            1 => {
+                self.current_mode = match inp {
+                    0x42 => ControllerMode::ReadButtons,
+                    0x43 => ControllerMode::Config,
+                    0x44 => ControllerMode::SetLed,
+                    0x45 => ControllerMode::GetLed,
+                    0x46 => ControllerMode::GetVariableResponseA,
+                    0x47 => ControllerMode::GetWhateverValues,
+                    0x4C => ControllerMode::GetVariableResponseB,
+                    0x4D => ControllerMode::SetRumble,
+                    _ => todo!("unknown controller mode: {:02X}", inp),
+                };
+
+                self.state = 2;
+                (0xF3, false)
+            }
+            2 => {
+                // if `inp == 1`, then `multitap` is enabled
+                // but this is not a multitap controller, so will return
+                // the normal `device id`
+                assert!(inp == 0 || inp == 1);
+                self.state = 3;
+                (0x5A, false)
+            }
+            3 => {
+                let ret = match self.current_mode {
+                    ControllerMode::ReadButtons => {
+                        // TODO: handle rumble
+                        (self.digital_switches & 0xFF) as u8
+                    }
+                    ControllerMode::Config => {
+                        assert!(inp == 1 || inp == 0);
+                        self.cache_value = inp;
+                        0
+                    }
+                    ControllerMode::SetLed => {
+                        assert!(inp == 1 || inp == 0);
+                        self.cache_value = inp;
+                        0
+                    }
+                    ControllerMode::GetLed => {
+                        assert!(inp == 0);
+                        1
+                    }
+                    ControllerMode::GetVariableResponseA => {
+                        self.cache_value = inp;
+                        0
+                    }
+                    ControllerMode::GetVariableResponseB => {
+                        // used to identify dual shock controllers
+                        self.cache_value = match inp {
+                            0 => 4,
+                            1 => 7,
+                            _ => 0,
+                        };
+                        0
+                    }
+                    ControllerMode::GetWhateverValues => {
+                        assert!(inp == 0);
+                        0
+                    }
+                    ControllerMode::SetRumble => {
+                        let ret = self.rumble_config[0];
+                        self.rumble_config[0] = inp;
+                        ret
+                    }
+                };
+                self.state = 4;
+                (ret, false)
+            }
+            4 => {
+                let ret = match self.current_mode {
+                    ControllerMode::ReadButtons => {
+                        // TODO: handle rumble
+                        ((self.digital_switches >> 8) & 0xFF) as u8
+                    }
+                    ControllerMode::Config => {
+                        assert_eq!(inp, 0);
+                        0
+                    }
+                    ControllerMode::SetLed => {
+                        // only apply LED if `inp == 2`
+                        if inp == 2 {
+                            self.led = self.cache_value == 1;
+                        }
+                        // Side effect reset rumble to 0xFF
+                        self.rumble_config = [0xFF; 6];
+                        0
+                    }
+                    ControllerMode::GetLed => {
+                        assert!(inp == 0);
+                        2
+                    }
+                    ControllerMode::GetVariableResponseA
+                    | ControllerMode::GetVariableResponseB
+                    | ControllerMode::GetWhateverValues => {
+                        assert!(inp == 0);
+                        0
+                    }
+                    ControllerMode::SetRumble => {
+                        let ret = self.rumble_config[1];
+                        self.rumble_config[1] = inp;
+                        ret
+                    }
+                };
+                self.state = 5;
+                (ret, false)
+            }
+            5 => {
+                let ret = match self.current_mode {
+                    ControllerMode::GetLed => self.led as u8,
+                    ControllerMode::GetWhateverValues => 2,
+                    ControllerMode::GetVariableResponseA => match self.cache_value {
+                        0 | 1 => 1,
+                        _ => 0,
+                    },
+                    ControllerMode::SetRumble => {
+                        let ret = self.rumble_config[2];
+                        self.rumble_config[2] = inp;
+                        ret
+                    }
+                    _ => 0,
+                };
+                self.state = 6;
+                (ret, false)
+            }
+            6 => {
+                let ret = match self.current_mode {
+                    ControllerMode::GetLed => 2,
+                    ControllerMode::GetVariableResponseA => match self.cache_value {
+                        0 => 2,
+                        1 => 1,
+                        _ => 0,
+                    },
+                    ControllerMode::GetVariableResponseB => self.cache_value,
+                    ControllerMode::SetRumble => {
+                        let ret = self.rumble_config[3];
+                        self.rumble_config[3] = inp;
+                        ret
+                    }
+                    _ => 0,
+                };
+                self.state = 7;
+                (ret, false)
+            }
+            7 => {
+                let ret = match self.current_mode {
+                    ControllerMode::GetLed => 1,
+                    ControllerMode::GetWhateverValues => 1,
+                    ControllerMode::GetVariableResponseA => match self.cache_value {
+                        1 => 1,
+                        _ => 0,
+                    },
+                    ControllerMode::SetRumble => {
+                        let ret = self.rumble_config[4];
+                        self.rumble_config[4] = inp;
+                        ret
+                    }
+                    _ => 0,
+                };
+                self.state = 8;
+                (ret, false)
+            }
+            8 => {
+                let ret = match self.current_mode {
+                    ControllerMode::GetVariableResponseA => match self.cache_value {
+                        0 => 0x0a,
+                        1 => 0x14,
+                        _ => 0,
+                    },
+                    ControllerMode::SetRumble => {
+                        let ret = self.rumble_config[5];
+                        self.rumble_config[5] = inp;
+                        ret
+                    }
+                    ControllerMode::Config => {
+                        self.in_config = self.cache_value == 1;
+                        0
+                    }
+                    _ => 0,
+                };
+                self.state = 0;
+                (ret, true)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn exchange_bytes(&mut self, inp: u8) -> (u8, bool) {
+        if self.in_config {
+            self.exchange_bytes_config(inp)
+        } else {
+            self.exchange_bytes_normal(inp)
         }
     }
 }
