@@ -133,6 +133,11 @@ enum ControllerMode {
     GetWhateverValues,
     GetVariableResponseA,
     GetVariableResponseB,
+
+    /// Unknown that will always return 6 zeros
+    Unknown60,
+    /// Unknown that will return 4 zeros, one, then zero
+    Unknown4010,
 }
 
 /// Emulate Digital pad controller communication
@@ -244,12 +249,14 @@ impl Controller {
         match self.state {
             1 => {
                 self.current_mode = match inp {
+                    0x40 | 0x41 | 0x49 | 0x4A | 0x4B | 0x4E | 0x4F => ControllerMode::Unknown60,
                     0x42 => ControllerMode::ReadButtons,
                     0x43 => ControllerMode::Config,
                     0x44 => ControllerMode::SetLed,
                     0x45 => ControllerMode::GetLed,
                     0x46 => ControllerMode::GetVariableResponseA,
                     0x47 => ControllerMode::GetWhateverValues,
+                    0x48 => ControllerMode::Unknown4010,
                     0x4C => ControllerMode::GetVariableResponseB,
                     0x4D => ControllerMode::SetRumble,
                     _ => todo!("unknown controller mode: {:02X}", inp),
@@ -299,7 +306,9 @@ impl Controller {
                         };
                         0
                     }
-                    ControllerMode::GetWhateverValues => {
+                    ControllerMode::GetWhateverValues
+                    | ControllerMode::Unknown60
+                    | ControllerMode::Unknown4010 => {
                         assert!(inp == 0);
                         0
                     }
@@ -337,7 +346,9 @@ impl Controller {
                     }
                     ControllerMode::GetVariableResponseA
                     | ControllerMode::GetVariableResponseB
-                    | ControllerMode::GetWhateverValues => {
+                    | ControllerMode::GetWhateverValues
+                    | ControllerMode::Unknown60
+                    | ControllerMode::Unknown4010 => {
                         assert!(inp == 0);
                         0
                     }
@@ -400,6 +411,7 @@ impl Controller {
                         self.rumble_config[4] = inp;
                         ret
                     }
+                    ControllerMode::Unknown4010 => 1,
                     _ => 0,
                 };
                 self.state = 8;
