@@ -476,6 +476,7 @@ enum CardCmd {
     Read,
     Write,
     Id,
+    Invalid,
 }
 
 struct MemoryCard {
@@ -544,7 +545,7 @@ impl MemoryCard {
                     0x52 => CardCmd::Read,
                     0x57 => CardCmd::Write,
                     0x53 => CardCmd::Id,
-                    _ => unreachable!("invalid command"),
+                    _ => CardCmd::Invalid, // will abort after next byte
                 };
                 self.stage = CardReadStage::MemoryCardId1;
                 (self.flag, false)
@@ -552,7 +553,15 @@ impl MemoryCard {
             CardReadStage::MemoryCardId1 => {
                 assert_eq!(inp, 0);
                 self.stage = CardReadStage::MemoryCardId2;
-                (0x5A, false)
+                // In case of invalid command, the communication is aborted
+                // with 0xFF
+                match self.cmd {
+                    CardCmd::Invalid => {
+                        self.stage = CardReadStage::Command;
+                        (0xFF, true)
+                    }
+                    _ => (0x5A, false),
+                }
             }
             CardReadStage::MemoryCardId2 => {
                 assert_eq!(inp, 0);
@@ -563,6 +572,7 @@ impl MemoryCard {
                     CardCmd::Id => {
                         self.stage = CardReadStage::CommandAck1;
                     }
+                    CardCmd::Invalid => unreachable!(),
                 }
 
                 (0x5D, false)
@@ -709,6 +719,7 @@ impl MemoryCard {
                     CardCmd::Id => {
                         self.stage = CardReadStage::CmdIdEnd1;
                     }
+                    CardCmd::Invalid => unreachable!(),
                 }
 
                 (0x5D, false)
