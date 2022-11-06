@@ -1,6 +1,7 @@
 use std::{
+    cell::Cell,
     collections::VecDeque,
-    ops::{Deref, DerefMut},
+    ops::{Index, IndexMut, Range},
 };
 
 use crate::memory::{interrupts::InterruptRequester, BusLine};
@@ -26,7 +27,7 @@ bitflags::bitflags! {
         const REVERB_MASTER_ENABLE    = 0b0000000010000000;
         const NOISE_FREQ_STEP         = 0b0000001100000000;
         const NOICE_FREQ_SHIFT        = 0b0011110000000000;
-        const MUTE_SPU                = 0b0100000000000000;
+        const UNMUTE_SPU              = 0b0100000000000000;
         const SPU_ENABLE              = 0b1000000000000000;
     }
 }
@@ -453,22 +454,50 @@ impl Voice {
     }
 }
 
-#[repr(transparent)]
 struct SpuRam {
     data: Box<[u16; 0x40000]>,
+    /// The address from the ram, when read/written to it should trigger interrupt
+    irq_address: usize,
+    /// will store whether the IRQ was triggered
+    /// Handling and signaling interrupt to the other hardware is done by the `Spu` itself.
+    /// must be cleared by the handler before the next IRQ can be triggered
+    irq_flag: Cell<bool>,
 }
 
-impl Deref for SpuRam {
-    type Target = [u16; 0x40000];
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
+impl SpuRam {
+    pub fn reset_irq(&self) {
+        self.irq_flag.set(false);
     }
 }
 
-impl DerefMut for SpuRam {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.data
+impl Index<Range<usize>> for SpuRam {
+    type Output = [u16];
+
+    fn index(&self, index: Range<usize>) -> &Self::Output {
+        if index.contains(&self.irq_address) {
+            self.irq_flag.set(true);
+        }
+        self.data.index(index)
+    }
+}
+
+impl Index<usize> for SpuRam {
+    type Output = u16;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        if index == self.irq_address {
+            self.irq_flag.set(true);
+        }
+        &self.data[index]
+    }
+}
+
+impl IndexMut<usize> for SpuRam {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        if index == self.irq_address {
+            self.irq_flag.set(true);
+        }
+        &mut self.data[index]
     }
 }
 
@@ -476,6 +505,8 @@ impl Default for SpuRam {
     fn default() -> Self {
         Self {
             data: Box::new([0; 0x40000]),
+            irq_address: 0x0,
+            irq_flag: Cell::new(false),
         }
     }
 }
@@ -501,7 +532,6 @@ pub struct Spu {
     ram_transfer_control: u16,
     ram_transfer_address: u16,
     i_ram_transfer_address: usize,
-    ram_irq_address: u16,
 
     data_fifo: VecDeque<u16>,
 
@@ -537,8 +567,7 @@ pub struct Spu {
 }
 
 impl Spu {
-    // TODO: add interrupt handling
-    pub fn clock(&mut self, _interrupt_requester: &mut impl InterruptRequester, cycles: u32) {
+    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester, cycles: u32) {
         self.cpu_clock_timer += cycles;
 
         loop {
@@ -546,6 +575,9 @@ impl Spu {
                 break;
             }
             self.cpu_clock_timer -= CPU_CLOCKS_PER_SPU;
+
+            // clear irq flag
+            self.spu_ram.reset_irq();
 
             // the order of SPU handling is
             // - voice1
@@ -616,10 +648,26 @@ impl Spu {
                 }
             }
 
-            self.out_audio_buffer
-                .push(mixed_audio_left.clamp(-0x8000, 0x7FFF) as i16);
-            self.out_audio_buffer
-                .push(mixed_audio_right.clamp(-0x8000, 0x7FFF) as i16);
+            let (left, right) = if self.control.intersects(SpuControl::UNMUTE_SPU) {
+                (
+                    mixed_audio_left.clamp(-0x8000, 0x7FFF) as i16,
+                    mixed_audio_right.clamp(-0x8000, 0x7FFF) as i16,
+                )
+            } else {
+                (0, 0)
+            };
+
+            self.out_audio_buffer.push(left);
+            self.out_audio_buffer.push(right);
+
+            if self
+                .control
+                .intersects(SpuControl::SPU_ENABLE | SpuControl::IRQ9_ENABLE)
+                && self.spu_ram.irq_flag.get()
+            {
+                self.stat.insert(SpuStat::IRQ_FLAG);
+                interrupt_requester.request_spu();
+            }
         }
     }
 
@@ -697,7 +745,7 @@ impl BusLine for Spu {
             0x188..=0x19F => todo!("u16 read voice flags {:03X}", addr),
             0x1A0 => unreachable!("u16 read unknown {:03X}", addr),
             0x1A2 => self.reverb_work_base,
-            0x1A4 => self.ram_irq_address,
+            0x1A4 => (self.spu_ram.irq_address / 4) as u16,
             0x1A6 => self.ram_transfer_address,
             0x1AA => self.control.bits(),
             0x1AC => self.ram_transfer_control << 1,
@@ -872,7 +920,7 @@ impl BusLine for Spu {
             }
             0x1A0 => unreachable!("u16 write unknown {:03X}", addr),
             0x1A2 => self.reverb_work_base = data,
-            0x1A4 => self.ram_irq_address = data,
+            0x1A4 => self.spu_ram.irq_address = data as usize * 4,
             0x1A6 => {
                 log::info!("sound ram data transfer address {:04X}", data);
                 self.ram_transfer_address = data;
@@ -888,8 +936,13 @@ impl BusLine for Spu {
                 self.data_fifo.push_back(data);
             }
             0x1AA => {
-                // TODO: handle ack
                 self.control = SpuControl::from_bits_truncate(data);
+
+                // ack interrupt/clear flag
+                if !self.control.intersects(SpuControl::IRQ9_ENABLE) {
+                    self.stat.remove(SpuStat::IRQ_FLAG);
+                }
+
                 log::info!("spu control {:04X}", data);
             }
             0x1AC => {

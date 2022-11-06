@@ -25,6 +25,7 @@ pub trait InterruptRequester {
     fn request_timer1(&mut self);
     fn request_timer2(&mut self);
     fn request_controller_mem_card(&mut self);
+    fn request_spu(&mut self);
 }
 
 #[derive(Default)]
@@ -134,5 +135,10 @@ impl InterruptRequester for Interrupts {
     fn request_controller_mem_card(&mut self) {
         log::info!("requesting CONTROLLER_AND_MEMCARD interrupt");
         self.stat.insert(InterruptFlags::CONTROLLER_AND_MEMCARD);
+    }
+
+    fn request_spu(&mut self) {
+        log::info!("requesting SPU interrupt");
+        self.stat.insert(InterruptFlags::SPU);
     }
 }
