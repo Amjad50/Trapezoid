@@ -228,15 +228,16 @@ impl Voice {
         self.i_adpcm_decoder.old = 0;
         self.i_adpcm_decoder.older = 0;
         self.adpcm_repeat_address = self.adpcm_start_address;
-        self.i_adsr_state = ADSRState::Attack;
-        self.i_adsr_cycle_counter = 0;
+        self.set_adsr_state(ADSRState::Attack);
         self.adsr_current_vol = 0;
     }
 
     fn key_off(&mut self) {
-        self.i_adsr_state = ADSRState::Release;
-        // TODO: not sure if this is correct, but noticed Sustain is normally done with
-        //       very long cycle times and small steps, so I think we shouldn't wait for it.
+        self.set_adsr_state(ADSRState::Release);
+    }
+
+    fn set_adsr_state(&mut self, state: ADSRState) {
+        self.i_adsr_state = state;
         self.i_adsr_cycle_counter = 0;
     }
 
@@ -387,8 +388,9 @@ impl Voice {
                 // `End+Repeat`: jump to Loop-address, set ENDX flag
             } else {
                 // `End+Mute`: jump to Loop-address, set ENDX flag, Release, Env=0000h
-                // FIXME: not sure what `Env=0000h` means
-                self.i_adsr_state = ADSRState::Release;
+                self.set_adsr_state(ADSRState::Release);
+                // clear the adsr envelope
+                self.adsr_config.bits = 0;
             }
         }
 
@@ -403,7 +405,7 @@ impl Voice {
     /// - `mono_output` can be used for capture
     /// - `left_output`
     /// - `right_output`
-    fn clock(&mut self, ram: &SpuRam) -> (bool, i32, i32, i32) {
+    fn clock_voice(&mut self, ram: &SpuRam) -> (bool, i32, i32, i32) {
         self.clock_adsr();
 
         let mut endx_set = false;
@@ -576,7 +578,7 @@ impl Spu {
             }
             self.cpu_clock_timer -= CPU_CLOCKS_PER_SPU;
 
-            // clear irq flag
+            // clear internal irq flag
             self.spu_ram.reset_irq();
 
             // the order of SPU handling is
@@ -622,6 +624,7 @@ impl Spu {
             let mut mixed_audio_left = 0;
             let mut mixed_audio_right = 0;
 
+            // TODO: implement correct order of handling voices (refer to above)
             for i in 0..24 {
                 let pitch_mod = self.pitch_mod_channel_flag.get(i);
                 let noise_mode = self.noise_channel_mode_flag.get(i);
@@ -633,7 +636,7 @@ impl Spu {
 
                 // handle voices
                 let (reached_endx, _mono_output, left_output, right_output) =
-                    self.voices[i].clock(&self.spu_ram);
+                    self.voices[i].clock_voice(&self.spu_ram);
 
                 let final_left_output = (left_output * self.current_main_vol_left as i32 / 0x8000)
                     .clamp(-0x8000, 0x7FFF);
