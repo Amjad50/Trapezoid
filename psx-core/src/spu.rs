@@ -780,12 +780,7 @@ impl BusLine for Spu {
             0x000..=0x17E => {
                 let reg = addr & 0xF;
                 let voice_idx = (addr >> 4) as usize;
-                log::info!(
-                    "u16 write voice {}, reg {:01X} = {:04X}",
-                    voice_idx,
-                    reg,
-                    data
-                );
+                log::info!("voice {}, reg {:01X} = {:04X}", voice_idx, reg, data);
                 match reg {
                     0x0 => {
                         self.voices[voice_idx].volume_left = data;
@@ -819,6 +814,7 @@ impl BusLine for Spu {
                 }
             }
             0x180 => {
+                log::info!("main vol left = {:04X}", data);
                 self.main_vol_left = data;
                 // volume mode
                 if data & 0x8000 == 0 {
@@ -826,17 +822,25 @@ impl BusLine for Spu {
                 }
             }
             0x182 => {
+                log::info!("main vol right = {:04X}", data);
                 self.main_vol_right = data;
                 // volume mode
                 if data & 0x8000 == 0 {
                     self.current_main_vol_right = (data * 2) as i16;
                 }
             }
-            0x184 => self.reverb_out_vol_left = data,
-            0x186 => self.reverb_out_vol_right = data,
+            0x184 => {
+                log::info!("reverb vol left = {:04X}", data);
+                self.reverb_out_vol_left = data;
+            }
+            0x186 => {
+                log::info!("reverb vol right = {:04X}", data);
+                self.reverb_out_vol_right = data;
+            }
             0x188 => {
                 let f = self.key_on_flag.get_all();
                 self.key_on_flag.bus_set_all((f & 0xFFFF0000) | data as u32);
+                log::info!("key on flag = {:08X}", self.key_on_flag.get_all());
 
                 for i in 0..16 {
                     if self.key_on_flag.get(i) {
@@ -849,6 +853,7 @@ impl BusLine for Spu {
                 let f = self.key_on_flag.get_all();
                 self.key_on_flag
                     .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+                log::info!("key on flag = {:08X}", self.key_on_flag.get_all());
 
                 for i in 16..24 {
                     if self.key_on_flag.get(i) {
@@ -861,6 +866,7 @@ impl BusLine for Spu {
                 let f = self.key_off_flag.get_all();
                 self.key_off_flag
                     .bus_set_all((f & 0xFFFF0000) | data as u32);
+                log::info!("key off flag = {:08X}", self.key_off_flag.get_all());
 
                 for i in 0..16 {
                     if self.key_off_flag.get(i) {
@@ -872,6 +878,7 @@ impl BusLine for Spu {
                 let f = self.key_off_flag.get_all();
                 self.key_off_flag
                     .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+                log::info!("key off flag = {:08X}", self.key_off_flag.get_all());
 
                 for i in 16..24 {
                     if self.key_off_flag.get(i) {
@@ -883,31 +890,56 @@ impl BusLine for Spu {
                 let f = self.pitch_mod_channel_flag.get_all();
                 self.pitch_mod_channel_flag
                     .bus_set_all((f & 0xFFFF0000) | data as u32);
+
+                log::info!(
+                    "pitch mod flag = {:08X}",
+                    self.pitch_mod_channel_flag.get_all()
+                );
             }
             0x192 => {
                 let f = self.pitch_mod_channel_flag.get_all();
                 self.pitch_mod_channel_flag
                     .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+                log::info!(
+                    "pitch mod flag = {:08X}",
+                    self.pitch_mod_channel_flag.get_all()
+                );
             }
             0x194 => {
                 let f = self.noise_channel_mode_flag.get_all();
                 self.noise_channel_mode_flag
                     .bus_set_all((f & 0xFFFF0000) | data as u32);
+                log::info!(
+                    "noise channel mode flag = {:08X}",
+                    self.noise_channel_mode_flag.get_all()
+                );
             }
             0x196 => {
                 let f = self.noise_channel_mode_flag.get_all();
                 self.noise_channel_mode_flag
                     .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+                log::info!(
+                    "noise channel mode flag = {:08X}",
+                    self.noise_channel_mode_flag.get_all()
+                );
             }
             0x198 => {
                 let f = self.reverb_channel_mode_flag.get_all();
                 self.reverb_channel_mode_flag
                     .bus_set_all((f & 0xFFFF0000) | data as u32);
+                log::info!(
+                    "reverb channel mode flag = {:08X}",
+                    self.reverb_channel_mode_flag.get_all()
+                );
             }
             0x19A => {
                 let f = self.reverb_channel_mode_flag.get_all();
                 self.reverb_channel_mode_flag
                     .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
+                log::info!(
+                    "reverb channel mode flag = {:08X}",
+                    self.reverb_channel_mode_flag.get_all()
+                );
             }
             // channel enable should be read only
             // writing to it will save the data, but it doesn't have any affect
@@ -922,8 +954,14 @@ impl BusLine for Spu {
                     .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
             }
             0x1A0 => unreachable!("u16 write unknown {:03X}", addr),
-            0x1A2 => self.reverb_work_base = data,
-            0x1A4 => self.spu_ram.irq_address = data as usize * 4,
+            0x1A2 => {
+                log::info!("reverb work area start = {:04X}", data);
+                self.reverb_work_base = data;
+            }
+            0x1A4 => {
+                log::info!("irq address = {:04X}", data);
+                self.spu_ram.irq_address = data as usize * 4;
+            }
             0x1A6 => {
                 log::info!("sound ram data transfer address {:04X}", data);
                 self.ram_transfer_address = data;
@@ -953,8 +991,14 @@ impl BusLine for Spu {
                 assert!(self.ram_transfer_control == 2);
             }
             0x1AE => unreachable!("u16 write SpuStat is not supported"),
-            0x1B0 => self.cd_vol_left = data,
-            0x1B2 => self.cd_vol_right = data,
+            0x1B0 => {
+                log::info!("cd volume left {:04X}", data);
+                self.cd_vol_left = data;
+            }
+            0x1B2 => {
+                log::info!("cd volume right {:04X}", data);
+                self.cd_vol_right = data;
+            }
             0x1B4 => self.external_vol_left = data,
             0x1B6 => self.external_vol_right = data,
             0x1B8 | 0x1BA => unreachable!("u16 write current volume is not supported {:03X}", addr),
