@@ -8,10 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-// These delay is still very fast even for double speed, but 255 delay
-// between read sectors is very fast, and the software cannot handle it.
-const CDROM_COMMAND_DEFAULT_DELAY: u32 = 10000;
-const CDROM_READ_COMMAND_DELAY: u32 = 20000;
+const CDROM_COMMAND_DEFAULT_DELAY: u32 = 0x2000;
+const CDROM_READ_COMMAND_DELAY: u32 = 0x50000;
 
 bitflags! {
     #[derive(Default)]
@@ -240,53 +238,106 @@ impl Cdrom {
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
 
-                        self.command_delay_timer += CDROM_READ_COMMAND_DELAY;
+                        self.command_delay_timer += if self.mode.intersects(CdromMode::DOUBLE_SPEED)
+                        {
+                            CDROM_READ_COMMAND_DELAY / 2
+                        } else {
+                            CDROM_READ_COMMAND_DELAY
+                        };
 
                         // reset data buffer
                         self.read_data_buffer.clear();
                     } else {
                         // SECOND
 
-                        // only refill the data if the buffer is taken, else
-                        // just interrupt
-                        if self.read_data_buffer.is_empty() {
-                            // convert from cursor pos to sector,seconds,minutes
-                            // for debugging
-                            let sector = self.cursor_sector_position % 75;
-                            let total_seconds = (self.cursor_sector_position / 75) + 2;
-                            let minutes = total_seconds / 60;
-                            let seconds = total_seconds % 60;
+                        let sector_start = self.cursor_sector_position * 2352;
 
-                            // wait until the data fifo buffer is empty
-                            log::info!(
-                                "cdrom cmd: ReadN: pushing sector {} [{:02}:{:02}:{:02}] to data fifo buffer",
-                                self.cursor_sector_position,
-                                minutes,
-                                seconds,
-                                sector
-                            );
+                        // skip the sync bytes
+                        let whole_sector = &self.disk_data[sector_start + 12..sector_start + 0x930];
 
-                            let start;
-                            let end;
-                            if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
-                                // 12 to skip the sync patterns
-                                start = self.cursor_sector_position * 2352 + 12;
-                                end = start + 0x924;
-                            } else {
-                                // 12 + 3 + 1 + 8 to skip the sync patterns and the header
-                                start = self.cursor_sector_position * 2352 + 24;
-                                end = start + 0x800;
+                        // TODO: add filtering and coding info handling
+                        let mode = whole_sector[3];
+                        let _file_number = whole_sector[4];
+                        let _channel_number = whole_sector[5];
+                        let submode = whole_sector[6];
+                        let _coding_info = whole_sector[7];
+                        let submode_audio = submode & 0x4 != 0;
+                        let submode_realtime = submode & 0x40 != 0;
+
+                        // was the current sector read, and should we move to the next?
+                        let mut sector_read = false;
+
+                        // delivery options:
+                        //  try_deliver_as_adpcm_sector:
+                        //    TODO: reject if CD-DA AUDIO format
+                        //    reject if sector isn't MODE2 format
+                        //    reject if adpcm_disabled(setmode.6)
+                        //    TODO: reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
+                        //    reject if submode isn't audio+realtime (bit2 and bit6 must be both set)
+                        //    deliver: send sector to xa-adpcm decoder when passing above cases
+                        //  try_deliver_as_data_sector:
+                        //    reject data-delivery if "try_deliver_as_adpcm_sector" did do adpcm-delivery
+                        //    TODO: reject if filter_enabled(setmode.3) AND submode is audio+realtime (bit2+bit6)
+                        //    1st delivery attempt: send INT1+data, unless there's another INT pending
+                        //    delay, and retry at later time... but this time with file/channel checking!
+                        //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
+                        //    2nd delivery attempt: send INT1+data, unless there's another INT pending
+                        //  else:
+                        //    ignore sector silently
+                        if mode == 2
+                            && self.mode.intersects(CdromMode::XA_ADPCM)
+                            && submode_audio
+                            && submode_realtime
+                        {
+                            // TODO: deliver adpcm
+
+                            sector_read = true;
+                        } else {
+                            // only refill the data if the buffer is taken, else
+                            // just interrupt
+                            if self.read_data_buffer.is_empty() {
+                                // convert from cursor pos to sector,seconds,minutes
+                                // for debugging
+                                let sector = self.cursor_sector_position % 75;
+                                let total_seconds = (self.cursor_sector_position / 75) + 2;
+                                let minutes = total_seconds / 60;
+                                let seconds = total_seconds % 60;
+
+                                // wait until the data fifo buffer is empty
+                                log::info!(
+                                    "cdrom cmd: ReadN: pushing sector {} [{:02}:{:02}:{:02}] to data fifo buffer",
+                                    self.cursor_sector_position,
+                                    minutes,
+                                    seconds,
+                                    sector
+                                );
+
+                                let data = if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
+                                    whole_sector
+                                } else {
+                                    // skip the sub header
+                                    &whole_sector[12..12 + 0x800]
+                                };
+
+                                self.read_data_buffer.extend_from_slice(&data);
+
+                                sector_read = true;
                             }
-                            self.read_data_buffer
-                                .extend_from_slice(&self.disk_data[start..end]);
 
-                            // move to next sector
-                            self.cursor_sector_position += 1;
+                            self.write_to_response_fifo(self.status.bits);
+                            self.request_interrupt_0_7(1);
                         }
 
-                        self.write_to_response_fifo(self.status.bits);
-                        self.request_interrupt_0_7(1);
-                        self.command_delay_timer += CDROM_READ_COMMAND_DELAY;
+                        // if we haven't read, just wait the default delay and re-interrupt.
+                        if sector_read {
+                            self.cursor_sector_position += 1;
+                            self.command_delay_timer +=
+                                if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
+                                    CDROM_READ_COMMAND_DELAY / 2
+                                } else {
+                                    CDROM_READ_COMMAND_DELAY
+                                };
+                        }
                     }
                 }
                 0x09 => {
