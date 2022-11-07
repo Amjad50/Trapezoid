@@ -56,6 +56,100 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Default)]
+    struct CodingInfo: u8 {
+        const EMPHASIS                = 0b01000000;
+        // (0=4 bits, 1=8 bits)
+        const BITS_PER_SAMPLE         = 0b00010000;
+        // (0=37800Hz, 1=18900Hz)
+        const SAMPLE_RATE             = 0b00000100;
+        const STEREO                  = 0b00000001;
+        // const RESERVED             = 0b10101010;
+    }
+}
+
+const ADPCM_TABLE_POS: &[i32; 4] = &[0, 60, 115, 98];
+const ADPCM_TABLE_NEG: &[i32; 4] = &[0, 0, -52, -55];
+
+/// This is very similar to what we are doing in the SPU, but the data
+/// format is a bit different. That's why its split.
+#[derive(Default, Clone, Copy)]
+struct AdpcmDecoder {
+    old: i32,
+    older: i32,
+}
+
+impl AdpcmDecoder {
+    /// Decode XA-ADPCM block
+    ///
+    /// `in_block` must be 128 bytes long
+    fn decode_block(
+        &mut self,
+        in_block: &[u8],
+        block_n: usize,
+        sample_8bit: bool,
+        out: &mut [i16; 28],
+    ) {
+        assert_eq!(in_block.len(), 128);
+        assert!(
+            (!sample_8bit) || block_n < 4,
+            "invalid block_n {} for 8bit mode",
+            block_n
+        );
+
+        let shift_filter = in_block[4 + block_n];
+
+        // adpcm decoding...
+        let mut shift_nibble = shift_filter & 0xf;
+        if shift_nibble > 12 {
+            shift_nibble = 9;
+        }
+        // The 4bit (or 8bit) samples are expanded to 16bit by left-shifting
+        // them by 12 (or 8), that 16bit value is then right-shifted by the
+        // selected 'shift' amount.
+        let expand_shift = if sample_8bit { 8 } else { 12 };
+        let shift_factor = expand_shift - shift_nibble;
+
+        let filter = shift_filter >> 4;
+
+        // only 4 filters supported in XA-ADPCM
+        let filter = filter % 4;
+
+        let f0 = ADPCM_TABLE_POS[filter as usize];
+        let f1 = ADPCM_TABLE_NEG[filter as usize];
+
+        for i in 0..28 {
+            // if its 8bit sample, use the whole byte, else use half depending
+            // on the block number
+            let mut sample = if sample_8bit {
+                let b = in_block[16 + i * 4 + block_n];
+                b as i8 as i32
+            } else {
+                let b = in_block[16 + i * 4 + block_n / 2];
+                let nibble_shift = (block_n & 1) * 4;
+                let m = (b >> nibble_shift) & 0xF;
+                if m & 0x8 != 0 {
+                    ((m as u32) | 0xfffffff0) as i32
+                } else {
+                    m as i32
+                }
+            };
+
+            // shift
+            sample = sample << shift_factor;
+            // apply adpcm filter
+            sample = sample + (self.old * f0 + self.older * f1 + 32) / 64;
+            sample = sample.clamp(-0x8000, 0x7fff);
+
+            self.older = self.old;
+            self.old = sample;
+
+            out[i] = sample as i16;
+        }
+    }
+}
+
 /// Utility function to convert value from bcd format to normal
 fn from_bcd(arg: u8) -> u8 {
     ((arg & 0xF0) >> 4) * 10 + (arg & 0x0F)
@@ -93,6 +187,9 @@ pub struct Cdrom {
     data_fifo_buffer: Vec<u8>,
     read_data_buffer: Vec<u8>,
     data_fifo_buffer_index: usize,
+
+    adpcm_decoder_left_mono: AdpcmDecoder,
+    adpcm_decoder_right: AdpcmDecoder,
 }
 
 impl Default for Cdrom {
@@ -121,6 +218,9 @@ impl Default for Cdrom {
             data_fifo_buffer: Vec::new(),
             read_data_buffer: Vec::new(),
             data_fifo_buffer_index: 0,
+
+            adpcm_decoder_left_mono: AdpcmDecoder::default(),
+            adpcm_decoder_right: AdpcmDecoder::default(),
         }
     }
 }
@@ -260,7 +360,7 @@ impl Cdrom {
                         let _file_number = whole_sector[4];
                         let _channel_number = whole_sector[5];
                         let submode = whole_sector[6];
-                        let _coding_info = whole_sector[7];
+                        let coding_info = whole_sector[7];
                         let submode_audio = submode & 0x4 != 0;
                         let submode_realtime = submode & 0x40 != 0;
 
@@ -289,7 +389,10 @@ impl Cdrom {
                             && submode_audio
                             && submode_realtime
                         {
-                            // TODO: deliver adpcm
+                            self.deliver_adpcm_to_spu(
+                                self.cursor_sector_position,
+                                CodingInfo::from_bits_truncate(coding_info),
+                            );
 
                             sector_read = true;
                         } else {
@@ -503,6 +606,55 @@ impl Cdrom {
                 interrupt_requester.request_cdrom();
             }
         }
+    }
+
+    // because of `&self` and `&mut self` conflict, we can't pass the
+    // sector data directly (even though we already have it).
+    // TODO: look to see if there is a better way for this
+    fn deliver_adpcm_to_spu(&mut self, sector_position: usize, coding_info: CodingInfo) {
+        let sector_start = sector_position * 2352;
+        let data = &self.disk_data[sector_start + 24..sector_start + 24 + 0x900];
+
+        let sample_8bit = coding_info.intersects(CodingInfo::BITS_PER_SAMPLE);
+
+        let mut final_spu_data_left: Vec<i16> = Vec::new();
+        let mut final_spu_data_right: Vec<i16> = Vec::new();
+
+        // contain 0x12 portions of size 128 bytes.
+        for i in 0..0x12 {
+            let offset = i * 128;
+            let portion = &data[offset..offset + 128];
+
+            let mut block = 0;
+            let mut temp_block = [0; 28];
+            loop {
+                self.adpcm_decoder_left_mono.decode_block(
+                    portion,
+                    block,
+                    sample_8bit,
+                    &mut temp_block,
+                );
+
+                final_spu_data_left.extend_from_slice(&temp_block);
+                if coding_info.intersects(CodingInfo::STEREO) {
+                    block += 1;
+                    self.adpcm_decoder_right.decode_block(
+                        portion,
+                        block,
+                        sample_8bit,
+                        &mut temp_block,
+                    );
+                }
+                final_spu_data_right.extend_from_slice(&temp_block);
+                block += 1;
+
+                if (block == 4 && sample_8bit) || block == 8 {
+                    break;
+                }
+            }
+        }
+
+        // TODO: send to SPU
     }
 
     fn execute_test(&mut self, test_code: u8) {
@@ -737,10 +889,10 @@ impl BusLine for Cdrom {
             1 => match self.index {
                 0 => self.write_command_register(data),
                 1 => {
-                    // write 1.1 Sound Map Data Out
+                    todo!("write 1.1 Sound Map Data Out");
                 }
                 2 => {
-                    // write 1.2 Sound Map Coding Info
+                    todo!("write 1.2 Sound Map Coding Info");
                 }
                 3 => {
                     // write 1.3 Right-CD to Right-SPU Volume
