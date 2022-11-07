@@ -322,8 +322,10 @@ impl CpuBus {
         self.controller_mem_card
             .clock(&mut self.interrupts, cpu_cycles);
 
-        // cdrom
-        self.dma_bus.cdrom.clock(&mut self.interrupts, cpu_cycles);
+        // cdrom (takes SPU to be able to send cdrom audio to the mixer)
+        self.dma_bus
+            .cdrom
+            .clock(&mut self.interrupts, &mut self.dma_bus.spu, cpu_cycles);
 
         // timers
         self.timers.clock_from_system(cpu_cycles);

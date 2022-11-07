@@ -1,4 +1,7 @@
-use crate::memory::{interrupts::InterruptRequester, BusLine};
+use crate::{
+    memory::{interrupts::InterruptRequester, BusLine},
+    spu::Spu,
+};
 use bitflags::bitflags;
 
 use std::{
@@ -8,8 +11,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const CDROM_COMMAND_DEFAULT_DELAY: u32 = 0x2000;
-const CDROM_READ_COMMAND_DELAY: u32 = 0x50000;
+const CDROM_COMMAND_DEFAULT_DELAY: u32 = 0x1100;
+const CDROM_READ_COMMAND_DELAY: u32 = 0x6AA00;
 
 bitflags! {
     #[derive(Default)]
@@ -84,7 +87,7 @@ impl AdpcmDecoder {
     /// Decode XA-ADPCM block
     ///
     /// `in_block` must be 128 bytes long
-    fn decode_block(
+    pub fn decode_block(
         &mut self,
         in_block: &[u8],
         block_n: usize,
@@ -150,6 +153,102 @@ impl AdpcmDecoder {
     }
 }
 
+const ZIGZAG_TABLE: [[i32; 29]; 7] = [
+    [
+        0, 0, 0, 0, 0, -0x0002, 0x000A, -0x0022, 0x0041, -0x0054, 0x0034, 0x0009, -0x010A, 0x0400,
+        -0x0A78, 0x234C, 0x6794, -0x1780, 0x0BCD, -0x0623, 0x0350, -0x016D, 0x006B, 0x000A,
+        -0x0010, 0x0011, -0x0008, 0x0003, -0x0001,
+    ],
+    [
+        0, 0, 0, -0x0002, 0, 0x0003, -0x0013, 0x003C, -0x004B, 0x00A2, -0x00E3, 0x0132, -0x0043,
+        -0x0267, 0x0C9D, 0x74BB, -0x11B4, 0x09B8, -0x05BF, 0x0372, -0x01A8, 0x00A6, -0x001B,
+        0x0005, 0x0006, -0x0008, 0x0003, -0x0001, 0,
+    ],
+    [
+        0, 0, -0x0001, 0x0003, -0x0002, -0x0005, 0x001F, -0x004A, 0x00B3, -0x0192, 0x02B1, -0x039E,
+        0x04F8, -0x05A6, 0x7939, -0x05A6, 0x04F8, -0x039E, 0x02B1, -0x0192, 0x00B3, -0x004A,
+        0x001F, -0x0005, -0x0002, 0x0003, -0x0001, 0, 0,
+    ],
+    [
+        0, -0x0001, 0x0003, -0x0008, 0x0006, 0x0005, -0x001B, 0x00A6, -0x01A8, 0x0372, -0x05BF,
+        0x09B8, -0x11B4, 0x74BB, 0x0C9D, -0x0267, -0x0043, 0x0132, -0x00E3, 0x00A2, -0x004B,
+        0x003C, -0x0013, 0x0003, 0, -0x0002, 0, 0, 0,
+    ],
+    [
+        -0x0001, 0x0003, -0x0008, 0x0011, -0x0010, 0x000A, 0x006B, -0x016D, 0x0350, -0x0623,
+        0x0BCD, -0x1780, 0x6794, 0x234C, -0x0A78, 0x0400, -0x010A, 0x0009, 0x0034, -0x0054, 0x0041,
+        -0x0022, 0x000A, -0x0001, 0, 0x0001, 0, 0, 0,
+    ],
+    [
+        0x0002, -0x0008, 0x0010, -0x0023, 0x002B, 0x001A, -0x00EB, 0x027B, -0x0548, 0x0AFA,
+        -0x16FA, 0x53E0, 0x3C07, -0x1249, 0x080E, -0x0347, 0x015B, -0x0044, -0x0017, 0x0046,
+        -0x0023, 0x0011, -0x0005, 0, 0, 0, 0, 0, 0,
+    ],
+    [
+        -0x0005, 0x0011, -0x0023, 0x0046, -0x0017, -0x0044, 0x015B, -0x0347, 0x080E, -0x1249,
+        0x3C07, 0x53E0, -0x16FA, 0x0AFA, -0x0548, 0x027B, -0x00EB, 0x001A, 0x002B, -0x0023, 0x0010,
+        -0x0008, 0x0002, 0, 0, 0, 0, 0, 0,
+    ],
+];
+
+/// Performs interpolation and converts all audio
+/// sample rates (18900Hz or 37800Hz) to 44100Hz
+struct AdpcmInterpolator {
+    samples_ringbuf: [i16; 0x20],
+    samples_i: usize,
+    sixstep_counter: usize,
+}
+
+impl Default for AdpcmInterpolator {
+    fn default() -> Self {
+        Self {
+            samples_ringbuf: Default::default(),
+            samples_i: Default::default(),
+            sixstep_counter: 6, // start at 6 to be normal
+        }
+    }
+}
+
+impl AdpcmInterpolator {
+    // TODO: optimize
+    pub fn output_samples(&mut self, samples: &[i16], sample_rate_18900: bool, out: &mut Vec<i16>) {
+        for &s in samples {
+            // double the samples
+            if sample_rate_18900 {
+                self.samples_ringbuf[self.samples_i & 0x1F] = s;
+                self.samples_ringbuf[(self.samples_i + 1) & 0x1F] = s;
+                self.samples_i += 2;
+                // since each sector must be 6 divisible, this shouldn't overflow
+                self.sixstep_counter -= 2;
+            } else {
+                self.samples_ringbuf[self.samples_i & 0x1F] = s;
+                self.samples_i += 1;
+                self.sixstep_counter -= 1;
+            }
+
+            if self.sixstep_counter == 0 {
+                self.sixstep_counter = 6;
+                for i in 0..7 {
+                    out.push(self.zigzag_interpolate(i))
+                }
+            }
+        }
+    }
+
+    fn zigzag_interpolate(&mut self, table_i: usize) -> i16 {
+        let mut sum = 0;
+
+        for i in 1..30 {
+            let sample = self.samples_ringbuf
+                [((self.samples_i as isize - i as isize) & 0x1F) as usize]
+                as i32;
+            sum += sample * ZIGZAG_TABLE[table_i][i - 1] / 0x8000;
+        }
+
+        sum.clamp(-0x8000, 0x7fff) as i16
+    }
+}
+
 /// Utility function to convert value from bcd format to normal
 fn from_bcd(arg: u8) -> u8 {
     ((arg & 0xF0) >> 4) * 10 + (arg & 0x0F)
@@ -190,6 +289,8 @@ pub struct Cdrom {
 
     adpcm_decoder_left_mono: AdpcmDecoder,
     adpcm_decoder_right: AdpcmDecoder,
+    adpcm_interpolator_left_mono: AdpcmInterpolator,
+    adpcm_interpolator_right: AdpcmInterpolator,
 }
 
 impl Default for Cdrom {
@@ -221,6 +322,8 @@ impl Default for Cdrom {
 
             adpcm_decoder_left_mono: AdpcmDecoder::default(),
             adpcm_decoder_right: AdpcmDecoder::default(),
+            adpcm_interpolator_left_mono: AdpcmInterpolator::default(),
+            adpcm_interpolator_right: AdpcmInterpolator::default(),
         }
     }
 }
@@ -277,7 +380,12 @@ impl Cdrom {
 
 // clocking and commands
 impl Cdrom {
-    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester, cycles: u32) {
+    pub fn clock(
+        &mut self,
+        interrupt_requester: &mut impl InterruptRequester,
+        spu: &mut Spu,
+        cycles: u32,
+    ) {
         if self.interrupt_flag & 7 != 0 {
             // pending interrupts, waiting for acknowledgement
             return;
@@ -392,6 +500,7 @@ impl Cdrom {
                             self.deliver_adpcm_to_spu(
                                 self.cursor_sector_position,
                                 CodingInfo::from_bits_truncate(coding_info),
+                                spu,
                             );
 
                             sector_read = true;
@@ -611,12 +720,18 @@ impl Cdrom {
     // because of `&self` and `&mut self` conflict, we can't pass the
     // sector data directly (even though we already have it).
     // TODO: look to see if there is a better way for this
-    fn deliver_adpcm_to_spu(&mut self, sector_position: usize, coding_info: CodingInfo) {
+    fn deliver_adpcm_to_spu(
+        &mut self,
+        sector_position: usize,
+        coding_info: CodingInfo,
+        spu: &mut Spu,
+    ) {
         let sector_start = sector_position * 2352;
         let data = &self.disk_data[sector_start + 24..sector_start + 24 + 0x900];
 
         let sample_8bit = coding_info.intersects(CodingInfo::BITS_PER_SAMPLE);
 
+        // TODO: try to use static allocation/slab or anything that is not heap intensive
         let mut final_spu_data_left: Vec<i16> = Vec::new();
         let mut final_spu_data_right: Vec<i16> = Vec::new();
 
@@ -634,8 +749,12 @@ impl Cdrom {
                     sample_8bit,
                     &mut temp_block,
                 );
+                self.adpcm_interpolator_left_mono.output_samples(
+                    &temp_block,
+                    coding_info.intersects(CodingInfo::SAMPLE_RATE),
+                    &mut final_spu_data_left,
+                );
 
-                final_spu_data_left.extend_from_slice(&temp_block);
                 if coding_info.intersects(CodingInfo::STEREO) {
                     block += 1;
                     self.adpcm_decoder_right.decode_block(
@@ -644,8 +763,13 @@ impl Cdrom {
                         sample_8bit,
                         &mut temp_block,
                     );
+
+                    self.adpcm_interpolator_right.output_samples(
+                        &temp_block,
+                        coding_info.intersects(CodingInfo::SAMPLE_RATE),
+                        &mut final_spu_data_right,
+                    );
                 }
-                final_spu_data_right.extend_from_slice(&temp_block);
                 block += 1;
 
                 if (block == 4 && sample_8bit) || block == 8 {
@@ -654,7 +778,11 @@ impl Cdrom {
             }
         }
 
-        // TODO: send to SPU
+        if coding_info.intersects(CodingInfo::STEREO) {
+            spu.add_cdrom_audio(&final_spu_data_left, &final_spu_data_right);
+        } else {
+            spu.add_cdrom_audio(&final_spu_data_left, &final_spu_data_left);
+        }
     }
 
     fn execute_test(&mut self, test_code: u8) {

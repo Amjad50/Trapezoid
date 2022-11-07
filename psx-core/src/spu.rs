@@ -559,6 +559,9 @@ pub struct Spu {
 
     spu_ram: SpuRam,
 
+    cdrom_audio_buffer_left: VecDeque<i16>,
+    cdrom_audio_buffer_right: VecDeque<i16>,
+
     /// internal timer to know when to run the SPU.
     /// The SPU runs at 44100Hz, which is CPU_CLOCK / 0x300
     /// I guess the CPU clock was designed around the SPU?
@@ -624,6 +627,13 @@ impl Spu {
             let mut mixed_audio_left = 0;
             let mut mixed_audio_right = 0;
 
+            let cd_left = self.cdrom_audio_buffer_left.pop_front().unwrap_or(0);
+            let cd_right = self.cdrom_audio_buffer_right.pop_front().unwrap_or(0);
+            mixed_audio_left +=
+                ((cd_left as i32 * self.cd_vol_left as i32) / 0x8000).clamp(-0x8000, 0x7FFF);
+            mixed_audio_right +=
+                ((cd_right as i32 * self.cd_vol_right as i32) / 0x8000).clamp(-0x8000, 0x7FFF);
+
             // TODO: implement correct order of handling voices (refer to above)
             for i in 0..24 {
                 let pitch_mod = self.pitch_mod_channel_flag.get(i);
@@ -672,6 +682,13 @@ impl Spu {
                 interrupt_requester.request_spu();
             }
         }
+    }
+
+    pub(crate) fn add_cdrom_audio(&mut self, left: &[i16], right: &[i16]) {
+        assert_eq!(left.len(), right.len());
+
+        self.cdrom_audio_buffer_left.extend(left);
+        self.cdrom_audio_buffer_right.extend(right);
     }
 
     pub fn take_audio_buffer(&mut self) -> Vec<i16> {
