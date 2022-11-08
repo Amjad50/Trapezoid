@@ -1,4 +1,7 @@
-use crate::memory::{interrupts::InterruptRequester, BusLine};
+use crate::{
+    memory::{interrupts::InterruptRequester, BusLine},
+    spu::Spu,
+};
 use bitflags::bitflags;
 
 use std::{
@@ -8,10 +11,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-// These delay is still very fast even for double speed, but 255 delay
-// between read sectors is very fast, and the software cannot handle it.
-const CDROM_COMMAND_DEFAULT_DELAY: u32 = 10000;
-const CDROM_READ_COMMAND_DELAY: u32 = 20000;
+const CDROM_COMMAND_DEFAULT_DELAY: u32 = 0x1100;
+const CDROM_READ_COMMAND_DELAY: u32 = 0x6AA00;
 
 bitflags! {
     #[derive(Default)]
@@ -58,6 +59,196 @@ bitflags! {
     }
 }
 
+bitflags! {
+    #[derive(Default)]
+    struct CodingInfo: u8 {
+        const EMPHASIS                = 0b01000000;
+        // (0=4 bits, 1=8 bits)
+        const BITS_PER_SAMPLE         = 0b00010000;
+        // (0=37800Hz, 1=18900Hz)
+        const SAMPLE_RATE             = 0b00000100;
+        const STEREO                  = 0b00000001;
+        // const RESERVED             = 0b10101010;
+    }
+}
+
+const ADPCM_TABLE_POS: &[i32; 4] = &[0, 60, 115, 98];
+const ADPCM_TABLE_NEG: &[i32; 4] = &[0, 0, -52, -55];
+
+/// This is very similar to what we are doing in the SPU, but the data
+/// format is a bit different. That's why its split.
+#[derive(Default, Clone, Copy)]
+struct AdpcmDecoder {
+    old: i32,
+    older: i32,
+}
+
+impl AdpcmDecoder {
+    /// Decode XA-ADPCM block
+    ///
+    /// `in_block` must be 128 bytes long
+    pub fn decode_block(
+        &mut self,
+        in_block: &[u8],
+        block_n: usize,
+        sample_8bit: bool,
+        out: &mut [i16; 28],
+    ) {
+        assert_eq!(in_block.len(), 128);
+        assert!(
+            (!sample_8bit) || block_n < 4,
+            "invalid block_n {} for 8bit mode",
+            block_n
+        );
+
+        let shift_filter = in_block[4 + block_n];
+
+        // adpcm decoding...
+        let mut shift_nibble = shift_filter & 0xf;
+        if shift_nibble > 12 {
+            shift_nibble = 9;
+        }
+        // The 4bit (or 8bit) samples are expanded to 16bit by left-shifting
+        // them by 12 (or 8), that 16bit value is then right-shifted by the
+        // selected 'shift' amount.
+        let expand_shift = if sample_8bit { 8 } else { 12 };
+        let shift_factor = expand_shift - shift_nibble;
+
+        let filter = shift_filter >> 4;
+
+        // only 4 filters supported in XA-ADPCM
+        let filter = filter % 4;
+
+        let f0 = ADPCM_TABLE_POS[filter as usize];
+        let f1 = ADPCM_TABLE_NEG[filter as usize];
+
+        for i in 0..28 {
+            // if its 8bit sample, use the whole byte, else use half depending
+            // on the block number
+            let mut sample = if sample_8bit {
+                let b = in_block[16 + i * 4 + block_n];
+                b as i8 as i32
+            } else {
+                let b = in_block[16 + i * 4 + block_n / 2];
+                let nibble_shift = (block_n & 1) * 4;
+                let m = (b >> nibble_shift) & 0xF;
+                if m & 0x8 != 0 {
+                    ((m as u32) | 0xfffffff0) as i32
+                } else {
+                    m as i32
+                }
+            };
+
+            // shift
+            sample = sample << shift_factor;
+            // apply adpcm filter
+            sample = sample + (self.old * f0 + self.older * f1 + 32) / 64;
+            sample = sample.clamp(-0x8000, 0x7fff);
+
+            self.older = self.old;
+            self.old = sample;
+
+            out[i] = sample as i16;
+        }
+    }
+}
+
+const ZIGZAG_TABLE: [[i32; 29]; 7] = [
+    [
+        0, 0, 0, 0, 0, -0x0002, 0x000A, -0x0022, 0x0041, -0x0054, 0x0034, 0x0009, -0x010A, 0x0400,
+        -0x0A78, 0x234C, 0x6794, -0x1780, 0x0BCD, -0x0623, 0x0350, -0x016D, 0x006B, 0x000A,
+        -0x0010, 0x0011, -0x0008, 0x0003, -0x0001,
+    ],
+    [
+        0, 0, 0, -0x0002, 0, 0x0003, -0x0013, 0x003C, -0x004B, 0x00A2, -0x00E3, 0x0132, -0x0043,
+        -0x0267, 0x0C9D, 0x74BB, -0x11B4, 0x09B8, -0x05BF, 0x0372, -0x01A8, 0x00A6, -0x001B,
+        0x0005, 0x0006, -0x0008, 0x0003, -0x0001, 0,
+    ],
+    [
+        0, 0, -0x0001, 0x0003, -0x0002, -0x0005, 0x001F, -0x004A, 0x00B3, -0x0192, 0x02B1, -0x039E,
+        0x04F8, -0x05A6, 0x7939, -0x05A6, 0x04F8, -0x039E, 0x02B1, -0x0192, 0x00B3, -0x004A,
+        0x001F, -0x0005, -0x0002, 0x0003, -0x0001, 0, 0,
+    ],
+    [
+        0, -0x0001, 0x0003, -0x0008, 0x0006, 0x0005, -0x001B, 0x00A6, -0x01A8, 0x0372, -0x05BF,
+        0x09B8, -0x11B4, 0x74BB, 0x0C9D, -0x0267, -0x0043, 0x0132, -0x00E3, 0x00A2, -0x004B,
+        0x003C, -0x0013, 0x0003, 0, -0x0002, 0, 0, 0,
+    ],
+    [
+        -0x0001, 0x0003, -0x0008, 0x0011, -0x0010, 0x000A, 0x006B, -0x016D, 0x0350, -0x0623,
+        0x0BCD, -0x1780, 0x6794, 0x234C, -0x0A78, 0x0400, -0x010A, 0x0009, 0x0034, -0x0054, 0x0041,
+        -0x0022, 0x000A, -0x0001, 0, 0x0001, 0, 0, 0,
+    ],
+    [
+        0x0002, -0x0008, 0x0010, -0x0023, 0x002B, 0x001A, -0x00EB, 0x027B, -0x0548, 0x0AFA,
+        -0x16FA, 0x53E0, 0x3C07, -0x1249, 0x080E, -0x0347, 0x015B, -0x0044, -0x0017, 0x0046,
+        -0x0023, 0x0011, -0x0005, 0, 0, 0, 0, 0, 0,
+    ],
+    [
+        -0x0005, 0x0011, -0x0023, 0x0046, -0x0017, -0x0044, 0x015B, -0x0347, 0x080E, -0x1249,
+        0x3C07, 0x53E0, -0x16FA, 0x0AFA, -0x0548, 0x027B, -0x00EB, 0x001A, 0x002B, -0x0023, 0x0010,
+        -0x0008, 0x0002, 0, 0, 0, 0, 0, 0,
+    ],
+];
+
+/// Performs interpolation and converts all audio
+/// sample rates (18900Hz or 37800Hz) to 44100Hz
+struct AdpcmInterpolator {
+    samples_ringbuf: [i16; 0x20],
+    samples_i: usize,
+    sixstep_counter: usize,
+}
+
+impl Default for AdpcmInterpolator {
+    fn default() -> Self {
+        Self {
+            samples_ringbuf: Default::default(),
+            samples_i: Default::default(),
+            sixstep_counter: 6, // start at 6 to be normal
+        }
+    }
+}
+
+impl AdpcmInterpolator {
+    // TODO: optimize
+    pub fn output_samples(&mut self, samples: &[i16], sample_rate_18900: bool, out: &mut Vec<i16>) {
+        for &s in samples {
+            // double the samples
+            if sample_rate_18900 {
+                self.samples_ringbuf[self.samples_i & 0x1F] = s;
+                self.samples_ringbuf[(self.samples_i + 1) & 0x1F] = s;
+                self.samples_i += 2;
+                // since each sector must be 6 divisible, this shouldn't overflow
+                self.sixstep_counter -= 2;
+            } else {
+                self.samples_ringbuf[self.samples_i & 0x1F] = s;
+                self.samples_i += 1;
+                self.sixstep_counter -= 1;
+            }
+
+            if self.sixstep_counter == 0 {
+                self.sixstep_counter = 6;
+                for i in 0..7 {
+                    out.push(self.zigzag_interpolate(i))
+                }
+            }
+        }
+    }
+
+    fn zigzag_interpolate(&mut self, table_i: usize) -> i16 {
+        let mut sum = 0;
+
+        for i in 1..30 {
+            let sample = self.samples_ringbuf
+                [((self.samples_i as isize - i as isize) & 0x1F) as usize]
+                as i32;
+            sum += sample * ZIGZAG_TABLE[table_i][i - 1] / 0x8000;
+        }
+
+        sum.clamp(-0x8000, 0x7fff) as i16
+    }
+}
+
 /// Utility function to convert value from bcd format to normal
 fn from_bcd(arg: u8) -> u8 {
     ((arg & 0xF0) >> 4) * 10 + (arg & 0x0F)
@@ -95,6 +286,25 @@ pub struct Cdrom {
     data_fifo_buffer: Vec<u8>,
     read_data_buffer: Vec<u8>,
     data_fifo_buffer_index: usize,
+
+    adpcm_decoder_left_mono: AdpcmDecoder,
+    adpcm_decoder_right: AdpcmDecoder,
+    adpcm_interpolator_left_mono: AdpcmInterpolator,
+    adpcm_interpolator_right: AdpcmInterpolator,
+
+    // the values cached by the input until applied
+    input_cd_left_to_spu_left: u8,
+    input_cd_left_to_spu_right: u8,
+    input_cd_right_to_spu_left: u8,
+    input_cd_right_to_spu_right: u8,
+
+    // actual volumes
+    vol_cd_left_to_spu_left: u8,
+    vol_cd_left_to_spu_right: u8,
+    vol_cd_right_to_spu_left: u8,
+    vol_cd_right_to_spu_right: u8,
+
+    adpcm_mute: bool,
 }
 
 impl Default for Cdrom {
@@ -123,6 +333,23 @@ impl Default for Cdrom {
             data_fifo_buffer: Vec::new(),
             read_data_buffer: Vec::new(),
             data_fifo_buffer_index: 0,
+
+            adpcm_decoder_left_mono: AdpcmDecoder::default(),
+            adpcm_decoder_right: AdpcmDecoder::default(),
+            adpcm_interpolator_left_mono: AdpcmInterpolator::default(),
+            adpcm_interpolator_right: AdpcmInterpolator::default(),
+
+            input_cd_left_to_spu_left: 0,
+            input_cd_left_to_spu_right: 0,
+            input_cd_right_to_spu_left: 0,
+            input_cd_right_to_spu_right: 0,
+
+            vol_cd_left_to_spu_left: 0,
+            vol_cd_left_to_spu_right: 0,
+            vol_cd_right_to_spu_left: 0,
+            vol_cd_right_to_spu_right: 0,
+
+            adpcm_mute: false,
         }
     }
 }
@@ -179,7 +406,12 @@ impl Cdrom {
 
 // clocking and commands
 impl Cdrom {
-    pub fn clock(&mut self, interrupt_requester: &mut impl InterruptRequester, cycles: u32) {
+    pub fn clock(
+        &mut self,
+        interrupt_requester: &mut impl InterruptRequester,
+        spu: &mut Spu,
+        cycles: u32,
+    ) {
         if self.interrupt_flag & 7 != 0 {
             // pending interrupts, waiting for acknowledgement
             return;
@@ -240,53 +472,110 @@ impl Cdrom {
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
 
-                        self.command_delay_timer += CDROM_READ_COMMAND_DELAY;
+                        self.command_delay_timer += if self.mode.intersects(CdromMode::DOUBLE_SPEED)
+                        {
+                            CDROM_READ_COMMAND_DELAY / 2
+                        } else {
+                            CDROM_READ_COMMAND_DELAY
+                        };
 
                         // reset data buffer
                         self.read_data_buffer.clear();
                     } else {
                         // SECOND
 
-                        // only refill the data if the buffer is taken, else
-                        // just interrupt
-                        if self.read_data_buffer.is_empty() {
-                            // convert from cursor pos to sector,seconds,minutes
-                            // for debugging
-                            let sector = self.cursor_sector_position % 75;
-                            let total_seconds = (self.cursor_sector_position / 75) + 2;
-                            let minutes = total_seconds / 60;
-                            let seconds = total_seconds % 60;
+                        let sector_start = self.cursor_sector_position * 2352;
 
-                            // wait until the data fifo buffer is empty
-                            log::info!(
-                                "cdrom cmd: ReadN: pushing sector {} [{:02}:{:02}:{:02}] to data fifo buffer",
+                        // skip the sync bytes
+                        let whole_sector = &self.disk_data[sector_start + 12..sector_start + 0x930];
+
+                        // TODO: add filtering and coding info handling
+                        let mode = whole_sector[3];
+                        let _file_number = whole_sector[4];
+                        let _channel_number = whole_sector[5];
+                        let submode = whole_sector[6];
+                        let coding_info = whole_sector[7];
+                        let submode_audio = submode & 0x4 != 0;
+                        let submode_realtime = submode & 0x40 != 0;
+
+                        // was the current sector read, and should we move to the next?
+                        let mut sector_read = false;
+
+                        // delivery options:
+                        //  try_deliver_as_adpcm_sector:
+                        //    TODO: reject if CD-DA AUDIO format
+                        //    reject if sector isn't MODE2 format
+                        //    reject if adpcm_disabled(setmode.6)
+                        //    TODO: reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
+                        //    reject if submode isn't audio+realtime (bit2 and bit6 must be both set)
+                        //    deliver: send sector to xa-adpcm decoder when passing above cases
+                        //  try_deliver_as_data_sector:
+                        //    reject data-delivery if "try_deliver_as_adpcm_sector" did do adpcm-delivery
+                        //    TODO: reject if filter_enabled(setmode.3) AND submode is audio+realtime (bit2+bit6)
+                        //    1st delivery attempt: send INT1+data, unless there's another INT pending
+                        //    delay, and retry at later time... but this time with file/channel checking!
+                        //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
+                        //    2nd delivery attempt: send INT1+data, unless there's another INT pending
+                        //  else:
+                        //    ignore sector silently
+                        if mode == 2
+                            && self.mode.intersects(CdromMode::XA_ADPCM)
+                            && submode_audio
+                            && submode_realtime
+                        {
+                            self.deliver_adpcm_to_spu(
                                 self.cursor_sector_position,
-                                minutes,
-                                seconds,
-                                sector
+                                CodingInfo::from_bits_truncate(coding_info),
+                                spu,
                             );
 
-                            let start;
-                            let end;
-                            if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
-                                // 12 to skip the sync patterns
-                                start = self.cursor_sector_position * 2352 + 12;
-                                end = start + 0x924;
-                            } else {
-                                // 12 + 3 + 1 + 8 to skip the sync patterns and the header
-                                start = self.cursor_sector_position * 2352 + 24;
-                                end = start + 0x800;
-                            }
-                            self.read_data_buffer
-                                .extend_from_slice(&self.disk_data[start..end]);
+                            sector_read = true;
+                        } else {
+                            // only refill the data if the buffer is taken, else
+                            // just interrupt
+                            if self.read_data_buffer.is_empty() {
+                                // convert from cursor pos to sector,seconds,minutes
+                                // for debugging
+                                let sector = self.cursor_sector_position % 75;
+                                let total_seconds = (self.cursor_sector_position / 75) + 2;
+                                let minutes = total_seconds / 60;
+                                let seconds = total_seconds % 60;
 
-                            // move to next sector
-                            self.cursor_sector_position += 1;
+                                // wait until the data fifo buffer is empty
+                                log::info!(
+                                    "cdrom cmd: ReadN: pushing sector {} [{:02}:{:02}:{:02}] to data fifo buffer",
+                                    self.cursor_sector_position,
+                                    minutes,
+                                    seconds,
+                                    sector
+                                );
+
+                                let data = if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
+                                    whole_sector
+                                } else {
+                                    // skip the sub header
+                                    &whole_sector[12..12 + 0x800]
+                                };
+
+                                self.read_data_buffer.extend_from_slice(&data);
+
+                                sector_read = true;
+                            }
+
+                            self.write_to_response_fifo(self.status.bits);
+                            self.request_interrupt_0_7(1);
                         }
 
-                        self.write_to_response_fifo(self.status.bits);
-                        self.request_interrupt_0_7(1);
-                        self.command_delay_timer += CDROM_READ_COMMAND_DELAY;
+                        // if we haven't read, just wait the default delay and re-interrupt.
+                        if sector_read {
+                            self.cursor_sector_position += 1;
+                            self.command_delay_timer +=
+                                if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
+                                    CDROM_READ_COMMAND_DELAY / 2
+                                } else {
+                                    CDROM_READ_COMMAND_DELAY
+                                };
+                        }
                     }
                 }
                 0x09 => {
@@ -452,6 +741,90 @@ impl Cdrom {
                 interrupt_requester.request_cdrom();
             }
         }
+    }
+
+    // because of `&self` and `&mut self` conflict, we can't pass the
+    // sector data directly (even though we already have it).
+    // TODO: look to see if there is a better way for this
+    fn deliver_adpcm_to_spu(
+        &mut self,
+        sector_position: usize,
+        coding_info: CodingInfo,
+        spu: &mut Spu,
+    ) {
+        let sector_start = sector_position * 2352;
+        let data = &self.disk_data[sector_start + 24..sector_start + 24 + 0x900];
+
+        let sample_8bit = coding_info.intersects(CodingInfo::BITS_PER_SAMPLE);
+
+        // TODO: try to use static allocation/slab or anything that is not heap intensive
+        let mut cd_audio_left: Vec<i16> = Vec::new();
+        let mut cd_audio_right: Vec<i16> = Vec::new();
+
+        // contain 0x12 portions of size 128 bytes.
+        for i in 0..0x12 {
+            let offset = i * 128;
+            let portion = &data[offset..offset + 128];
+
+            let mut block = 0;
+            let mut temp_block = [0; 28];
+            loop {
+                self.adpcm_decoder_left_mono.decode_block(
+                    portion,
+                    block,
+                    sample_8bit,
+                    &mut temp_block,
+                );
+                self.adpcm_interpolator_left_mono.output_samples(
+                    &temp_block,
+                    coding_info.intersects(CodingInfo::SAMPLE_RATE),
+                    &mut cd_audio_left,
+                );
+
+                if coding_info.intersects(CodingInfo::STEREO) {
+                    block += 1;
+                    self.adpcm_decoder_right.decode_block(
+                        portion,
+                        block,
+                        sample_8bit,
+                        &mut temp_block,
+                    );
+
+                    self.adpcm_interpolator_right.output_samples(
+                        &temp_block,
+                        coding_info.intersects(CodingInfo::SAMPLE_RATE),
+                        &mut cd_audio_right,
+                    );
+                }
+                block += 1;
+
+                if (block == 4 && sample_8bit) || block == 8 {
+                    break;
+                }
+            }
+        }
+        let mut spu_audio_left = vec![0; cd_audio_left.len()];
+        let mut spu_audio_right = vec![0; cd_audio_left.len()];
+
+        let (audio_left, audio_right) = if coding_info.intersects(CodingInfo::STEREO) {
+            (&cd_audio_left, &cd_audio_right)
+        } else {
+            (&cd_audio_left, &cd_audio_left)
+        };
+
+        if !self.adpcm_mute {
+            for (i, (&left, &right)) in audio_left.iter().zip(audio_right.iter()).enumerate() {
+                let l = (left as i32 * self.vol_cd_left_to_spu_left as i32 / 0x80)
+                    + (right as i32 * self.vol_cd_right_to_spu_left as i32 / 0x80);
+                let r = (left as i32 * self.vol_cd_left_to_spu_right as i32 / 0x80)
+                    + (right as i32 * self.vol_cd_right_to_spu_right as i32 / 0x80);
+
+                spu_audio_left[i] = l.clamp(-0x8000, 0x7FFF) as i16;
+                spu_audio_right[i] = r.clamp(-0x8000, 0x7FFF) as i16;
+            }
+        }
+
+        spu.add_cdrom_audio(&spu_audio_left, &spu_audio_right);
     }
 
     fn execute_test(&mut self, test_code: u8) {
@@ -686,13 +1059,13 @@ impl BusLine for Cdrom {
             1 => match self.index {
                 0 => self.write_command_register(data),
                 1 => {
-                    // write 1.1 Sound Map Data Out
+                    todo!("write 1.1 Sound Map Data Out");
                 }
                 2 => {
-                    // write 1.2 Sound Map Coding Info
+                    todo!("write 1.2 Sound Map Coding Info");
                 }
                 3 => {
-                    // write 1.3 Right-CD to Right-SPU Volume
+                    self.input_cd_right_to_spu_right = data;
                 }
                 _ => unreachable!(),
             },
@@ -700,10 +1073,10 @@ impl BusLine for Cdrom {
                 0 => self.write_to_parameter_fifo(data),
                 1 => self.write_interrupt_enable_register(data),
                 2 => {
-                    // write 2.2 Left-CD to Left-SPU Volume
+                    self.input_cd_left_to_spu_left = data;
                 }
                 3 => {
-                    // write 2.3 Right-CD to Left-SPU Volume
+                    self.input_cd_right_to_spu_left = data;
                 }
                 _ => unreachable!(),
             },
@@ -712,9 +1085,24 @@ impl BusLine for Cdrom {
                 1 => self.write_interrupt_flag_register(data),
                 2 => {
                     // write 3.2 Left-CD to Right-SPU Volume
+                    self.input_cd_left_to_spu_right = data;
                 }
                 3 => {
                     // write 3.3 Audio Volume Apply Changes
+                    self.adpcm_mute = data & 1 == 1;
+                    // apply volumes
+                    if data & 0x20 != 0 {
+                        log::info!("cd volume applied, muted: {}", self.adpcm_mute);
+                        log::info!("l -> l {:02X}", self.input_cd_left_to_spu_left);
+                        log::info!("l -> r {:02X}", self.input_cd_left_to_spu_right);
+                        log::info!("r -> l {:02X}", self.input_cd_right_to_spu_left);
+                        log::info!("r -> r {:02X}", self.input_cd_right_to_spu_right);
+
+                        self.vol_cd_left_to_spu_left = self.input_cd_left_to_spu_left;
+                        self.vol_cd_left_to_spu_right = self.input_cd_left_to_spu_right;
+                        self.vol_cd_right_to_spu_left = self.input_cd_right_to_spu_left;
+                        self.vol_cd_right_to_spu_right = self.input_cd_right_to_spu_right;
+                    }
                 }
                 _ => unreachable!(),
             },
