@@ -291,6 +291,20 @@ pub struct Cdrom {
     adpcm_decoder_right: AdpcmDecoder,
     adpcm_interpolator_left_mono: AdpcmInterpolator,
     adpcm_interpolator_right: AdpcmInterpolator,
+
+    // the values cached by the input until applied
+    input_cd_left_to_spu_left: u8,
+    input_cd_left_to_spu_right: u8,
+    input_cd_right_to_spu_left: u8,
+    input_cd_right_to_spu_right: u8,
+
+    // actual volumes
+    vol_cd_left_to_spu_left: u8,
+    vol_cd_left_to_spu_right: u8,
+    vol_cd_right_to_spu_left: u8,
+    vol_cd_right_to_spu_right: u8,
+
+    adpcm_mute: bool,
 }
 
 impl Default for Cdrom {
@@ -324,6 +338,18 @@ impl Default for Cdrom {
             adpcm_decoder_right: AdpcmDecoder::default(),
             adpcm_interpolator_left_mono: AdpcmInterpolator::default(),
             adpcm_interpolator_right: AdpcmInterpolator::default(),
+
+            input_cd_left_to_spu_left: 0,
+            input_cd_left_to_spu_right: 0,
+            input_cd_right_to_spu_left: 0,
+            input_cd_right_to_spu_right: 0,
+
+            vol_cd_left_to_spu_left: 0,
+            vol_cd_left_to_spu_right: 0,
+            vol_cd_right_to_spu_left: 0,
+            vol_cd_right_to_spu_right: 0,
+
+            adpcm_mute: false,
         }
     }
 }
@@ -732,8 +758,8 @@ impl Cdrom {
         let sample_8bit = coding_info.intersects(CodingInfo::BITS_PER_SAMPLE);
 
         // TODO: try to use static allocation/slab or anything that is not heap intensive
-        let mut final_spu_data_left: Vec<i16> = Vec::new();
-        let mut final_spu_data_right: Vec<i16> = Vec::new();
+        let mut cd_audio_left: Vec<i16> = Vec::new();
+        let mut cd_audio_right: Vec<i16> = Vec::new();
 
         // contain 0x12 portions of size 128 bytes.
         for i in 0..0x12 {
@@ -752,7 +778,7 @@ impl Cdrom {
                 self.adpcm_interpolator_left_mono.output_samples(
                     &temp_block,
                     coding_info.intersects(CodingInfo::SAMPLE_RATE),
-                    &mut final_spu_data_left,
+                    &mut cd_audio_left,
                 );
 
                 if coding_info.intersects(CodingInfo::STEREO) {
@@ -767,7 +793,7 @@ impl Cdrom {
                     self.adpcm_interpolator_right.output_samples(
                         &temp_block,
                         coding_info.intersects(CodingInfo::SAMPLE_RATE),
-                        &mut final_spu_data_right,
+                        &mut cd_audio_right,
                     );
                 }
                 block += 1;
@@ -777,12 +803,28 @@ impl Cdrom {
                 }
             }
         }
+        let mut spu_audio_left = vec![0; cd_audio_left.len()];
+        let mut spu_audio_right = vec![0; cd_audio_left.len()];
 
-        if coding_info.intersects(CodingInfo::STEREO) {
-            spu.add_cdrom_audio(&final_spu_data_left, &final_spu_data_right);
+        let (audio_left, audio_right) = if coding_info.intersects(CodingInfo::STEREO) {
+            (&cd_audio_left, &cd_audio_right)
         } else {
-            spu.add_cdrom_audio(&final_spu_data_left, &final_spu_data_left);
+            (&cd_audio_left, &cd_audio_left)
+        };
+
+        if !self.adpcm_mute {
+            for (i, (&left, &right)) in audio_left.iter().zip(audio_right.iter()).enumerate() {
+                let l = (left as i32 * self.vol_cd_left_to_spu_left as i32 / 0x80)
+                    + (right as i32 * self.vol_cd_right_to_spu_left as i32 / 0x80);
+                let r = (left as i32 * self.vol_cd_left_to_spu_right as i32 / 0x80)
+                    + (right as i32 * self.vol_cd_right_to_spu_right as i32 / 0x80);
+
+                spu_audio_left[i] = l.clamp(-0x8000, 0x7FFF) as i16;
+                spu_audio_right[i] = r.clamp(-0x8000, 0x7FFF) as i16;
+            }
         }
+
+        spu.add_cdrom_audio(&spu_audio_left, &spu_audio_right);
     }
 
     fn execute_test(&mut self, test_code: u8) {
@@ -1023,7 +1065,7 @@ impl BusLine for Cdrom {
                     todo!("write 1.2 Sound Map Coding Info");
                 }
                 3 => {
-                    // write 1.3 Right-CD to Right-SPU Volume
+                    self.input_cd_right_to_spu_right = data;
                 }
                 _ => unreachable!(),
             },
@@ -1031,10 +1073,10 @@ impl BusLine for Cdrom {
                 0 => self.write_to_parameter_fifo(data),
                 1 => self.write_interrupt_enable_register(data),
                 2 => {
-                    // write 2.2 Left-CD to Left-SPU Volume
+                    self.input_cd_left_to_spu_left = data;
                 }
                 3 => {
-                    // write 2.3 Right-CD to Left-SPU Volume
+                    self.input_cd_right_to_spu_left = data;
                 }
                 _ => unreachable!(),
             },
@@ -1043,9 +1085,24 @@ impl BusLine for Cdrom {
                 1 => self.write_interrupt_flag_register(data),
                 2 => {
                     // write 3.2 Left-CD to Right-SPU Volume
+                    self.input_cd_left_to_spu_right = data;
                 }
                 3 => {
                     // write 3.3 Audio Volume Apply Changes
+                    self.adpcm_mute = data & 1 == 1;
+                    // apply volumes
+                    if data & 0x20 != 0 {
+                        log::info!("cd volume applied, muted: {}", self.adpcm_mute);
+                        log::info!("l -> l {:02X}", self.input_cd_left_to_spu_left);
+                        log::info!("l -> r {:02X}", self.input_cd_left_to_spu_right);
+                        log::info!("r -> l {:02X}", self.input_cd_right_to_spu_left);
+                        log::info!("r -> r {:02X}", self.input_cd_right_to_spu_right);
+
+                        self.vol_cd_left_to_spu_left = self.input_cd_left_to_spu_left;
+                        self.vol_cd_left_to_spu_right = self.input_cd_left_to_spu_right;
+                        self.vol_cd_right_to_spu_left = self.input_cd_right_to_spu_left;
+                        self.vol_cd_right_to_spu_right = self.input_cd_right_to_spu_right;
+                    }
                 }
                 _ => unreachable!(),
             },
