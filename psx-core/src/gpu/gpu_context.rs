@@ -546,8 +546,6 @@ impl GpuContext {
 
 impl GpuContext {
     pub fn write_vram_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
-        // TODO: check for out-of-bound writes here
-
         self.check_and_flush_buffered_draws(None);
 
         let left = block_range.0.start;
@@ -563,17 +561,113 @@ impl GpuContext {
         )
         .unwrap();
 
-        self.command_builder
-            .copy_buffer_to_image_dimensions(
-                buffer,
-                self.render_image.clone(),
-                [left, top, 0],
-                [width, height, 1],
-                0,
-                1,
-                0,
+        let overflow_x = left + width > 1024;
+        let overflow_y = top + height > 512;
+        if overflow_x || overflow_y {
+            let stage_image = StorageImage::new(
+                self.device.clone(),
+                ImageDimensions::Dim2d {
+                    width,
+                    height,
+                    array_layers: 1,
+                },
+                Format::A1R5G5B5_UNORM_PACK16,
+                Some(self.queue.family()),
             )
             .unwrap();
+
+            self.command_builder
+                .copy_buffer_to_image(buffer, stage_image.clone())
+                .unwrap();
+
+            // if we are not overflowing in a direction, just keep the old value
+            let not_overflowing_width = (1024 - left).min(width);
+            let not_overflowing_height = (512 - top).min(height);
+            let remaining_width = width - not_overflowing_width;
+            let remaining_height = height - not_overflowing_height;
+
+            // copy the not overflowing content
+            self.command_builder
+                .copy_image(
+                    stage_image.clone(),
+                    [0, 0, 0],
+                    0,
+                    0,
+                    self.render_image.clone(),
+                    [left as i32, top as i32, 0],
+                    0,
+                    0,
+                    [not_overflowing_width, not_overflowing_height, 1],
+                    1,
+                )
+                .unwrap();
+
+            if overflow_x {
+                self.command_builder
+                    .copy_image(
+                        stage_image.clone(),
+                        [not_overflowing_width as i32, 0, 0],
+                        0,
+                        0,
+                        self.render_image.clone(),
+                        [0, top as i32, 0],
+                        0,
+                        0,
+                        [remaining_width, not_overflowing_height, 1],
+                        1,
+                    )
+                    .unwrap();
+            }
+            if overflow_y {
+                self.command_builder
+                    .copy_image(
+                        stage_image.clone(),
+                        [0, not_overflowing_height as i32, 0],
+                        0,
+                        0,
+                        self.render_image.clone(),
+                        [left as i32, 0, 0],
+                        0,
+                        0,
+                        [not_overflowing_width, remaining_height, 1],
+                        1,
+                    )
+                    .unwrap();
+            }
+            if overflow_x && overflow_y {
+                self.command_builder
+                    .copy_image(
+                        stage_image.clone(),
+                        [
+                            not_overflowing_width as i32,
+                            not_overflowing_height as i32,
+                            0,
+                        ],
+                        0,
+                        0,
+                        self.render_image.clone(),
+                        [0, 0, 0],
+                        0,
+                        0,
+                        [remaining_width, remaining_height, 1],
+                        1,
+                    )
+                    .unwrap();
+            }
+        } else {
+            self.command_builder
+                .copy_buffer_to_image_dimensions(
+                    buffer.clone(),
+                    self.render_image.clone(),
+                    [left, top, 0],
+                    [width, height, 1],
+                    0,
+                    1,
+                    0,
+                )
+                .unwrap();
+        }
+
         self.increment_command_builder_commands_and_flush();
 
         // update back image when loading textures
@@ -581,8 +675,6 @@ impl GpuContext {
     }
 
     pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
-        // TODO: check for out-of-bound reads here
-
         self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 
@@ -607,17 +699,112 @@ impl GpuContext {
         )
         .unwrap();
 
-        builder
-            .copy_image_to_buffer_dimensions(
-                self.render_image.clone(),
-                buffer.clone(),
-                [left, top, 0],
-                [width, height, 1],
-                0,
-                1,
-                0,
+        let overflow_x = left + width > 1024;
+        let overflow_y = top + height > 512;
+        if overflow_x || overflow_y {
+            let stage_image = StorageImage::new(
+                self.device.clone(),
+                ImageDimensions::Dim2d {
+                    width,
+                    height,
+                    array_layers: 1,
+                },
+                Format::A1R5G5B5_UNORM_PACK16,
+                Some(self.queue.family()),
             )
             .unwrap();
+
+            // if we are not overflowing in a direction, just keep the old value
+            let not_overflowing_width = (1024 - left).min(width);
+            let not_overflowing_height = (512 - top).min(height);
+            let remaining_width = width - not_overflowing_width;
+            let remaining_height = height - not_overflowing_height;
+
+            // copy the not overflowing content
+            builder
+                .copy_image(
+                    self.render_image.clone(),
+                    [left as i32, top as i32, 0],
+                    0,
+                    0,
+                    stage_image.clone(),
+                    [0, 0, 0],
+                    0,
+                    0,
+                    [not_overflowing_width, not_overflowing_height, 1],
+                    1,
+                )
+                .unwrap();
+
+            if overflow_x {
+                builder
+                    .copy_image(
+                        self.render_image.clone(),
+                        [0, top as i32, 0],
+                        0,
+                        0,
+                        stage_image.clone(),
+                        [not_overflowing_width as i32, 0, 0],
+                        0,
+                        0,
+                        [remaining_width, not_overflowing_height, 1],
+                        1,
+                    )
+                    .unwrap();
+            }
+            if overflow_y {
+                builder
+                    .copy_image(
+                        self.render_image.clone(),
+                        [left as i32, 0, 0],
+                        0,
+                        0,
+                        stage_image.clone(),
+                        [0, not_overflowing_height as i32, 0],
+                        0,
+                        0,
+                        [not_overflowing_width, remaining_height, 1],
+                        1,
+                    )
+                    .unwrap();
+            }
+            if overflow_x && overflow_y {
+                builder
+                    .copy_image(
+                        self.render_image.clone(),
+                        [0, 0, 0],
+                        0,
+                        0,
+                        stage_image.clone(),
+                        [
+                            not_overflowing_width as i32,
+                            not_overflowing_height as i32,
+                            0,
+                        ],
+                        0,
+                        0,
+                        [remaining_width, remaining_height, 1],
+                        1,
+                    )
+                    .unwrap();
+            }
+
+            builder
+                .copy_image_to_buffer(stage_image, buffer.clone())
+                .unwrap();
+        } else {
+            builder
+                .copy_image_to_buffer_dimensions(
+                    self.render_image.clone(),
+                    buffer.clone(),
+                    [left, top, 0],
+                    [width, height, 1],
+                    0,
+                    1,
+                    0,
+                )
+                .unwrap();
+        }
 
         let command_buffer = builder.build().unwrap();
 
