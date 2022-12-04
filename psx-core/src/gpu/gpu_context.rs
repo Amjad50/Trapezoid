@@ -289,6 +289,7 @@ pub struct GpuContext {
     descriptor_set: Arc<PersistentDescriptorSet>,
 
     vertex_buffer_pool: CpuBufferPool<DrawingVertexFull>,
+    vram_write_buffer_pool: CpuBufferPool<u16>,
     buffered_draw_vertices: Vec<DrawingVertexFull>,
     current_buffered_draws_state: Option<BufferedDrawsState>,
 
@@ -474,6 +475,7 @@ impl GpuContext {
         .unwrap();
 
         let vertex_buffer_pool = CpuBufferPool::vertex_buffer(memory_allocator.clone());
+        let vram_write_buffer_pool = CpuBufferPool::upload(memory_allocator.clone());
 
         let front_blit = FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
 
@@ -524,6 +526,7 @@ impl GpuContext {
             descriptor_set,
 
             vertex_buffer_pool,
+            vram_write_buffer_pool,
             buffered_draw_vertices: Vec::new(),
             current_buffered_draws_state: None,
 
@@ -573,16 +576,10 @@ impl GpuContext {
         let width = block_range.0.len() as u32;
         let height = block_range.1.len() as u32;
 
-        let buffer = CpuAccessibleBuffer::from_iter(
-            &self.memory_allocator,
-            BufferUsage {
-                transfer_src: true,
-                ..BufferUsage::empty()
-            },
-            false,
-            block.iter().cloned(),
-        )
-        .unwrap();
+        let buffer = self
+            .vram_write_buffer_pool
+            .from_iter(block.iter().cloned())
+            .unwrap();
 
         let overflow_x = left + width > 1024;
         let overflow_y = top + height > 512;
