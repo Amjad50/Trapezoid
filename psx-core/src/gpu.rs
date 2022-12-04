@@ -13,7 +13,10 @@ use crossbeam::{
     channel::{Receiver, Sender},
 };
 use vulkano::{
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer},
+    command_buffer::{
+        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, BlitImageInfo,
+        CommandBufferUsage, PrimaryAutoCommandBuffer,
+    },
     device::{Device, Queue},
     image::{ImageAccess, StorageImage},
     sampler::Filter,
@@ -136,7 +139,6 @@ enum BackendCommand {
 
 pub struct Gpu {
     // used for blitting to frontend
-    device: Arc<Device>,
     queue: Arc<Queue>,
 
     // handle the backend gpu thread
@@ -154,6 +156,7 @@ pub struct Gpu {
 
     first_frame: bool,
     current_front_image: Option<Arc<StorageImage>>,
+    command_buffer_allocator: StandardCommandBufferAllocator,
 
     // shared GPUSTAT
     gpu_stat: Arc<AtomicCell<GpuStat>>,
@@ -186,7 +189,6 @@ impl Gpu {
         );
 
         Self {
-            device,
             queue,
 
             _gpu_backend_thread_handle,
@@ -198,6 +200,10 @@ impl Gpu {
 
             first_frame: true,
             current_front_image: None,
+            command_buffer_allocator: StandardCommandBufferAllocator::new(
+                device,
+                Default::default(),
+            ),
 
             gpu_stat,
 
@@ -318,35 +324,17 @@ impl Gpu {
         if let Some(img) = self.current_front_image.as_ref() {
             let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
                 AutoCommandBufferBuilder::primary(
-                    self.device.clone(),
-                    self.queue.family(),
+                    &self.command_buffer_allocator,
+                    self.queue.queue_family_index(),
                     CommandBufferUsage::OneTimeSubmit,
                 )
                 .unwrap();
 
             builder
-                .blit_image(
-                    img.clone(),
-                    [0, 0, 0],
-                    [
-                        img.dimensions().width() as i32,
-                        img.dimensions().height() as i32,
-                        1,
-                    ],
-                    0,
-                    0,
-                    dest_image.clone(),
-                    [0, 0, 0],
-                    [
-                        dest_image.dimensions().width() as i32,
-                        dest_image.dimensions().height() as i32,
-                        1,
-                    ],
-                    0,
-                    0,
-                    1,
-                    Filter::Nearest,
-                )
+                .blit_image(BlitImageInfo {
+                    filter: Filter::Nearest,
+                    ..BlitImageInfo::images(img.clone(), dest_image)
+                })
                 .unwrap();
             let cb = builder.build().unwrap();
 

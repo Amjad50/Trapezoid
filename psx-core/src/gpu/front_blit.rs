@@ -2,18 +2,22 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use vulkano::{
-    buffer::{BufferUsage, DeviceLocalBuffer, ImmutableBuffer},
+    buffer::{BufferUsage, CpuAccessibleBuffer, DeviceLocalBuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferExecFuture, CommandBufferUsage,
-        PrimaryAutoCommandBuffer, SubpassContents,
+        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder,
+        CommandBufferExecFuture, CommandBufferUsage, CopyBufferToImageInfo, CopyImageToBufferInfo,
+        PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassContents,
     },
-    descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
+    descriptor_set::{
+        allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
+    },
     device::{Device, Queue},
-    format::{ClearValue, Format},
+    format::Format,
     image::{
         view::{ImageView, ImageViewCreateInfo},
         ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage,
     },
+    memory::allocator::StandardMemoryAllocator,
     pipeline::{
         graphics::{
             input_assembly::{InputAssemblyState, PrimitiveTopology},
@@ -27,7 +31,7 @@ use vulkano::{
         ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
         SamplerMipmapMode,
     },
-    sync::{GpuFuture, NowFuture},
+    sync::GpuFuture,
 };
 
 const COMPUTE_24BIT_ROW_OPERATIONS: u32 = 512 / 3;
@@ -55,7 +59,12 @@ void main() {
 
     tex_coords = (position  + 1.0) / 2.0;
     tex_coords = tex_coords * size + topleft;
-}"
+}",
+        types_meta: {
+            use bytemuck::{Pod, Zeroable};
+
+            #[derive(Clone, Copy, Zeroable, Pod)]
+        },
     }
 }
 
@@ -136,6 +145,9 @@ pub(super) struct FrontBlit {
     device: Arc<Device>,
     queue: Arc<Queue>,
 
+    command_buffer_allocator: StandardCommandBufferAllocator,
+    descriptor_set_allocator: StandardDescriptorSetAllocator,
+
     texture_image: Arc<StorageImage>,
 
     texture_24bit_image: Arc<StorageImage>,
@@ -147,21 +159,20 @@ pub(super) struct FrontBlit {
     g_pipeline: Arc<GraphicsPipeline>,
     c_pipeline: Arc<ComputePipeline>,
 
-    vertex_buffer: Arc<ImmutableBuffer<[Vertex]>>,
+    vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
 }
 
 impl FrontBlit {
-    pub fn new(
-        device: Arc<Device>,
-        queue: Arc<Queue>,
-        source_image: Arc<StorageImage>,
-    ) -> (
-        Self,
-        CommandBufferExecFuture<NowFuture, PrimaryAutoCommandBuffer>,
-    ) {
+    pub fn new(device: Arc<Device>, queue: Arc<Queue>, source_image: Arc<StorageImage>) -> Self {
         let vs = vs::load(device.clone()).unwrap();
         let fs = fs::load(device.clone()).unwrap();
         let cs = cs::load(device.clone()).unwrap();
+
+        let memory_allocator = StandardMemoryAllocator::new_default(device.clone());
+
+        let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone());
+        let command_buffer_allocator =
+            StandardCommandBufferAllocator::new(device.clone(), Default::default());
 
         let render_pass = vulkano::single_pass_renderpass!(
             device.clone(),
@@ -202,7 +213,7 @@ impl FrontBlit {
         .unwrap();
 
         let texture_24bit_image = StorageImage::with_usage(
-            device.clone(),
+            &memory_allocator,
             ImageDimensions::Dim2d {
                 width: 1024,
                 height: 512,
@@ -210,40 +221,41 @@ impl FrontBlit {
             },
             Format::B8G8R8A8_UNORM,
             ImageUsage {
-                transfer_destination: true,
+                transfer_dst: true,
                 sampled: true,
-                ..ImageUsage::none()
+                ..ImageUsage::empty()
             },
-            ImageCreateFlags::none(),
-            Some(queue.family()),
+            ImageCreateFlags::empty(),
+            [queue.queue_family_index()],
         )
         .unwrap();
 
         let texture_24bit_in_buffer = DeviceLocalBuffer::<[u16]>::array(
-            device.clone(),
+            &memory_allocator,
             1024 * 512,
             BufferUsage {
-                transfer_destination: true,
+                transfer_dst: true,
                 storage_buffer: true,
-                ..BufferUsage::none()
+                ..BufferUsage::empty()
             },
-            [queue.family()],
+            [queue.queue_family_index()],
         )
         .unwrap();
 
         let texture_24bit_out_buffer = DeviceLocalBuffer::<[u32]>::array(
-            device.clone(),
+            &memory_allocator,
             1024 * 512,
             BufferUsage {
-                transfer_source: true,
+                transfer_src: true,
                 storage_buffer: true,
-                ..BufferUsage::none()
+                ..BufferUsage::empty()
             },
-            [queue.family()],
+            [queue.queue_family_index()],
         )
         .unwrap();
 
         let texture_24bit_desc_set = PersistentDescriptorSet::new(
+            &descriptor_set_allocator,
             c_pipeline.layout().set_layouts().get(0).unwrap().clone(),
             [
                 WriteDescriptorSet::buffer(0, texture_24bit_in_buffer.clone()),
@@ -252,7 +264,13 @@ impl FrontBlit {
         )
         .unwrap();
 
-        let (vertex_buffer, immutable_buffer_future) = ImmutableBuffer::from_iter(
+        let vertex_buffer = CpuAccessibleBuffer::from_iter(
+            &memory_allocator,
+            BufferUsage {
+                vertex_buffer: true,
+                ..BufferUsage::empty()
+            },
+            false,
             [
                 Vertex {
                     position: [-1.0, -1.0],
@@ -267,27 +285,24 @@ impl FrontBlit {
                     position: [1.0, 1.0],
                 },
             ],
-            BufferUsage::all(),
-            queue.clone(),
         )
         .unwrap();
 
-        (
-            Self {
-                device,
-                queue,
-                texture_image: source_image,
-                texture_24bit_image,
-                texture_24bit_in_buffer,
-                texture_24bit_out_buffer,
-                texture_24bit_desc_set,
-                render_pass,
-                g_pipeline,
-                c_pipeline,
-                vertex_buffer,
-            },
-            immutable_buffer_future,
-        )
+        Self {
+            device,
+            queue,
+            command_buffer_allocator,
+            descriptor_set_allocator,
+            texture_image: source_image,
+            texture_24bit_image,
+            texture_24bit_in_buffer,
+            texture_24bit_out_buffer,
+            texture_24bit_desc_set,
+            render_pass,
+            g_pipeline,
+            c_pipeline,
+            vertex_buffer,
+        }
     }
 
     pub fn blit<D, IF>(
@@ -297,9 +312,9 @@ impl FrontBlit {
         size: [u32; 2],
         is_24bit_color_depth: bool,
         in_future: IF,
-    ) -> CommandBufferExecFuture<IF, PrimaryAutoCommandBuffer>
+    ) -> CommandBufferExecFuture<IF>
     where
-        D: ImageAccess + 'static,
+        D: ImageAccess + std::fmt::Debug + 'static,
         IF: GpuFuture,
     {
         let [width, height] = dest_image.dimensions().width_height();
@@ -308,18 +323,18 @@ impl FrontBlit {
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
-                self.device.clone(),
-                self.queue.family(),
+                &self.command_buffer_allocator,
+                self.queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
             .unwrap();
 
         if is_24bit_color_depth {
             builder
-                .copy_image_to_buffer(
+                .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
                     self.texture_image.clone(),
                     self.texture_24bit_in_buffer.clone(),
-                )
+                ))
                 .unwrap()
                 .bind_pipeline_compute(self.c_pipeline.clone())
                 .bind_descriptor_sets(
@@ -334,10 +349,10 @@ impl FrontBlit {
                     1,
                 ])
                 .unwrap()
-                .copy_buffer_to_image(
+                .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
                     self.texture_24bit_out_buffer.clone(),
                     self.texture_24bit_image.clone(),
-                )
+                ))
                 .unwrap();
 
             source_image = self.texture_24bit_image.clone();
@@ -371,6 +386,7 @@ impl FrontBlit {
         .unwrap();
 
         let set = PersistentDescriptorSet::new(
+            &self.descriptor_set_allocator,
             layout.clone(),
             [WriteDescriptorSet::image_view_sampler(
                 0,
@@ -391,7 +407,13 @@ impl FrontBlit {
         let push_constants = vs::ty::PushConstantData { topleft, size };
 
         builder
-            .begin_render_pass(framebuffer, SubpassContents::Inline, [ClearValue::None])
+            .begin_render_pass(
+                RenderPassBeginInfo {
+                    clear_values: vec![None],
+                    ..RenderPassBeginInfo::framebuffer(framebuffer)
+                },
+                SubpassContents::Inline,
+            )
             .unwrap()
             .set_viewport(
                 0,

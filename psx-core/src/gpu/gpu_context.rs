@@ -2,20 +2,25 @@ use bytemuck::{Pod, Zeroable};
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::Sender;
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, CpuBufferPool};
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
-    SubpassContents,
+    AutoCommandBufferBuilder, BufferImageCopy, ClearColorImageInfo, CommandBufferInheritanceInfo,
+    CommandBufferUsage, CopyBufferToImageInfo, CopyImageInfo, CopyImageToBufferInfo, ImageCopy,
+    PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassContents,
 };
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::device::{Device, Queue};
-use vulkano::format::{ClearValue, Format};
+use vulkano::format::Format;
 use vulkano::image::view::{ImageView, ImageViewCreateInfo};
-use vulkano::image::{ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage};
+use vulkano::image::{ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage};
+use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::pipeline::graphics::color_blend::{
     AttachmentBlend, BlendFactor, BlendOp, ColorBlendAttachmentState, ColorBlendState,
     ColorComponents,
 };
 use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
+use vulkano::pipeline::graphics::render_pass::PipelineRenderPassType::BeginRenderPass;
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint, StateMode};
@@ -35,7 +40,12 @@ use std::sync::Arc;
 mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "src/gpu/shaders/vertex.glsl"
+        path: "src/gpu/shaders/vertex.glsl",
+        types_meta: {
+            use bytemuck::{Pod, Zeroable};
+
+            #[derive(Clone, Copy, Zeroable, Pod)]
+        },
     }
 }
 
@@ -266,6 +276,10 @@ pub struct GpuContext {
 
     pub(super) device: Arc<Device>,
     queue: Arc<Queue>,
+
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    command_buffer_allocator: StandardCommandBufferAllocator,
+
     render_image: Arc<StorageImage>,
     render_image_back_image: Arc<StorageImage>,
 
@@ -294,8 +308,13 @@ impl GpuContext {
         gpu_read_sender: Sender<u32>,
         gpu_front_image_sender: Sender<Arc<StorageImage>>,
     ) -> Self {
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone());
+        let command_buffer_allocator =
+            StandardCommandBufferAllocator::new(device.clone(), Default::default());
+
         let render_image = StorageImage::with_usage(
-            device.clone(),
+            &memory_allocator,
             ImageDimensions::Dim2d {
                 width: 1024,
                 height: 512,
@@ -303,19 +322,19 @@ impl GpuContext {
             },
             Format::A1R5G5B5_UNORM_PACK16,
             ImageUsage {
-                transfer_source: true,
-                transfer_destination: true,
+                transfer_src: true,
+                transfer_dst: true,
                 color_attachment: true,
                 sampled: true,
-                ..ImageUsage::none()
+                ..ImageUsage::empty()
             },
-            ImageCreateFlags::none(),
-            [queue.family()],
+            ImageCreateFlags::empty(),
+            [queue.queue_family_index()],
         )
         .unwrap();
 
         let render_image_back_image = StorageImage::with_usage(
-            device.clone(),
+            &memory_allocator,
             ImageDimensions::Dim2d {
                 width: 1024,
                 height: 512,
@@ -323,28 +342,25 @@ impl GpuContext {
             },
             Format::A1R5G5B5_UNORM_PACK16,
             ImageUsage {
-                transfer_destination: true,
+                transfer_dst: true,
                 sampled: true,
-                ..ImageUsage::none()
+                ..ImageUsage::empty()
             },
-            ImageCreateFlags::none(),
-            [queue.family()],
+            ImageCreateFlags::empty(),
+            [queue.queue_family_index()],
         )
         .unwrap();
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
-                device.clone(),
-                queue.family(),
+                &command_buffer_allocator,
+                queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
             .unwrap();
 
         builder
-            .clear_color_image(
-                render_image.clone(),
-                ClearValue::Float([0.0, 0.0, 0.0, 0.0]),
-            )
+            .clear_color_image(ClearColorImageInfo::image(render_image.clone()))
             .unwrap();
         // add command to clear the render image, and keep the future
         // for stacking later
@@ -439,6 +455,7 @@ impl GpuContext {
         .unwrap();
 
         let descriptor_set = PersistentDescriptorSet::new(
+            &descriptor_set_allocator,
             layout.clone(),
             [WriteDescriptorSet::image_view_sampler(
                 0,
@@ -456,16 +473,15 @@ impl GpuContext {
         )
         .unwrap();
 
-        let vertex_buffer_pool = CpuBufferPool::vertex_buffer(device.clone());
+        let vertex_buffer_pool = CpuBufferPool::vertex_buffer(memory_allocator.clone());
 
-        let (front_blit, front_blit_init_future) =
-            FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
+        let front_blit = FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
 
-        let gpu_future = Some(image_clear_future.join(front_blit_init_future).boxed());
+        let gpu_future = Some(image_clear_future.boxed());
 
         let command_builder = AutoCommandBufferBuilder::primary(
-            device.clone(),
-            queue.family(),
+            &command_buffer_allocator,
+            queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
@@ -494,6 +510,10 @@ impl GpuContext {
             display_vertical_range: (0, 0),
             device,
             queue,
+
+            memory_allocator,
+            command_buffer_allocator,
+
             render_image,
             render_image_framebuffer,
 
@@ -554,8 +574,11 @@ impl GpuContext {
         let height = block_range.1.len() as u32;
 
         let buffer = CpuAccessibleBuffer::from_iter(
-            self.device.clone(),
-            BufferUsage::transfer_source(),
+            &self.memory_allocator,
+            BufferUsage {
+                transfer_src: true,
+                ..BufferUsage::empty()
+            },
             false,
             block.iter().cloned(),
         )
@@ -565,19 +588,22 @@ impl GpuContext {
         let overflow_y = top + height > 512;
         if overflow_x || overflow_y {
             let stage_image = StorageImage::new(
-                self.device.clone(),
+                &self.memory_allocator,
                 ImageDimensions::Dim2d {
                     width,
                     height,
                     array_layers: 1,
                 },
                 Format::A1R5G5B5_UNORM_PACK16,
-                Some(self.queue.family()),
+                Some(self.queue.queue_family_index()),
             )
             .unwrap();
 
             self.command_builder
-                .copy_buffer_to_image(buffer, stage_image.clone())
+                .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
+                    buffer,
+                    stage_image.clone(),
+                ))
                 .unwrap();
 
             // if we are not overflowing in a direction, just keep the old value
@@ -588,83 +614,80 @@ impl GpuContext {
 
             // copy the not overflowing content
             self.command_builder
-                .copy_image(
-                    stage_image.clone(),
-                    [0, 0, 0],
-                    0,
-                    0,
-                    self.render_image.clone(),
-                    [left as i32, top as i32, 0],
-                    0,
-                    0,
-                    [not_overflowing_width, not_overflowing_height, 1],
-                    1,
-                )
+                .copy_image(CopyImageInfo {
+                    regions: [ImageCopy {
+                        src_subresource: stage_image.subresource_layers(),
+                        src_offset: [0, 0, 0],
+                        dst_subresource: self.render_image.subresource_layers(),
+                        dst_offset: [left, top, 0],
+                        extent: [not_overflowing_width, not_overflowing_height, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyImageInfo::images(stage_image.clone(), self.render_image.clone())
+                })
                 .unwrap();
 
             if overflow_x {
                 self.command_builder
-                    .copy_image(
-                        stage_image.clone(),
-                        [not_overflowing_width as i32, 0, 0],
-                        0,
-                        0,
-                        self.render_image.clone(),
-                        [0, top as i32, 0],
-                        0,
-                        0,
-                        [remaining_width, not_overflowing_height, 1],
-                        1,
-                    )
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: stage_image.subresource_layers(),
+                            src_offset: [not_overflowing_width, 0, 0],
+                            dst_subresource: self.render_image.subresource_layers(),
+                            dst_offset: [0, top, 0],
+                            extent: [remaining_width, not_overflowing_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(stage_image.clone(), self.render_image.clone())
+                    })
                     .unwrap();
             }
             if overflow_y {
                 self.command_builder
-                    .copy_image(
-                        stage_image.clone(),
-                        [0, not_overflowing_height as i32, 0],
-                        0,
-                        0,
-                        self.render_image.clone(),
-                        [left as i32, 0, 0],
-                        0,
-                        0,
-                        [not_overflowing_width, remaining_height, 1],
-                        1,
-                    )
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: stage_image.subresource_layers(),
+                            src_offset: [0, not_overflowing_height, 0],
+                            dst_subresource: self.render_image.subresource_layers(),
+                            dst_offset: [left, 0, 0],
+                            extent: [not_overflowing_width, remaining_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(stage_image.clone(), self.render_image.clone())
+                    })
                     .unwrap();
             }
             if overflow_x && overflow_y {
                 self.command_builder
-                    .copy_image(
-                        stage_image.clone(),
-                        [
-                            not_overflowing_width as i32,
-                            not_overflowing_height as i32,
-                            0,
-                        ],
-                        0,
-                        0,
-                        self.render_image.clone(),
-                        [0, 0, 0],
-                        0,
-                        0,
-                        [remaining_width, remaining_height, 1],
-                        1,
-                    )
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: stage_image.subresource_layers(),
+                            src_offset: [not_overflowing_width, not_overflowing_height, 0],
+                            dst_subresource: self.render_image.subresource_layers(),
+                            dst_offset: [0, 0, 0],
+                            extent: [remaining_width, remaining_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(stage_image, self.render_image.clone())
+                    })
                     .unwrap();
             }
         } else {
             self.command_builder
-                .copy_buffer_to_image_dimensions(
-                    buffer.clone(),
-                    self.render_image.clone(),
-                    [left, top, 0],
-                    [width, height, 1],
-                    0,
-                    1,
-                    0,
-                )
+                .copy_buffer_to_image(CopyBufferToImageInfo {
+                    regions: [BufferImageCopy {
+                        image_subresource: self.render_image.subresource_layers(),
+                        image_offset: [left, top, 0],
+                        image_extent: [width, height, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyBufferToImageInfo::buffer_image(buffer, self.render_image.clone())
+                })
                 .unwrap();
         }
 
@@ -685,15 +708,18 @@ impl GpuContext {
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
-                self.device.clone(),
-                self.queue.family(),
+                &self.command_buffer_allocator,
+                self.queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
             .unwrap();
 
         let buffer = CpuAccessibleBuffer::from_iter(
-            self.device.clone(),
-            BufferUsage::transfer_destination(),
+            &self.memory_allocator,
+            BufferUsage {
+                transfer_dst: true,
+                ..BufferUsage::empty()
+            },
             false,
             (0..width * height).map(|_| 0u16),
         )
@@ -703,14 +729,14 @@ impl GpuContext {
         let overflow_y = top + height > 512;
         if overflow_x || overflow_y {
             let stage_image = StorageImage::new(
-                self.device.clone(),
+                &self.memory_allocator,
                 ImageDimensions::Dim2d {
                     width,
                     height,
                     array_layers: 1,
                 },
                 Format::A1R5G5B5_UNORM_PACK16,
-                Some(self.queue.family()),
+                Some(self.queue.queue_family_index()),
             )
             .unwrap();
 
@@ -722,87 +748,87 @@ impl GpuContext {
 
             // copy the not overflowing content
             builder
-                .copy_image(
-                    self.render_image.clone(),
-                    [left as i32, top as i32, 0],
-                    0,
-                    0,
-                    stage_image.clone(),
-                    [0, 0, 0],
-                    0,
-                    0,
-                    [not_overflowing_width, not_overflowing_height, 1],
-                    1,
-                )
+                .copy_image(CopyImageInfo {
+                    regions: [ImageCopy {
+                        src_subresource: self.render_image.subresource_layers(),
+                        src_offset: [left, top, 0],
+                        dst_subresource: stage_image.subresource_layers(),
+                        dst_offset: [0, 0, 0],
+                        extent: [not_overflowing_width, not_overflowing_height, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyImageInfo::images(self.render_image.clone(), stage_image.clone())
+                })
                 .unwrap();
 
             if overflow_x {
                 builder
-                    .copy_image(
-                        self.render_image.clone(),
-                        [0, top as i32, 0],
-                        0,
-                        0,
-                        stage_image.clone(),
-                        [not_overflowing_width as i32, 0, 0],
-                        0,
-                        0,
-                        [remaining_width, not_overflowing_height, 1],
-                        1,
-                    )
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: self.render_image.subresource_layers(),
+                            src_offset: [0, top, 0],
+                            dst_subresource: stage_image.subresource_layers(),
+                            dst_offset: [not_overflowing_width, 0, 0],
+                            extent: [remaining_width, not_overflowing_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(self.render_image.clone(), stage_image.clone())
+                    })
                     .unwrap();
             }
             if overflow_y {
                 builder
-                    .copy_image(
-                        self.render_image.clone(),
-                        [left as i32, 0, 0],
-                        0,
-                        0,
-                        stage_image.clone(),
-                        [0, not_overflowing_height as i32, 0],
-                        0,
-                        0,
-                        [not_overflowing_width, remaining_height, 1],
-                        1,
-                    )
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: self.render_image.subresource_layers(),
+                            src_offset: [left, 0, 0],
+                            dst_subresource: stage_image.subresource_layers(),
+                            dst_offset: [0, not_overflowing_height, 0],
+                            extent: [not_overflowing_width, remaining_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(self.render_image.clone(), stage_image.clone())
+                    })
                     .unwrap();
             }
             if overflow_x && overflow_y {
                 builder
-                    .copy_image(
-                        self.render_image.clone(),
-                        [0, 0, 0],
-                        0,
-                        0,
-                        stage_image.clone(),
-                        [
-                            not_overflowing_width as i32,
-                            not_overflowing_height as i32,
-                            0,
-                        ],
-                        0,
-                        0,
-                        [remaining_width, remaining_height, 1],
-                        1,
-                    )
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: self.render_image.subresource_layers(),
+                            src_offset: [0, 0, 0],
+                            dst_subresource: stage_image.subresource_layers(),
+                            dst_offset: [not_overflowing_width, not_overflowing_height, 0],
+                            extent: [remaining_width, remaining_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(self.render_image.clone(), stage_image.clone())
+                    })
                     .unwrap();
             }
 
             builder
-                .copy_image_to_buffer(stage_image, buffer.clone())
+                .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
+                    stage_image,
+                    buffer.clone(),
+                ))
                 .unwrap();
         } else {
             builder
-                .copy_image_to_buffer_dimensions(
-                    self.render_image.clone(),
-                    buffer.clone(),
-                    [left, top, 0],
-                    [width, height, 1],
-                    0,
-                    1,
-                    0,
-                )
+                .copy_image_to_buffer(CopyImageToBufferInfo {
+                    regions: [BufferImageCopy {
+                        image_subresource: self.render_image.subresource_layers(),
+                        image_offset: [left, top, 0],
+                        image_extent: [width, height, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyImageToBufferInfo::image_buffer(self.render_image.clone(), buffer.clone())
+                })
                 .unwrap();
         }
 
@@ -849,23 +875,27 @@ impl GpuContext {
 
         // Creates buffer of the desired color, then clear it
         let buffer = CpuAccessibleBuffer::from_iter(
-            self.device.clone(),
-            BufferUsage::transfer_source(),
+            &self.memory_allocator,
+            BufferUsage {
+                transfer_src: true,
+                ..BufferUsage::empty()
+            },
             false,
             (0..size.0 * size.1).map(|_| u16_color),
         )
         .unwrap();
 
         self.command_builder
-            .copy_buffer_to_image_dimensions(
-                buffer,
-                self.render_image.clone(),
-                [top_left.0, top_left.1, 0],
-                [width, height, 1],
-                0,
-                1,
-                0,
-            )
+            .copy_buffer_to_image(CopyBufferToImageInfo {
+                regions: [BufferImageCopy {
+                    image_subresource: self.render_image.subresource_layers(),
+                    image_offset: [top_left.0, top_left.1, 0],
+                    image_extent: [width, height, 1],
+                    ..Default::default()
+                }]
+                .into(),
+                ..CopyBufferToImageInfo::buffer_image(buffer, self.render_image.clone())
+            })
             .unwrap();
         self.increment_command_builder_commands_and_flush();
     }
@@ -933,8 +963,8 @@ impl GpuContext {
 
     fn new_command_buffer_builder(&mut self) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
         let mut builder = AutoCommandBufferBuilder::primary(
-            self.device.clone(),
-            self.queue.family(),
+            &self.command_buffer_allocator,
+            self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
@@ -944,18 +974,10 @@ impl GpuContext {
         //       not sure, if there is a bug with the conflict checker or not, but
         //       for now, we add this command in the beginning before binding the image as texture.
         builder
-            .copy_image(
+            .copy_image(CopyImageInfo::images(
                 self.render_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
                 self.render_image_back_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                [1024, 512, 1],
-                1,
-            )
+            ))
             .unwrap();
 
         builder
@@ -964,18 +986,10 @@ impl GpuContext {
     fn update_back_image(&mut self) {
         // copy to the back buffer
         self.command_builder
-            .copy_image(
+            .copy_image(CopyImageInfo::images(
                 self.render_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
                 self.render_image_back_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                [1024, 512, 1],
-                1,
-            )
+            ))
             .unwrap();
     }
 
@@ -1025,7 +1039,7 @@ impl GpuContext {
         // we create a "cloned iter" here so that we don't clone the vector
         let vertex_buffer = self
             .vertex_buffer_pool
-            .chunk(self.buffered_draw_vertices.iter().cloned())
+            .from_iter(self.buffered_draw_vertices.iter().cloned())
             .unwrap();
 
         let pipelines_set = match current_state.draw_type {
@@ -1043,11 +1057,19 @@ impl GpuContext {
             drawing_size: [current_state.width, current_state.height],
         };
 
-        let mut secondary_buffer = AutoCommandBufferBuilder::secondary_graphics(
-            self.device.clone(),
-            self.queue.family(),
+        let subpass = match pipeline.render_pass() {
+            BeginRenderPass(subpass) => subpass.clone(),
+            _ => unreachable!(),
+        };
+
+        let mut secondary_buffer = AutoCommandBufferBuilder::secondary(
+            &self.command_buffer_allocator,
+            self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
-            pipeline.subpass().clone(),
+            CommandBufferInheritanceInfo {
+                render_pass: Some(subpass.into()),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -1074,9 +1096,11 @@ impl GpuContext {
 
         self.command_builder
             .begin_render_pass(
-                self.render_image_framebuffer.clone(),
+                RenderPassBeginInfo {
+                    clear_values: vec![None],
+                    ..RenderPassBeginInfo::framebuffer(self.render_image_framebuffer.clone())
+                },
                 SubpassContents::SecondaryCommandBuffers,
-                [ClearValue::None],
             )
             .unwrap()
             .execute_commands(secondary_buffer.build().unwrap())
@@ -1249,7 +1273,7 @@ impl GpuContext {
         };
 
         let front_image = StorageImage::with_usage(
-            self.device.clone(),
+            &self.memory_allocator,
             ImageDimensions::Dim2d {
                 width: size[0],
                 height: size[1],
@@ -1257,12 +1281,12 @@ impl GpuContext {
             },
             Format::B8G8R8A8_UNORM,
             ImageUsage {
-                transfer_source: true,
+                transfer_src: true,
                 color_attachment: true,
-                ..ImageUsage::none()
+                ..ImageUsage::empty()
             },
-            ImageCreateFlags::none(),
-            Some(self.queue.family()),
+            ImageCreateFlags::empty(),
+            Some(self.queue.queue_family_index()),
         )
         .unwrap();
 

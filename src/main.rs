@@ -8,16 +8,17 @@ use psx_core::{DigitalControllerKey, Psx, PsxConfig};
 use clap::Parser;
 use vulkano::{
     device::{
-        physical::{PhysicalDevice, PhysicalDeviceType},
-        Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo,
+        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, Queue,
+        QueueCreateInfo, QueueFlags,
     },
     image::{ImageUsage, SwapchainImage},
     instance::{Instance, InstanceCreateInfo, InstanceExtensions},
     swapchain::{
         self, AcquireError, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreateInfo,
-        SwapchainCreationError,
+        SwapchainCreationError, SwapchainPresentInfo,
     },
     sync::{self, GpuFuture},
+    VulkanLibrary,
 };
 use vulkano_win::VkSurfaceBuild;
 use winit::{
@@ -28,9 +29,9 @@ use winit::{
 
 enum DisplayType {
     Windowed {
-        surface: Arc<Surface<Window>>,
-        swapchain: Arc<Swapchain<Window>>,
-        images: Vec<Arc<SwapchainImage<Window>>>,
+        surface: Arc<Surface>,
+        swapchain: Arc<Swapchain>,
+        images: Vec<Arc<SwapchainImage>>,
         future: Option<Box<dyn GpuFuture>>,
         full_vram_display: bool,
         last_frame_time: Instant,
@@ -46,12 +47,16 @@ struct VkDisplay {
 
 impl VkDisplay {
     fn windowed(event_loop: &EventLoop<()>, full_vram_display: bool) -> Self {
-        let required_extensions = vulkano_win::required_extensions();
+        let vulkan_library = VulkanLibrary::new().unwrap();
+        let required_extensions = vulkano_win::required_extensions(&vulkan_library);
 
-        let instance = Instance::new(InstanceCreateInfo {
-            enabled_extensions: required_extensions,
-            ..Default::default()
-        })
+        let instance = Instance::new(
+            vulkan_library,
+            InstanceCreateInfo {
+                enabled_extensions: required_extensions,
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let surface = WindowBuilder::new()
@@ -60,17 +65,24 @@ impl VkDisplay {
 
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
-            ..DeviceExtensions::none()
+            ..DeviceExtensions::empty()
         };
 
-        let (physical_device, queue_family) = PhysicalDevice::enumerate(&instance)
-            .filter(|&p| p.supported_extensions().is_superset_of(&device_extensions))
+        let (physical_device, queue_family_index) = instance
+            .enumerate_physical_devices()
+            .unwrap()
+            .filter(|p| p.supported_extensions().contains(&device_extensions))
             .filter_map(|p| {
-                p.queue_families()
-                    .find(|&q| {
-                        q.supports_graphics() && q.supports_surface(&surface).unwrap_or(false)
+                p.queue_family_properties()
+                    .iter()
+                    .enumerate()
+                    .position(|(i, q)| {
+                        q.queue_flags.intersects(&QueueFlags {
+                            graphics: true,
+                            ..QueueFlags::empty()
+                        }) && p.surface_support(i as u32, &surface).unwrap_or(false)
                     })
-                    .map(|q| (p, q))
+                    .map(|i| (p, i as u32))
             })
             .min_by_key(|(p, _)| match p.properties().device_type {
                 PhysicalDeviceType::DiscreteGpu => 0,
@@ -78,6 +90,7 @@ impl VkDisplay {
                 PhysicalDeviceType::VirtualGpu => 2,
                 PhysicalDeviceType::Cpu => 3,
                 PhysicalDeviceType::Other => 4,
+                _ => 5,
             })
             .unwrap();
 
@@ -90,10 +103,11 @@ impl VkDisplay {
         let (device, mut queues) = Device::new(
             physical_device,
             DeviceCreateInfo {
-                enabled_extensions: physical_device
-                    .required_extensions()
-                    .union(&device_extensions),
-                queue_create_infos: vec![QueueCreateInfo::family(queue_family)],
+                enabled_extensions: device_extensions,
+                queue_create_infos: vec![QueueCreateInfo {
+                    queue_family_index,
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         )
@@ -102,18 +116,21 @@ impl VkDisplay {
         let queue = queues.next().unwrap();
 
         let (swapchain, images) = {
-            let caps = physical_device
+            let caps = device
+                .physical_device()
                 .surface_capabilities(&surface, Default::default())
                 .unwrap();
 
             let format = Some(
-                physical_device
+                device
+                    .physical_device()
                     .surface_formats(&surface, Default::default())
                     .unwrap()[0]
                     .0,
             );
+            let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
 
-            let dimensions: [u32; 2] = surface.window().inner_size().into();
+            let dimensions: [u32; 2] = window.inner_size().into();
 
             Swapchain::new(
                 device.clone(),
@@ -123,8 +140,8 @@ impl VkDisplay {
                     image_format: format,
                     image_extent: dimensions,
                     image_usage: ImageUsage {
-                        transfer_destination: true,
-                        ..ImageUsage::none()
+                        transfer_dst: true,
+                        ..ImageUsage::empty()
                     },
                     composite_alpha: CompositeAlpha::Opaque,
                     present_mode: PresentMode::Immediate,
@@ -149,17 +166,30 @@ impl VkDisplay {
     }
 
     fn headless() -> Self {
-        let instance = Instance::new(InstanceCreateInfo {
-            enabled_extensions: InstanceExtensions::none(),
-            ..Default::default()
-        })
+        let vulkan_library = VulkanLibrary::new().unwrap();
+
+        let instance = Instance::new(
+            vulkan_library,
+            InstanceCreateInfo {
+                enabled_extensions: InstanceExtensions::empty(),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-        let (physical_device, queue_family) = PhysicalDevice::enumerate(&instance)
+        let (physical_device, queue_family_index) = instance
+            .enumerate_physical_devices()
+            .unwrap()
             .filter_map(|p| {
-                p.queue_families()
-                    .find(|&q| q.supports_graphics())
-                    .map(|q| (p, q))
+                p.queue_family_properties()
+                    .iter()
+                    .position(|q| {
+                        q.queue_flags.intersects(&QueueFlags {
+                            graphics: true,
+                            ..QueueFlags::empty()
+                        })
+                    })
+                    .map(|i| (p, i as u32))
             })
             .min_by_key(|(p, _)| match p.properties().device_type {
                 PhysicalDeviceType::DiscreteGpu => 0,
@@ -167,6 +197,7 @@ impl VkDisplay {
                 PhysicalDeviceType::VirtualGpu => 2,
                 PhysicalDeviceType::Cpu => 3,
                 PhysicalDeviceType::Other => 4,
+                _ => 5,
             })
             .unwrap();
 
@@ -179,8 +210,10 @@ impl VkDisplay {
         let (device, mut queues) = Device::new(
             physical_device,
             DeviceCreateInfo {
-                enabled_extensions: *physical_device.required_extensions(),
-                queue_create_infos: vec![QueueCreateInfo::family(queue_family)],
+                queue_create_infos: vec![QueueCreateInfo {
+                    queue_family_index,
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         )
@@ -203,7 +236,8 @@ impl VkDisplay {
                 images,
                 ..
             } => {
-                let dimensions: [u32; 2] = surface.window().inner_size().into();
+                let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
+                let dimensions: [u32; 2] = window.inner_size().into();
                 let (new_swapchain, new_images) = match swapchain.recreate(SwapchainCreateInfo {
                     image_extent: dimensions,
                     ..swapchain.create_info()
@@ -233,7 +267,8 @@ impl VkDisplay {
                 let mut current_future = future.take().unwrap();
                 current_future.cleanup_finished();
 
-                surface.window().set_title(&format!(
+                let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
+                window.set_title(&format!(
                     "PSX - FPS: {}",
                     (1. / last_frame_time.elapsed().as_secs_f32()).round()
                 ));
@@ -255,7 +290,7 @@ impl VkDisplay {
                     //recreate_swapchain = true;
                 }
 
-                let current_image = images[image_num].clone();
+                let current_image = images[image_num as usize].clone();
 
                 let current_future = psx.blit_to_front(
                     current_image,
@@ -265,7 +300,13 @@ impl VkDisplay {
 
                 *future = Some(
                     current_future
-                        .then_swapchain_present(self.queue.clone(), swapchain.clone(), image_num)
+                        .then_swapchain_present(
+                            self.queue.clone(),
+                            SwapchainPresentInfo::swapchain_image_index(
+                                swapchain.clone(),
+                                image_num,
+                            ),
+                        )
                         .then_signal_fence_and_flush()
                         .unwrap()
                         .boxed(),
