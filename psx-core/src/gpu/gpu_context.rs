@@ -282,6 +282,7 @@ pub struct GpuContext {
 
     render_image: Arc<StorageImage>,
     render_image_back_image: Arc<StorageImage>,
+    should_update_back_image: bool,
 
     render_image_framebuffer: Arc<Framebuffer>,
     polygon_pipelines: Vec<Arc<GraphicsPipeline>>,
@@ -520,6 +521,7 @@ impl GpuContext {
             render_image_framebuffer,
 
             render_image_back_image,
+            should_update_back_image: false,
 
             polygon_pipelines,
             polyline_pipelines,
@@ -691,7 +693,7 @@ impl GpuContext {
         self.increment_command_builder_commands_and_flush();
 
         // update back image when loading textures
-        self.update_back_image();
+        self.schedule_back_image_update();
     }
 
     pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
@@ -980,14 +982,21 @@ impl GpuContext {
         builder
     }
 
-    fn update_back_image(&mut self) {
+    fn schedule_back_image_update(&mut self) {
+        self.should_update_back_image = true;
+    }
+
+    fn update_back_image_if_needed(&mut self) {
         // copy to the back buffer
-        self.command_builder
-            .copy_image(CopyImageInfo::images(
-                self.render_image.clone(),
-                self.render_image_back_image.clone(),
-            ))
-            .unwrap();
+        if self.should_update_back_image {
+            self.should_update_back_image = false;
+            self.command_builder
+                .copy_image(CopyImageInfo::images(
+                    self.render_image.clone(),
+                    self.render_image_back_image.clone(),
+                ))
+                .unwrap();
+        }
     }
 
     fn flush_command_builder(&mut self) {
@@ -1173,7 +1182,7 @@ impl GpuContext {
                 // flush previous batch because semi_transparent mode 3 cannot be grouped
                 // with other draws, since it relies on updated back image
                 self.check_and_flush_buffered_draws(None);
-                self.update_back_image();
+                self.schedule_back_image_update();
                 semi_transparent_mode_3 = true;
             }
         } else {
@@ -1181,6 +1190,11 @@ impl GpuContext {
             // mode 3 has no alpha blending, and semi_transparency is handled entirely by
             // the shader.
             semi_transparency_mode = 3;
+        }
+
+        // update back image only if we are going to use it
+        if textured || semi_transparent_mode_3 {
+            self.update_back_image_if_needed();
         }
 
         // flush previous draws if this is a different state
