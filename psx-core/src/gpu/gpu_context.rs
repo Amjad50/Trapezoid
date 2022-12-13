@@ -35,7 +35,7 @@ use super::front_blit::FrontBlit;
 use super::GpuStat;
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 mod vs {
     vulkano_shaders::shader! {
@@ -249,11 +249,8 @@ struct BufferedDrawsState {
     drawing_offset: (i32, i32),
 }
 
-pub struct GpuContext {
-    pub(super) gpu_stat: Arc<AtomicCell<GpuStat>>,
-    pub(super) gpu_front_image_sender: Sender<Arc<StorageImage>>,
-    gpu_read_sender: Sender<u32>,
-
+#[derive(Copy, Clone)]
+pub struct GpuSharedState {
     pub(super) allow_texture_disable: bool,
     pub(super) textured_rect_flip: (bool, bool),
 
@@ -273,6 +270,14 @@ pub struct GpuContext {
     pub(super) cached_gp0_e3: u32,
     pub(super) cached_gp0_e4: u32,
     pub(super) cached_gp0_e5: u32,
+}
+
+pub struct GpuContext {
+    pub(super) gpu_stat: Arc<AtomicCell<GpuStat>>,
+    pub(super) gpu_front_image_sender: Sender<Arc<StorageImage>>,
+    gpu_read_sender: Sender<u32>,
+
+    pub(super) shared_state: Arc<Mutex<GpuSharedState>>,
 
     pub(super) device: Arc<Device>,
     queue: Arc<Queue>,
@@ -307,6 +312,7 @@ impl GpuContext {
         device: Arc<Device>,
         queue: Arc<Queue>,
         gpu_stat: Arc<AtomicCell<GpuStat>>,
+        shared_state: Arc<Mutex<GpuSharedState>>,
         gpu_read_sender: Sender<u32>,
         gpu_front_image_sender: Sender<Arc<StorageImage>>,
     ) -> Self {
@@ -494,23 +500,7 @@ impl GpuContext {
             gpu_read_sender,
             gpu_front_image_sender,
 
-            allow_texture_disable: false,
-            textured_rect_flip: (false, false),
-
-            drawing_area_top_left: (0, 0),
-            drawing_area_bottom_right: (0, 0),
-            drawing_offset: (0, 0),
-            texture_window_mask: (0, 0),
-            texture_window_offset: (0, 0),
-
-            cached_gp0_e2: 0,
-            cached_gp0_e3: 0,
-            cached_gp0_e4: 0,
-            cached_gp0_e5: 0,
-
-            vram_display_area_start: (0, 0),
-            display_horizontal_range: (0, 0),
-            display_vertical_range: (0, 0),
+            shared_state,
             device,
             queue,
 
@@ -1145,17 +1135,21 @@ impl GpuContext {
         semi_transparent: bool,
     ) {
         let gpu_stat = self.read_gpu_stat();
+        let shared_state = self.shared_state.lock().unwrap();
 
-        let (drawing_left, drawing_top) = self.drawing_area_top_left;
-        let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
+        let (drawing_left, drawing_top) = shared_state.drawing_area_top_left;
+        let (drawing_right, drawing_bottom) = shared_state.drawing_area_bottom_right;
+        let drawing_offset = shared_state.drawing_offset;
+        let allow_texture_disable = shared_state.allow_texture_disable;
 
         let left = drawing_left;
         let top = drawing_top;
         let height = drawing_bottom + 1 - drawing_top;
         let width = drawing_right + 1 - drawing_left;
 
+        drop(shared_state);
         if textured {
-            if !self.allow_texture_disable {
+            if !allow_texture_disable {
                 texture_params.texture_disable = false;
             }
             self.update_gpu_stat_from_texture_params(&texture_params);
@@ -1201,7 +1195,7 @@ impl GpuContext {
         self.check_and_flush_buffered_draws(Some(BufferedDrawsState {
             semi_transparency_mode,
             draw_type,
-            drawing_offset: self.drawing_offset,
+            drawing_offset,
             left,
             top,
             width,
@@ -1265,6 +1259,7 @@ impl GpuContext {
 
     pub fn blit_to_front(&mut self, full_vram: bool) {
         let gpu_stat = self.read_gpu_stat();
+        let vram_display_area_start = self.shared_state.lock().unwrap().vram_display_area_start;
         self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 
@@ -1272,10 +1267,7 @@ impl GpuContext {
             ([0; 2], [1024, 512])
         } else {
             (
-                [
-                    self.vram_display_area_start.0,
-                    self.vram_display_area_start.1,
-                ],
+                [vram_display_area_start.0, vram_display_area_start.1],
                 [
                     gpu_stat.horizontal_resolution(),
                     gpu_stat.vertical_resolution(),

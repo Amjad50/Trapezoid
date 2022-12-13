@@ -12,7 +12,6 @@ pub enum Gp0CmdType {
     VramToVramBlit = 4,
     CpuToVramBlit = 5,
     VramToCpuBlit = 6,
-    Environment = 7,
     // the `cmd` is actually `0`, but only one can have only one which is zero
     FillVram = 8,
 }
@@ -33,7 +32,6 @@ pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
         4 => Box::new(VramToVramBlitCommand::new(data)),
         5 => Box::new(CpuToVramBlitCommand::new(data)),
         6 => Box::new(VramToCpuBlitCommand::new(data)),
-        7 => Box::new(EnvironmentCommand::new(data)),
         _ => unreachable!(),
     }
 }
@@ -347,7 +345,8 @@ impl Gp0Command for RectangleCommand {
             // to use and color mode
             self.texture_params
                 .tex_page_from_gpustat(ctx.read_gpu_stat().bits);
-            self.texture_params.set_texture_flip(ctx.textured_rect_flip);
+            self.texture_params
+                .set_texture_flip(ctx.shared_state.lock().unwrap().textured_rect_flip);
         }
 
         ctx.draw_polygon(
@@ -365,134 +364,6 @@ impl Gp0Command for RectangleCommand {
 
     fn cmd_type(&self) -> Gp0CmdType {
         Gp0CmdType::Rectangle
-    }
-}
-
-struct EnvironmentCommand(u32);
-
-impl Gp0Command for EnvironmentCommand {
-    fn new(data0: u32) -> Self
-    where
-        Self: Sized,
-    {
-        Self(data0)
-    }
-
-    fn add_param(&mut self, _param: u32) {
-        unreachable!()
-    }
-
-    fn exec_command(&mut self, ctx: &mut GpuContext) {
-        let data = self.0;
-        let cmd = data >> 24;
-        log::info!("gp0 command {:02X} data: {:08X}", cmd, data);
-        match cmd {
-            0xe1 => {
-                // Draw Mode setting
-
-                // 0-3   Texture page X Base   (N*64)
-                // 4     Texture page Y Base   (N*256)
-                // 5-6   Semi Transparency     (0=B/2+F/2, 1=B+F, 2=B-F, 3=B+F/4)
-                // 7-8   Texture page colors   (0=4bit, 1=8bit, 2=15bit, 3=Reserved)
-                // 9     Dither 24bit to 15bit (0=Off/strip LSBs, 1=Dither Enabled)
-                // 10    Drawing to display area (0=Prohibited, 1=Allowed)
-                // 11    Texture Disable (0=Normal, 1=Disable if GP1(09h).Bit0=1)   ;GPUSTAT.15
-                let stat_lower_11_bits = data & 0x7FF;
-                let stat_bit_15_texture_disable = (data >> 11) & 1 == 1;
-
-                let textured_rect_x_flip = (data >> 12) & 1 == 1;
-                let textured_rect_y_flip = (data >> 13) & 1 == 1;
-                ctx.textured_rect_flip = (textured_rect_x_flip, textured_rect_y_flip);
-
-                ctx.gpu_stat
-                    .fetch_update(|mut s| {
-                        s.bits &= !0x87FF;
-                        s.bits |= stat_lower_11_bits;
-                        if stat_bit_15_texture_disable && ctx.allow_texture_disable {
-                            s.bits |= 1 << 15;
-                        }
-                        Some(s)
-                    })
-                    .unwrap();
-            }
-            0xe2 => {
-                ctx.cached_gp0_e2 = data;
-
-                // Texture window settings
-                let mask_x = data & 0x1F;
-                let mask_y = (data >> 5) & 0x1F;
-                let offset_x = (data >> 10) & 0x1F;
-                let offset_y = (data >> 15) & 0x1F;
-
-                ctx.texture_window_mask = (mask_x, mask_y);
-                ctx.texture_window_offset = (offset_x, offset_y);
-
-                log::info!(
-                    "texture window mask = {:?}, offset = {:?}",
-                    ctx.texture_window_mask,
-                    ctx.texture_window_offset
-                );
-            }
-            0xe3 => {
-                ctx.cached_gp0_e3 = data;
-
-                // Set Drawing Area top left
-                let x = data & 0x3ff;
-                let y = (data >> 10) & 0x3ff;
-                ctx.drawing_area_top_left = (x, y);
-                log::info!("drawing area top left = {:?}", ctx.drawing_area_top_left,);
-            }
-            0xe4 => {
-                ctx.cached_gp0_e4 = data;
-
-                // Set Drawing Area bottom right
-                let x = data & 0x3ff;
-                let y = (data >> 10) & 0x3ff;
-                ctx.drawing_area_bottom_right = (x, y);
-                log::info!(
-                    "drawing area bottom right = {:?}",
-                    ctx.drawing_area_bottom_right,
-                );
-            }
-            0xe5 => {
-                ctx.cached_gp0_e5 = data;
-
-                // Set Drawing offset
-                // TODO: test the accuracy of the sign extension
-                let x = data & 0x7ff;
-                let sign_extend = 0xfffff800 * ((x >> 10) & 1);
-                let x = (x | sign_extend) as i32;
-                let y = (data >> 11) & 0x7ff;
-                let sign_extend = 0xfffff800 * ((y >> 10) & 1);
-                let y = (y | sign_extend) as i32;
-                ctx.drawing_offset = (x, y);
-                log::info!("drawing offset = {:?}", ctx.drawing_offset,);
-            }
-            0xe6 => {
-                // Mask Bit Setting
-
-                //  11    Set mask while drawing (0=TextureBit15, 1=ForceBit15=1)
-                //  12    Check mask before draw (0=Draw Always, 1=Draw if Bit15=0)
-                let stat_bits_11_12 = data & 3;
-
-                ctx.gpu_stat
-                    .fetch_update(|mut s| {
-                        s.bits &= !(3 << 11);
-                        s.bits |= stat_bits_11_12;
-                        Some(s)
-                    })
-                    .unwrap();
-            }
-            _ => todo!("gp0 environment command {:02X}", cmd),
-        }
-    }
-
-    fn still_need_params(&mut self) -> bool {
-        false
-    }
-
-    fn cmd_type(&self) -> Gp0CmdType {
-        Gp0CmdType::Environment
     }
 }
 
