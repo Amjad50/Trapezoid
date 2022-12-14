@@ -1,5 +1,4 @@
 use bytemuck::{Pod, Zeroable};
-use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::Sender;
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, CpuBufferPool};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
@@ -32,10 +31,10 @@ use vulkano::sampler::{
 use vulkano::sync::{self, GpuFuture};
 
 use super::front_blit::FrontBlit;
-use super::GpuStat;
+use super::GpuStateSnapshot;
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 mod vs {
     vulkano_shaders::shader! {
@@ -249,36 +248,9 @@ struct BufferedDrawsState {
     drawing_offset: (i32, i32),
 }
 
-pub struct GpuSharedState {
-    pub(super) gpu_stat: Arc<AtomicCell<GpuStat>>,
-
-    pub(super) allow_texture_disable: bool,
-    pub(super) textured_rect_flip: (bool, bool),
-
-    pub(super) drawing_area_top_left: (u32, u32),
-    pub(super) drawing_area_bottom_right: (u32, u32),
-    pub(super) drawing_offset: (i32, i32),
-    pub(super) texture_window_mask: (u32, u32),
-    pub(super) texture_window_offset: (u32, u32),
-
-    pub(super) vram_display_area_start: (u32, u32),
-    pub(super) display_horizontal_range: (u32, u32),
-    pub(super) display_vertical_range: (u32, u32),
-
-    // These are only used for handleing GP1(0x10) command, so instead of creating
-    // the values again from the individual parts, we just cache it
-    pub(super) cached_gp0_e2: u32,
-    pub(super) cached_gp0_e3: u32,
-    pub(super) cached_gp0_e4: u32,
-    pub(super) cached_gp0_e5: u32,
-}
-
 pub struct GpuContext {
-    pub(super) gpu_stat: Arc<AtomicCell<GpuStat>>,
     pub(super) gpu_front_image_sender: Sender<Arc<StorageImage>>,
     gpu_read_sender: Sender<u32>,
-
-    pub(super) shared_state: Arc<Mutex<GpuSharedState>>,
 
     pub(super) device: Arc<Device>,
     queue: Arc<Queue>,
@@ -312,8 +284,6 @@ impl GpuContext {
     pub(super) fn new(
         device: Arc<Device>,
         queue: Arc<Queue>,
-        gpu_stat: Arc<AtomicCell<GpuStat>>,
-        shared_state: Arc<Mutex<GpuSharedState>>,
         gpu_read_sender: Sender<u32>,
         gpu_front_image_sender: Sender<Arc<StorageImage>>,
     ) -> Self {
@@ -497,11 +467,9 @@ impl GpuContext {
         .unwrap();
 
         Self {
-            gpu_stat,
             gpu_read_sender,
             gpu_front_image_sender,
 
-            shared_state,
             device,
             queue,
 
@@ -530,10 +498,6 @@ impl GpuContext {
             command_builder,
             buffered_commands: 0,
         }
-    }
-
-    pub(super) fn read_gpu_stat(&self) -> GpuStat {
-        self.gpu_stat.load()
     }
 
     pub(super) fn send_to_gpu_read(&self, value: u32) {
@@ -1115,20 +1079,20 @@ impl GpuContext {
         textured: bool,
         texture_blending: bool,
         semi_transparent: bool,
+        state_snapshot: GpuStateSnapshot,
     ) {
-        let gpu_stat = self.read_gpu_stat();
-        let shared_state = self.shared_state.lock().unwrap();
+        let gpu_stat = state_snapshot.gpu_stat;
 
-        let (drawing_left, drawing_top) = shared_state.drawing_area_top_left;
-        let (drawing_right, drawing_bottom) = shared_state.drawing_area_bottom_right;
-        let drawing_offset = shared_state.drawing_offset;
+        let (drawing_left, drawing_top) = state_snapshot.drawing_area_top_left;
+        let (drawing_right, drawing_bottom) = state_snapshot.drawing_area_bottom_right;
+        let drawing_offset = state_snapshot.drawing_offset;
 
         let left = drawing_left;
         let top = drawing_top;
         let height = drawing_bottom + 1 - drawing_top;
         let width = drawing_right + 1 - drawing_left;
 
-        drop(shared_state);
+        drop(state_snapshot);
 
         let mut semi_transparency_mode = if textured {
             texture_params.semi_transparency_mode
@@ -1202,13 +1166,14 @@ impl GpuContext {
         }
     }
 
-    pub fn draw_polygon(
+    pub(super) fn draw_polygon(
         &mut self,
         vertices: &[DrawingVertex],
         texture_params: DrawingTextureParams,
         textured: bool,
         texture_blending: bool,
         semi_transparent: bool,
+        state_snapshot: GpuStateSnapshot,
     ) {
         self.draw(
             vertices,
@@ -1217,10 +1182,16 @@ impl GpuContext {
             textured,
             texture_blending,
             semi_transparent,
+            state_snapshot,
         );
     }
 
-    pub fn draw_polyline(&mut self, vertices: &[DrawingVertex], semi_transparent: bool) {
+    pub(super) fn draw_polyline(
+        &mut self,
+        vertices: &[DrawingVertex],
+        semi_transparent: bool,
+        state_snapshot: GpuStateSnapshot,
+    ) {
         // Textures are not supported for polylines
         self.draw(
             vertices,
@@ -1229,12 +1200,13 @@ impl GpuContext {
             false,
             false,
             semi_transparent,
+            state_snapshot,
         );
     }
 
-    pub fn blit_to_front(&mut self, full_vram: bool) {
-        let gpu_stat = self.read_gpu_stat();
-        let vram_display_area_start = self.shared_state.lock().unwrap().vram_display_area_start;
+    pub(super) fn blit_to_front(&mut self, full_vram: bool, state_snapshot: GpuStateSnapshot) {
+        let gpu_stat = state_snapshot.gpu_stat;
+        let vram_display_area_start = state_snapshot.vram_display_area_start;
         self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 

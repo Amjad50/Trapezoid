@@ -22,13 +22,9 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-use std::{
-    ops::Range,
-    sync::{Arc, Mutex},
-    thread::JoinHandle,
-};
+use std::{ops::Range, sync::Arc, thread::JoinHandle};
 
-use self::gpu_context::{DrawingTextureParams, DrawingVertex, GpuSharedState};
+use self::gpu_context::{DrawingTextureParams, DrawingVertex};
 
 bitflags::bitflags! {
     #[derive(Default)]
@@ -148,13 +144,43 @@ impl GpuStat {
     }
 }
 
+/// The state of the gpu at the execution of the command in the rendering thread
+/// Because the state can chanage after setting the command but before execution,
+/// we need to send the current state and keep it unmodified until the command is executed.
+#[derive(Clone)]
+struct GpuStateSnapshot {
+    gpu_stat: GpuStat,
+
+    allow_texture_disable: bool,
+    textured_rect_flip: (bool, bool),
+
+    drawing_area_top_left: (u32, u32),
+    drawing_area_bottom_right: (u32, u32),
+    drawing_offset: (i32, i32),
+    texture_window_mask: (u32, u32),
+    texture_window_offset: (u32, u32),
+
+    vram_display_area_start: (u32, u32),
+    display_horizontal_range: (u32, u32),
+    display_vertical_range: (u32, u32),
+
+    // These are only used for handleing GP1(0x10) command, so instead of creating
+    // the values again from the individual parts, we just cache it
+    cached_gp0_e2: u32,
+    cached_gp0_e3: u32,
+    cached_gp0_e4: u32,
+    cached_gp0_e5: u32,
+}
+
 enum BackendCommand {
     BlitFront {
         full_vram: bool,
+        state_snapshot: GpuStateSnapshot,
     },
     DrawPolyline {
         vertices: Vec<DrawingVertex>,
         semi_transparent: bool,
+        state_snapshot: GpuStateSnapshot,
     },
     DrawPolygon {
         vertices: Vec<DrawingVertex>,
@@ -162,6 +188,7 @@ enum BackendCommand {
         textured: bool,
         texture_blending: bool,
         semi_transparent: bool,
+        state_snapshot: GpuStateSnapshot,
     },
     WriteVramBlock {
         block_range: (Range<u32>, Range<u32>),
@@ -205,7 +232,7 @@ pub struct Gpu {
 
     // shared GPUSTAT
     gpu_stat: Arc<AtomicCell<GpuStat>>,
-    shared_state: Arc<Mutex<GpuSharedState>>,
+    state_snapshot: GpuStateSnapshot,
 
     scanline: u32,
     dot: u32,
@@ -225,8 +252,8 @@ impl Gpu {
             GpuStat::READY_FOR_CMD_RECV | GpuStat::READY_FOR_DMA_RECV,
         ));
 
-        let shared_state = Arc::new(Mutex::new(GpuSharedState {
-            gpu_stat: gpu_stat.clone(),
+        let state_snapshot = GpuStateSnapshot {
+            gpu_stat: gpu_stat.load(),
             allow_texture_disable: false,
             textured_rect_flip: (false, false),
 
@@ -244,13 +271,12 @@ impl Gpu {
             vram_display_area_start: (0, 0),
             display_horizontal_range: (0, 0),
             display_vertical_range: (0, 0),
-        }));
+        };
 
         let _gpu_backend_thread_handle = GpuBackend::start(
             device.clone(),
             queue.clone(),
             gpu_stat.clone(),
-            shared_state.clone(),
             gpu_read_sender.clone(),
             gpu_backend_receiver,
             gpu_front_image_sender,
@@ -275,7 +301,7 @@ impl Gpu {
             ),
 
             gpu_stat,
-            shared_state,
+            state_snapshot,
 
             scanline: 0,
             dot: 0,
@@ -387,8 +413,12 @@ impl Gpu {
         self.first_frame = false;
 
         // send command for next frame from now, so when we recv later, its mostly will be ready
+        self.state_snapshot.gpu_stat = self.gpu_stat.load();
         self.gpu_backend_sender
-            .send(BackendCommand::BlitFront { full_vram })
+            .send(BackendCommand::BlitFront {
+                full_vram,
+                state_snapshot: self.state_snapshot.clone(),
+            })
             .unwrap();
 
         if let Some(img) = self.current_front_image.as_ref() {
@@ -465,7 +495,9 @@ impl Gpu {
                         .unwrap();
 
                     log::info!("executing command {:?}", cmd.cmd_type());
-                    if let Some(backend_cmd) = cmd.exec_command(self.shared_state.clone()) {
+                    if let Some(backend_cmd) =
+                        cmd.exec_command(self.gpu_stat.clone(), &mut self.state_snapshot)
+                    {
                         self.gpu_backend_sender.send(backend_cmd).unwrap();
                     }
 
@@ -489,7 +521,9 @@ impl Gpu {
                     .unwrap();
             } else {
                 log::info!("executing command {:?}", cmd.cmd_type());
-                if let Some(backend_cmd) = cmd.exec_command(self.shared_state.clone()) {
+                if let Some(backend_cmd) =
+                    cmd.exec_command(self.gpu_stat.clone(), &mut self.state_snapshot)
+                {
                     self.gpu_backend_sender.send(backend_cmd).unwrap();
                 }
             }
@@ -501,7 +535,6 @@ impl Gpu {
     fn handle_gp1(&mut self, data: u32) {
         let cmd = data >> 24;
         log::trace!("gp1 command {:02X} data: {:08X}", cmd, data);
-        let mut shared_state = self.shared_state.lock().unwrap();
         match cmd {
             0x00 => {
                 // Reset Gpu
@@ -568,10 +601,10 @@ impl Gpu {
                 let x = data & 0x3ff;
                 let y = (data >> 10) & 0x1ff;
 
-                shared_state.vram_display_area_start = (x, y);
+                self.state_snapshot.vram_display_area_start = (x, y);
                 log::info!(
                     "vram display start area {:?}",
-                    shared_state.vram_display_area_start
+                    self.state_snapshot.vram_display_area_start
                 );
             }
             0x06 => {
@@ -579,10 +612,10 @@ impl Gpu {
                 let x1 = data & 0xfff;
                 let x2 = (data >> 12) & 0xfff;
 
-                shared_state.display_horizontal_range = (x1, x2);
+                self.state_snapshot.display_horizontal_range = (x1, x2);
                 log::info!(
                     "display horizontal range {:?}",
-                    shared_state.display_horizontal_range
+                    self.state_snapshot.display_horizontal_range
                 );
             }
             0x07 => {
@@ -590,10 +623,10 @@ impl Gpu {
                 let y1 = data & 0x1ff;
                 let y2 = (data >> 10) & 0x1ff;
 
-                shared_state.display_vertical_range = (y1, y2);
+                self.state_snapshot.display_vertical_range = (y1, y2);
                 log::info!(
                     "display vertical range {:?}",
-                    shared_state.display_vertical_range
+                    self.state_snapshot.display_vertical_range
                 );
             }
             0x08 => {
@@ -623,7 +656,7 @@ impl Gpu {
             }
             0x09 => {
                 // Allow texture disable
-                shared_state.allow_texture_disable = data & 1 == 1;
+                self.state_snapshot.allow_texture_disable = data & 1 == 1;
             }
             0x10 => {
                 // GPU info
@@ -642,19 +675,19 @@ impl Gpu {
                 let result = match info_id {
                     2 => {
                         // Read Texture Window setting GP0(E2h)
-                        shared_state.cached_gp0_e2
+                        self.state_snapshot.cached_gp0_e2
                     }
                     3 => {
                         // Read Draw area top left GP0(E3h)
-                        shared_state.cached_gp0_e3
+                        self.state_snapshot.cached_gp0_e3
                     }
                     4 => {
                         // Read Draw area bottom right GP0(E4h)
-                        shared_state.cached_gp0_e4
+                        self.state_snapshot.cached_gp0_e4
                     }
                     5 => {
                         // Read Draw offset GP0(E5h)
-                        shared_state.cached_gp0_e5
+                        self.state_snapshot.cached_gp0_e5
                     }
                     6 => {
                         // return old value of GPUREAD

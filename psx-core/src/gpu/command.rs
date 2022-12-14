@@ -1,9 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use super::gpu_context::{
-    vertex_position_from_u32, DrawingTextureParams, DrawingVertex, GpuSharedState,
-};
-use super::BackendCommand;
+use crossbeam::atomic::AtomicCell;
+
+use super::gpu_context::{vertex_position_from_u32, DrawingTextureParams, DrawingVertex};
+use super::{BackendCommand, GpuStat, GpuStateSnapshot};
 
 #[derive(Debug)]
 pub enum Gp0CmdType {
@@ -49,7 +49,8 @@ pub(super) trait Gp0Command: Send {
     fn add_param(&mut self, param: u32);
     fn exec_command(
         self: Box<Self>,
-        _shared_state: Arc<Mutex<GpuSharedState>>,
+        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand>;
     fn still_need_params(&mut self) -> bool;
     fn cmd_type(&self) -> Gp0CmdType;
@@ -123,7 +124,8 @@ impl Gp0Command for PolygonCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        shared_state: Arc<Mutex<GpuSharedState>>,
+        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
         log::info!("POLYGON executing {:#?}", self);
@@ -137,26 +139,24 @@ impl Gp0Command for PolygonCommand {
         };
 
         if self.textured {
-            let shared_state = shared_state.lock().unwrap();
-
-            if !shared_state.allow_texture_disable {
+            if !state_snapshot.allow_texture_disable {
                 self.texture_params.texture_disable = false;
             }
-            shared_state
-                .gpu_stat
+            gpu_stat
                 .fetch_update(|mut s| {
                     s.update_from_texture_params(&self.texture_params);
                     Some(s)
                 })
                 .unwrap();
         }
-
+        state_snapshot.gpu_stat = gpu_stat.load();
         Some(BackendCommand::DrawPolygon {
             vertices: self.vertices[..input_pointer].to_vec(),
             texture_params: self.texture_params,
             textured: self.textured,
             texture_blending: self.texture_blending,
             semi_transparent: self.semi_transparent,
+            state_snapshot: state_snapshot.clone(),
         })
     }
 
@@ -247,14 +247,17 @@ impl Gp0Command for LineCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        _shared_state: Arc<Mutex<GpuSharedState>>,
+        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
         log::info!("LINE executing {:#?}", self);
 
+        state_snapshot.gpu_stat = gpu_stat.load();
         Some(BackendCommand::DrawPolyline {
             vertices: self.vertices,
             semi_transparent: self.semi_transparent,
+            state_snapshot: state_snapshot.clone(),
         })
     }
 
@@ -333,7 +336,8 @@ impl Gp0Command for RectangleCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        shared_state: Arc<Mutex<GpuSharedState>>,
+        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         // TODO: Add texture repeat of U,V exceed 255
         assert!(!self.still_need_params());
@@ -376,20 +380,17 @@ impl Gp0Command for RectangleCommand {
 
         log::info!("RECTANGLE executing {:#?}", self);
         if self.textured {
-            let shared_state = shared_state.lock().unwrap();
-
             // it will just take what is needed from the stat, which include the tex page
             // to use and color mode
             self.texture_params
-                .tex_page_from_gpustat(shared_state.gpu_stat.load().bits);
+                .tex_page_from_gpustat(gpu_stat.load().bits);
             self.texture_params
-                .set_texture_flip(shared_state.textured_rect_flip);
+                .set_texture_flip(state_snapshot.textured_rect_flip);
 
-            if !shared_state.allow_texture_disable {
+            if !state_snapshot.allow_texture_disable {
                 self.texture_params.texture_disable = false;
             }
-            shared_state
-                .gpu_stat
+            gpu_stat
                 .fetch_update(|mut s| {
                     s.update_from_texture_params(&self.texture_params);
                     Some(s)
@@ -397,12 +398,14 @@ impl Gp0Command for RectangleCommand {
                 .unwrap();
         }
 
+        state_snapshot.gpu_stat = gpu_stat.load();
         Some(BackendCommand::DrawPolygon {
             vertices: self.vertices,
             texture_params: self.texture_params,
             textured: self.textured,
             texture_blending: false,
             semi_transparent: self.semi_transparent,
+            state_snapshot: state_snapshot.clone(),
         })
     }
 
@@ -431,7 +434,8 @@ impl Gp0Command for MiscCommand {
 
     fn exec_command(
         self: Box<Self>,
-        _shared_state: Arc<Mutex<GpuSharedState>>,
+        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         let data = self.0;
         let cmd = data >> 24;
@@ -521,7 +525,8 @@ impl Gp0Command for CpuToVramBlitCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        _shared_state: Arc<Mutex<GpuSharedState>>,
+        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
 
@@ -592,7 +597,8 @@ impl Gp0Command for VramToVramBlitCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        _shared_state: Arc<Mutex<GpuSharedState>>,
+        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
 
@@ -655,7 +661,8 @@ impl Gp0Command for VramToCpuBlitCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        _shared_state: Arc<Mutex<GpuSharedState>>,
+        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
 
@@ -728,7 +735,8 @@ impl Gp0Command for FillVramCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        _shared_state: Arc<Mutex<GpuSharedState>>,
+        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
 
@@ -765,12 +773,11 @@ impl Gp0Command for EnvironmentCommand {
 
     fn exec_command(
         self: Box<Self>,
-        shared_state: Arc<Mutex<GpuSharedState>>,
+        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         let data = self.0;
         let cmd = data >> 24;
-        let mut shared_state = shared_state.lock().unwrap();
-        let gpu_stat = shared_state.gpu_stat.clone();
         log::info!("gp0 command {:02X} data: {:08X}", cmd, data);
         match cmd {
             0xe1 => {
@@ -789,13 +796,13 @@ impl Gp0Command for EnvironmentCommand {
 
                 let textured_rect_x_flip = (data >> 12) & 1 == 1;
                 let textured_rect_y_flip = (data >> 13) & 1 == 1;
-                shared_state.textured_rect_flip = (textured_rect_x_flip, textured_rect_y_flip);
+                state_snapshot.textured_rect_flip = (textured_rect_x_flip, textured_rect_y_flip);
 
                 gpu_stat
                     .fetch_update(|mut s| {
                         s.bits &= !0x87FF;
                         s.bits |= stat_lower_11_bits;
-                        if stat_bit_15_texture_disable && shared_state.allow_texture_disable {
+                        if stat_bit_15_texture_disable && state_snapshot.allow_texture_disable {
                             s.bits |= 1 << 15;
                         }
                         Some(s)
@@ -803,7 +810,7 @@ impl Gp0Command for EnvironmentCommand {
                     .unwrap();
             }
             0xe2 => {
-                shared_state.cached_gp0_e2 = data;
+                state_snapshot.cached_gp0_e2 = data;
 
                 // Texture window settings
                 let mask_x = data & 0x1F;
@@ -811,41 +818,41 @@ impl Gp0Command for EnvironmentCommand {
                 let offset_x = (data >> 10) & 0x1F;
                 let offset_y = (data >> 15) & 0x1F;
 
-                shared_state.texture_window_mask = (mask_x, mask_y);
-                shared_state.texture_window_offset = (offset_x, offset_y);
+                state_snapshot.texture_window_mask = (mask_x, mask_y);
+                state_snapshot.texture_window_offset = (offset_x, offset_y);
 
                 log::info!(
                     "texture window mask = {:?}, offset = {:?}",
-                    shared_state.texture_window_mask,
-                    shared_state.texture_window_offset
+                    state_snapshot.texture_window_mask,
+                    state_snapshot.texture_window_offset
                 );
             }
             0xe3 => {
-                shared_state.cached_gp0_e3 = data;
+                state_snapshot.cached_gp0_e3 = data;
 
                 // Set Drawing Area top left
                 let x = data & 0x3ff;
                 let y = (data >> 10) & 0x3ff;
-                shared_state.drawing_area_top_left = (x, y);
+                state_snapshot.drawing_area_top_left = (x, y);
                 log::info!(
                     "drawing area top left = {:?}",
-                    shared_state.drawing_area_top_left,
+                    state_snapshot.drawing_area_top_left,
                 );
             }
             0xe4 => {
-                shared_state.cached_gp0_e4 = data;
+                state_snapshot.cached_gp0_e4 = data;
 
                 // Set Drawing Area bottom right
                 let x = data & 0x3ff;
                 let y = (data >> 10) & 0x3ff;
-                shared_state.drawing_area_bottom_right = (x, y);
+                state_snapshot.drawing_area_bottom_right = (x, y);
                 log::info!(
                     "drawing area bottom right = {:?}",
-                    shared_state.drawing_area_bottom_right,
+                    state_snapshot.drawing_area_bottom_right,
                 );
             }
             0xe5 => {
-                shared_state.cached_gp0_e5 = data;
+                state_snapshot.cached_gp0_e5 = data;
 
                 // Set Drawing offset
                 // TODO: test the accuracy of the sign extension
@@ -855,8 +862,8 @@ impl Gp0Command for EnvironmentCommand {
                 let y = (data >> 11) & 0x7ff;
                 let sign_extend = 0xfffff800 * ((y >> 10) & 1);
                 let y = (y | sign_extend) as i32;
-                shared_state.drawing_offset = (x, y);
-                log::info!("drawing offset = {:?}", shared_state.drawing_offset,);
+                state_snapshot.drawing_offset = (x, y);
+                log::info!("drawing offset = {:?}", state_snapshot.drawing_offset,);
             }
             0xe6 => {
                 // NOTE: this is also duplicated in the frontend for keeping stat up to date

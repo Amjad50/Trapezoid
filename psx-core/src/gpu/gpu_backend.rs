@@ -1,15 +1,12 @@
 use crate::gpu::GpuStat;
 
-use super::{
-    gpu_context::{GpuContext, GpuSharedState},
-    BackendCommand,
-};
+use super::{gpu_context::GpuContext, BackendCommand};
 use crossbeam::{
     atomic::AtomicCell,
     channel::{Receiver, Sender},
 };
 use std::{
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread::{self, JoinHandle},
 };
 use vulkano::{
@@ -19,6 +16,7 @@ use vulkano::{
 
 pub struct GpuBackend {
     gpu_context: GpuContext,
+    gpu_stat: Arc<AtomicCell<GpuStat>>,
 
     gpu_backend_receiver: Receiver<BackendCommand>,
 }
@@ -28,7 +26,6 @@ impl GpuBackend {
         device: Arc<Device>,
         queue: Arc<Queue>,
         gpu_stat: Arc<AtomicCell<GpuStat>>,
-        shared_state: Arc<Mutex<GpuSharedState>>,
         gpu_read_sender: Sender<u32>,
         gpu_backend_receiver: Receiver<BackendCommand>,
         gpu_front_image_sender: Sender<Arc<StorageImage>>,
@@ -38,11 +35,10 @@ impl GpuBackend {
                 gpu_context: GpuContext::new(
                     device,
                     queue,
-                    gpu_stat,
-                    shared_state,
                     gpu_read_sender,
                     gpu_front_image_sender,
                 ),
+                gpu_stat,
                 gpu_backend_receiver,
             };
             b.run();
@@ -52,14 +48,19 @@ impl GpuBackend {
     fn run(mut self) {
         loop {
             match self.gpu_backend_receiver.recv() {
-                Ok(BackendCommand::BlitFront { full_vram }) => {
-                    self.gpu_context.blit_to_front(full_vram);
+                Ok(BackendCommand::BlitFront {
+                    full_vram,
+                    state_snapshot,
+                }) => {
+                    self.gpu_context.blit_to_front(full_vram, state_snapshot);
                 }
                 Ok(BackendCommand::DrawPolyline {
                     vertices,
                     semi_transparent,
+                    state_snapshot,
                 }) => {
-                    self.gpu_context.draw_polyline(&vertices, semi_transparent);
+                    self.gpu_context
+                        .draw_polyline(&vertices, semi_transparent, state_snapshot);
                 }
                 Ok(BackendCommand::DrawPolygon {
                     vertices,
@@ -67,6 +68,7 @@ impl GpuBackend {
                     textured,
                     texture_blending,
                     semi_transparent,
+                    state_snapshot,
                 }) => {
                     self.gpu_context.draw_polygon(
                         &vertices,
@@ -74,6 +76,7 @@ impl GpuBackend {
                         textured,
                         texture_blending,
                         semi_transparent,
+                        state_snapshot,
                     );
                 }
                 Ok(BackendCommand::WriteVramBlock { block_range, block }) => {
@@ -116,8 +119,7 @@ impl GpuBackend {
                     }
                     // after sending all the data, we set the gpu_stat bit to indicate that
                     // the data can be read now
-                    self.gpu_context
-                        .gpu_stat
+                    self.gpu_stat
                         .fetch_update(|s| Some(s | GpuStat::READY_FOR_TO_SEND_VRAM))
                         .unwrap();
                     log::info!("DONE TRANSFERE");
