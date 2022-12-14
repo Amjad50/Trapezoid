@@ -528,15 +528,42 @@ impl Gp0Command for CpuToVramBlitCommand {
         _gpu_stat: Arc<AtomicCell<GpuStat>>,
         _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
-        assert!(!self.still_need_params());
+        // command was executed normally
+        if !self.still_need_params() {
+            let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
+            let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
 
-        let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
-        let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
+            Some(BackendCommand::WriteVramBlock {
+                block_range: (x_range, y_range),
+                block: self.block,
+            })
+        } else {
+            // command was aborted in the middle, let's just transfer the data we have
+            if self.block.is_empty() {
+                return None;
+            }
 
-        Some(BackendCommand::WriteVramBlock {
-            block_range: (x_range, y_range),
-            block: self.block,
-        })
+            // we haven't finished a single row
+            if self.block.len() < self.size.0 as usize {
+                let x_range = (self.dest.0)..(self.dest.0 + self.block.len() as u32);
+                let y_range = (self.dest.1)..(self.dest.1 + 1);
+
+                Some(BackendCommand::WriteVramBlock {
+                    block_range: (x_range, y_range),
+                    block: self.block,
+                })
+            } else {
+                // FIXME: we are sending only the full rows now and discarding the rest
+                let n_rows = self.block.len() / self.size.0 as usize;
+                let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
+                let y_range = (self.dest.1)..(self.dest.1 + n_rows as u32);
+
+                Some(BackendCommand::WriteVramBlock {
+                    block_range: (x_range, y_range),
+                    block: self.block[..(n_rows * self.size.0 as usize)].to_vec(),
+                })
+            }
+        }
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -893,5 +920,145 @@ impl Gp0Command for EnvironmentCommand {
 
     fn cmd_type(&self) -> Gp0CmdType {
         Gp0CmdType::Environment
+    }
+}
+
+#[test]
+fn cpu_to_vram_interrupt_less_than_1_row() {
+    let gpu_stat = Arc::new(AtomicCell::new(GpuStat::default()));
+    let mut state_snapshot = GpuStateSnapshot::default();
+
+    let mut cmd = Box::new(CpuToVramBlitCommand::new(0x00000000));
+    cmd.add_param(0x00000000); // dest x, y
+    cmd.add_param(((10) << 16) | (10)); // size x, y
+
+    assert_eq!(cmd.size, (10, 10));
+
+    // data transfer
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+
+    assert!(cmd.still_need_params());
+
+    let backend_cmd = cmd.exec_command(gpu_stat.clone(), &mut state_snapshot);
+
+    if let Some(BackendCommand::WriteVramBlock { block_range, block }) = backend_cmd {
+        assert_eq!(block_range, (0..6, 0..1));
+        assert_eq!(block, vec![0; 6]);
+    } else {
+        panic!("expected a WriteVramBlock backend command");
+    }
+}
+
+#[test]
+fn cpu_to_vram_interrupt_more_than_1_row() {
+    let gpu_stat = Arc::new(AtomicCell::new(GpuStat::default()));
+    let mut state_snapshot = GpuStateSnapshot::default();
+
+    let mut cmd = Box::new(CpuToVramBlitCommand::new(0x00000000));
+    cmd.add_param(0x00000000); // dest x, y
+    cmd.add_param(((10) << 16) | (10)); // size x, y
+
+    assert_eq!(cmd.size, (10, 10));
+
+    // data transfer
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+
+    assert!(cmd.still_need_params());
+
+    let backend_cmd = cmd.exec_command(gpu_stat.clone(), &mut state_snapshot);
+
+    // TODO: this is truncating to the full rows, it should also have content of the half rows
+    if let Some(BackendCommand::WriteVramBlock { block_range, block }) = backend_cmd {
+        assert_eq!(block_range, (0..10, 0..2));
+        assert_eq!(block, vec![0; 20]);
+    } else {
+        panic!("expected a WriteVramBlock backend command");
+    }
+}
+
+#[test]
+fn cpu_to_vram_interrupt_full_rows() {
+    let gpu_stat = Arc::new(AtomicCell::new(GpuStat::default()));
+    let mut state_snapshot = GpuStateSnapshot::default();
+
+    let mut cmd = Box::new(CpuToVramBlitCommand::new(0x00000000));
+    cmd.add_param(0x00000000); // dest x, y
+    cmd.add_param(((10) << 16) | (10)); // size x, y
+
+    assert_eq!(cmd.size, (10, 10));
+
+    // data transfer
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+    cmd.add_param(0x00000000);
+
+    assert!(cmd.still_need_params());
+
+    let backend_cmd = cmd.exec_command(gpu_stat.clone(), &mut state_snapshot);
+
+    // TODO: this is truncating to the full rows, it should also have content of the half rows
+    if let Some(BackendCommand::WriteVramBlock { block_range, block }) = backend_cmd {
+        assert_eq!(block_range, (0..10, 0..3));
+        assert_eq!(block, vec![0; 30]);
+    } else {
+        panic!("expected a WriteVramBlock backend command");
+    }
+}
+
+#[test]
+fn cpu_to_vram_not_interrupted() {
+    let gpu_stat = Arc::new(AtomicCell::new(GpuStat::default()));
+    let mut state_snapshot = GpuStateSnapshot::default();
+
+    let mut cmd = Box::new(CpuToVramBlitCommand::new(0x00000000));
+    cmd.add_param(0x00000000); // dest x, y
+    cmd.add_param(((10) << 16) | (10)); // size x, y
+
+    assert_eq!(cmd.size, (10, 10));
+
+    // data transfer
+    for _ in 0..5 * 10 {
+        cmd.add_param(0);
+    }
+
+    assert!(!cmd.still_need_params());
+
+    let backend_cmd = cmd.exec_command(gpu_stat.clone(), &mut state_snapshot);
+
+    // TODO: this is truncating to the full rows, it should also have content of the half rows
+    if let Some(BackendCommand::WriteVramBlock { block_range, block }) = backend_cmd {
+        assert_eq!(block_range, (0..10, 0..10));
+        assert_eq!(block, vec![0; 100]);
+    } else {
+        panic!("expected a WriteVramBlock backend command");
     }
 }

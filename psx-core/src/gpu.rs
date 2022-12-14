@@ -147,7 +147,7 @@ impl GpuStat {
 /// The state of the gpu at the execution of the command in the rendering thread
 /// Because the state can chanage after setting the command but before execution,
 /// we need to send the current state and keep it unmodified until the command is executed.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct GpuStateSnapshot {
     gpu_stat: GpuStat,
 
@@ -549,22 +549,21 @@ impl Gpu {
             0x01 => {
                 // Reset command fifo buffer
 
-                // TODO: reset the sender buffer
                 if let Some(cmd) = &mut self.current_command {
                     if let Gp0CmdType::CpuToVramBlit = cmd.cmd_type() {
                         // flush vram write
 
-                        // FIXME: close the write here and flush
-                        //  do not add more data
-                        //while !cmd.exec_command(&mut self.gpu_context) {
-                        //    if cmd.still_need_params() {
-                        //        cmd.add_param(0);
-                        //    }
-                        //}
-                        self.current_command = None;
-                        todo!();
+                        let cmd = self.current_command.take().unwrap();
+                        // CpuToVramBlit supports interrupts, and will only send
+                        // the rows that are written to the vram.
+                        if let Some(backend_cmd) =
+                            cmd.exec_command(self.gpu_stat.clone(), &mut self.state_snapshot)
+                        {
+                            self.gpu_backend_sender.send(backend_cmd).unwrap();
+                        }
                     }
                 }
+                self.current_command = None;
             }
             0x02 => {
                 // Reset IRQ
