@@ -250,7 +250,6 @@ struct BufferedDrawsState {
 
 pub struct GpuContext {
     pub(super) gpu_front_image_sender: Sender<Arc<StorageImage>>,
-    gpu_read_sender: Sender<u32>,
 
     pub(super) device: Arc<Device>,
     queue: Arc<Queue>,
@@ -284,7 +283,6 @@ impl GpuContext {
     pub(super) fn new(
         device: Arc<Device>,
         queue: Arc<Queue>,
-        gpu_read_sender: Sender<u32>,
         gpu_front_image_sender: Sender<Arc<StorageImage>>,
     ) -> Self {
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
@@ -467,7 +465,6 @@ impl GpuContext {
         .unwrap();
 
         Self {
-            gpu_read_sender,
             gpu_front_image_sender,
 
             device,
@@ -498,10 +495,6 @@ impl GpuContext {
             command_builder,
             buffered_commands: 0,
         }
-    }
-
-    pub(super) fn send_to_gpu_read(&self, value: u32) {
-        self.gpu_read_sender.send(value).unwrap();
     }
 }
 

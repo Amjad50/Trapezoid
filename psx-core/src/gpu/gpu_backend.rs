@@ -18,6 +18,7 @@ pub struct GpuBackend {
     gpu_context: GpuContext,
     gpu_stat: Arc<AtomicCell<GpuStat>>,
 
+    gpu_read_sender: Sender<u32>,
     gpu_backend_receiver: Receiver<BackendCommand>,
 }
 
@@ -32,13 +33,9 @@ impl GpuBackend {
     ) -> JoinHandle<()> {
         thread::spawn(move || {
             let b = GpuBackend {
-                gpu_context: GpuContext::new(
-                    device,
-                    queue,
-                    gpu_read_sender,
-                    gpu_front_image_sender,
-                ),
+                gpu_context: GpuContext::new(device, queue, gpu_front_image_sender),
                 gpu_stat,
+                gpu_read_sender,
                 gpu_backend_receiver,
             };
             b.run();
@@ -115,7 +112,7 @@ impl GpuBackend {
                         log::info!("IN TRANSFERE, src={:?}, data={:08X}", vram_pos, data);
 
                         // TODO: send full block
-                        self.gpu_context.send_to_gpu_read(data);
+                        self.gpu_read_sender.send(data).unwrap();
                     }
                     // after sending all the data, we set the gpu_stat bit to indicate that
                     // the data can be read now
