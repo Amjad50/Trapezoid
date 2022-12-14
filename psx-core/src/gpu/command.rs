@@ -1,7 +1,9 @@
-use crate::gpu::GpuStat;
+use std::sync::{Arc, Mutex};
 
-use super::gpu_context::{vertex_position_from_u32, DrawingTextureParams, DrawingVertex};
-use super::GpuContext;
+use super::gpu_context::{
+    vertex_position_from_u32, DrawingTextureParams, DrawingVertex, GpuSharedState,
+};
+use super::BackendCommand;
 
 #[derive(Debug)]
 pub enum Gp0CmdType {
@@ -12,13 +14,14 @@ pub enum Gp0CmdType {
     VramToVramBlit = 4,
     CpuToVramBlit = 5,
     VramToCpuBlit = 6,
+    Environment = 7,
     // the `cmd` is actually `0`, but only one can have only one which is zero
     FillVram = 8,
 }
 
 // TODO: using dyn and dynamic dispatch might not be the best case for fast performance
 //  we might need to change into another solution
-pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
+pub(super) fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
     let cmd = data >> 29;
 
     match cmd {
@@ -32,18 +35,22 @@ pub fn instantiate_gp0_command(data: u32) -> Box<dyn Gp0Command> {
         4 => Box::new(VramToVramBlitCommand::new(data)),
         5 => Box::new(CpuToVramBlitCommand::new(data)),
         6 => Box::new(VramToCpuBlitCommand::new(data)),
+        7 => Box::new(EnvironmentCommand::new(data)),
         _ => unreachable!(),
     }
 }
 
 /// Commands constructed in the frontend and sent to the gpu on the backend
 /// for rendering.
-pub trait Gp0Command: Send {
+pub(super) trait Gp0Command: Send {
     fn new(data0: u32) -> Self
     where
         Self: Sized;
     fn add_param(&mut self, param: u32);
-    fn exec_command(&mut self, ctx: &mut GpuContext);
+    fn exec_command(
+        self: Box<Self>,
+        _shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand>;
     fn still_need_params(&mut self) -> bool;
     fn cmd_type(&self) -> Gp0CmdType;
 }
@@ -114,7 +121,10 @@ impl Gp0Command for PolygonCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) {
+    fn exec_command(
+        mut self: Box<Self>,
+        shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
         log::info!("POLYGON executing {:#?}", self);
 
@@ -125,13 +135,29 @@ impl Gp0Command for PolygonCommand {
         } else {
             3
         };
-        ctx.draw_polygon(
-            &self.vertices[..input_pointer],
-            self.texture_params,
-            self.textured,
-            self.texture_blending,
-            self.semi_transparent,
-        );
+
+        if self.textured {
+            let shared_state = shared_state.lock().unwrap();
+
+            if !shared_state.allow_texture_disable {
+                self.texture_params.texture_disable = false;
+            }
+            shared_state
+                .gpu_stat
+                .fetch_update(|mut s| {
+                    s.update_from_texture_params(&self.texture_params);
+                    Some(s)
+                })
+                .unwrap();
+        }
+
+        Some(BackendCommand::DrawPolygon {
+            vertices: self.vertices[..input_pointer].to_vec(),
+            texture_params: self.texture_params,
+            textured: self.textured,
+            texture_blending: self.texture_blending,
+            semi_transparent: self.semi_transparent,
+        })
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -219,11 +245,17 @@ impl Gp0Command for LineCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) {
+    fn exec_command(
+        mut self: Box<Self>,
+        _shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
         log::info!("LINE executing {:#?}", self);
 
-        ctx.draw_polyline(&self.vertices[..], self.semi_transparent);
+        Some(BackendCommand::DrawPolyline {
+            vertices: self.vertices,
+            semi_transparent: self.semi_transparent,
+        })
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -241,7 +273,7 @@ struct RectangleCommand {
     semi_transparent: bool,
     size_mode: u8,
     size: [f32; 2],
-    vertices: [DrawingVertex; 6],
+    vertices: Vec<DrawingVertex>,
     texture_params: DrawingTextureParams,
     current_input_state: u8,
 }
@@ -256,7 +288,7 @@ impl Gp0Command for RectangleCommand {
             size: [0.0; 2],
             textured: (data0 >> 26) & 1 == 1,
             semi_transparent: (data0 >> 25) & 1 == 1,
-            vertices: [DrawingVertex::new_with_color(data0); 6],
+            vertices: vec![DrawingVertex::new_with_color(data0); 6],
             texture_params: DrawingTextureParams::default(),
             current_input_state: 0,
         }
@@ -299,7 +331,10 @@ impl Gp0Command for RectangleCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) {
+    fn exec_command(
+        mut self: Box<Self>,
+        shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand> {
         // TODO: Add texture repeat of U,V exceed 255
         assert!(!self.still_need_params());
         // compute the location of other vertices
@@ -341,21 +376,34 @@ impl Gp0Command for RectangleCommand {
 
         log::info!("RECTANGLE executing {:#?}", self);
         if self.textured {
+            let shared_state = shared_state.lock().unwrap();
+
             // it will just take what is needed from the stat, which include the tex page
             // to use and color mode
             self.texture_params
-                .tex_page_from_gpustat(ctx.read_gpu_stat().bits);
+                .tex_page_from_gpustat(shared_state.gpu_stat.load().bits);
             self.texture_params
-                .set_texture_flip(ctx.shared_state.lock().unwrap().textured_rect_flip);
+                .set_texture_flip(shared_state.textured_rect_flip);
+
+            if !shared_state.allow_texture_disable {
+                self.texture_params.texture_disable = false;
+            }
+            shared_state
+                .gpu_stat
+                .fetch_update(|mut s| {
+                    s.update_from_texture_params(&self.texture_params);
+                    Some(s)
+                })
+                .unwrap();
         }
 
-        ctx.draw_polygon(
-            &self.vertices,
-            self.texture_params,
-            self.textured,
-            false,
-            self.semi_transparent,
-        );
+        Some(BackendCommand::DrawPolygon {
+            vertices: self.vertices,
+            texture_params: self.texture_params,
+            textured: self.textured,
+            texture_blending: false,
+            semi_transparent: self.semi_transparent,
+        })
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -381,7 +429,10 @@ impl Gp0Command for MiscCommand {
         unreachable!()
     }
 
-    fn exec_command(&mut self, _ctx: &mut GpuContext) {
+    fn exec_command(
+        self: Box<Self>,
+        _shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand> {
         let data = self.0;
         let cmd = data >> 24;
         match cmd {
@@ -393,6 +444,7 @@ impl Gp0Command for MiscCommand {
             }
             _ => todo!("gp0 misc command {:02X}", cmd),
         }
+        None
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -443,9 +495,7 @@ impl Gp0Command for CpuToVramBlitCommand {
                 self.size = (size_x, size_y);
                 self.total_size = (size_x * size_y) as usize;
 
-                // we add one, so that if the size is odd, we would not need to
-                // re-allocate the block when we push the last value.
-                self.block.reserve(self.total_size + 1);
+                self.block.reserve(self.total_size);
                 log::info!("CPU to VRAM: size {:?}", self.size);
                 self.input_state = 2;
             }
@@ -461,19 +511,27 @@ impl Gp0Command for CpuToVramBlitCommand {
                 let d2 = (param >> 16) as u16;
 
                 self.block.push(d1);
-                self.block.push(d2);
+                if self.block.len() < self.total_size {
+                    self.block.push(d2);
+                }
             }
             _ => unreachable!(),
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) {
+    fn exec_command(
+        mut self: Box<Self>,
+        _shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
 
         let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
         let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
 
-        ctx.write_vram_block((x_range, y_range), &self.block[..self.total_size]);
+        Some(BackendCommand::WriteVramBlock {
+            block_range: (x_range, y_range),
+            block: self.block,
+        })
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -532,17 +590,20 @@ impl Gp0Command for VramToVramBlitCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) {
+    fn exec_command(
+        mut self: Box<Self>,
+        _shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
 
-        // TODO: use vulkan image copy itself
         let x_range = (self.src.0)..(self.src.0 + self.size.0);
         let y_range = (self.src.1)..(self.src.1 + self.size.1);
-        let block = ctx.read_vram_block(&(x_range, y_range));
+        let src = (x_range, y_range);
 
         let x_range = (self.dest.0)..(self.dest.0 + self.size.0);
         let y_range = (self.dest.1)..(self.dest.1 + self.size.1);
-        ctx.write_vram_block((x_range, y_range), block.as_ref());
+        let dst = (x_range, y_range);
+        Some(BackendCommand::VramVramBlit { src, dst })
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -558,8 +619,6 @@ struct VramToCpuBlitCommand {
     input_state: u8,
     src: (u32, u32),
     size: (u32, u32),
-    block: Vec<u16>,
-    block_counter: usize,
 }
 
 impl Gp0Command for VramToCpuBlitCommand {
@@ -571,8 +630,6 @@ impl Gp0Command for VramToCpuBlitCommand {
             input_state: 0,
             size: (0, 0),
             src: (0, 0),
-            block: Vec::new(),
-            block_counter: 0,
         }
     }
 
@@ -596,41 +653,18 @@ impl Gp0Command for VramToCpuBlitCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) {
+    fn exec_command(
+        mut self: Box<Self>,
+        _shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
-        assert!(self.block.is_empty());
 
         let x_range = (self.src.0)..(self.src.0 + self.size.0);
         let y_range = (self.src.1)..(self.src.1 + self.size.1);
 
-        self.block = ctx.read_vram_block(&(x_range, y_range));
-
-        while self.block_counter < self.block.len() {
-            // used for debugging only
-            let vram_pos = (
-                (self.block_counter as u32 % self.size.0) + self.src.0,
-                (self.block_counter as u32 / self.size.0) + self.src.1,
-            );
-            let d1 = self.block[self.block_counter];
-            let d2 = if self.block_counter + 1 < self.block.len() {
-                self.block[self.block_counter + 1]
-            } else {
-                0
-            };
-            self.block_counter += 2;
-
-            let data = ((d2 as u32) << 16) | d1 as u32;
-            log::info!("IN TRANSFERE, src={:?}, data={:08X}", vram_pos, data);
-
-            // TODO: send full block
-            ctx.send_to_gpu_read(data);
-        }
-        // after sending all the data, we set the gpu_stat bit to indicate that
-        // the data can be read now
-        ctx.gpu_stat
-            .fetch_update(|s| Some(s | GpuStat::READY_FOR_TO_SEND_VRAM))
-            .unwrap();
-        log::info!("DONE TRANSFERE");
+        Some(BackendCommand::VramReadBlock {
+            block_range: (x_range, y_range),
+        })
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -692,11 +726,17 @@ impl Gp0Command for FillVramCommand {
         }
     }
 
-    fn exec_command(&mut self, ctx: &mut GpuContext) {
+    fn exec_command(
+        mut self: Box<Self>,
+        _shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
 
-        ctx.fill_color(self.top_left, self.size, self.color);
-        log::info!("Fill Vram: done");
+        Some(BackendCommand::FillColor {
+            top_left: self.top_left,
+            size: self.size,
+            color: self.color,
+        })
     }
 
     fn still_need_params(&mut self) -> bool {
@@ -706,5 +746,145 @@ impl Gp0Command for FillVramCommand {
 
     fn cmd_type(&self) -> Gp0CmdType {
         Gp0CmdType::FillVram
+    }
+}
+
+struct EnvironmentCommand(u32);
+
+impl Gp0Command for EnvironmentCommand {
+    fn new(data0: u32) -> Self
+    where
+        Self: Sized,
+    {
+        Self(data0)
+    }
+
+    fn add_param(&mut self, _param: u32) {
+        unreachable!()
+    }
+
+    fn exec_command(
+        self: Box<Self>,
+        shared_state: Arc<Mutex<GpuSharedState>>,
+    ) -> Option<BackendCommand> {
+        let data = self.0;
+        let cmd = data >> 24;
+        let mut shared_state = shared_state.lock().unwrap();
+        let gpu_stat = shared_state.gpu_stat.clone();
+        log::info!("gp0 command {:02X} data: {:08X}", cmd, data);
+        match cmd {
+            0xe1 => {
+                // NOTE: this is also duplicated in the frontend for keeping stat up to date
+                // Draw Mode setting
+
+                // 0-3   Texture page X Base   (N*64)
+                // 4     Texture page Y Base   (N*256)
+                // 5-6   Semi Transparency     (0=B/2+F/2, 1=B+F, 2=B-F, 3=B+F/4)
+                // 7-8   Texture page colors   (0=4bit, 1=8bit, 2=15bit, 3=Reserved)
+                // 9     Dither 24bit to 15bit (0=Off/strip LSBs, 1=Dither Enabled)
+                // 10    Drawing to display area (0=Prohibited, 1=Allowed)
+                // 11    Texture Disable (0=Normal, 1=Disable if GP1(09h).Bit0=1)   ;GPUSTAT.15
+                let stat_lower_11_bits = data & 0x7FF;
+                let stat_bit_15_texture_disable = (data >> 11) & 1 == 1;
+
+                let textured_rect_x_flip = (data >> 12) & 1 == 1;
+                let textured_rect_y_flip = (data >> 13) & 1 == 1;
+                shared_state.textured_rect_flip = (textured_rect_x_flip, textured_rect_y_flip);
+
+                gpu_stat
+                    .fetch_update(|mut s| {
+                        s.bits &= !0x87FF;
+                        s.bits |= stat_lower_11_bits;
+                        if stat_bit_15_texture_disable && shared_state.allow_texture_disable {
+                            s.bits |= 1 << 15;
+                        }
+                        Some(s)
+                    })
+                    .unwrap();
+            }
+            0xe2 => {
+                shared_state.cached_gp0_e2 = data;
+
+                // Texture window settings
+                let mask_x = data & 0x1F;
+                let mask_y = (data >> 5) & 0x1F;
+                let offset_x = (data >> 10) & 0x1F;
+                let offset_y = (data >> 15) & 0x1F;
+
+                shared_state.texture_window_mask = (mask_x, mask_y);
+                shared_state.texture_window_offset = (offset_x, offset_y);
+
+                log::info!(
+                    "texture window mask = {:?}, offset = {:?}",
+                    shared_state.texture_window_mask,
+                    shared_state.texture_window_offset
+                );
+            }
+            0xe3 => {
+                shared_state.cached_gp0_e3 = data;
+
+                // Set Drawing Area top left
+                let x = data & 0x3ff;
+                let y = (data >> 10) & 0x3ff;
+                shared_state.drawing_area_top_left = (x, y);
+                log::info!(
+                    "drawing area top left = {:?}",
+                    shared_state.drawing_area_top_left,
+                );
+            }
+            0xe4 => {
+                shared_state.cached_gp0_e4 = data;
+
+                // Set Drawing Area bottom right
+                let x = data & 0x3ff;
+                let y = (data >> 10) & 0x3ff;
+                shared_state.drawing_area_bottom_right = (x, y);
+                log::info!(
+                    "drawing area bottom right = {:?}",
+                    shared_state.drawing_area_bottom_right,
+                );
+            }
+            0xe5 => {
+                shared_state.cached_gp0_e5 = data;
+
+                // Set Drawing offset
+                // TODO: test the accuracy of the sign extension
+                let x = data & 0x7ff;
+                let sign_extend = 0xfffff800 * ((x >> 10) & 1);
+                let x = (x | sign_extend) as i32;
+                let y = (data >> 11) & 0x7ff;
+                let sign_extend = 0xfffff800 * ((y >> 10) & 1);
+                let y = (y | sign_extend) as i32;
+                shared_state.drawing_offset = (x, y);
+                log::info!("drawing offset = {:?}", shared_state.drawing_offset,);
+            }
+            0xe6 => {
+                // NOTE: this is also duplicated in the frontend for keeping stat up to date
+                // Mask Bit Setting
+
+                //  11    Set mask while drawing (0=TextureBit15, 1=ForceBit15=1)
+                //  12    Check mask before draw (0=Draw Always, 1=Draw if Bit15=0)
+                let stat_bits_11_12 = data & 3;
+
+                gpu_stat
+                    .fetch_update(|mut s| {
+                        s.bits &= !(3 << 11);
+                        s.bits |= stat_bits_11_12;
+                        Some(s)
+                    })
+                    .unwrap();
+            }
+            _ => todo!("gp0 environment command {:02X}", cmd),
+        }
+
+        None
+    }
+
+    fn still_need_params(&mut self) -> bool {
+        false
+    }
+
+    fn cmd_type(&self) -> Gp0CmdType {
+        Gp0CmdType::Environment
     }
 }

@@ -6,7 +6,6 @@ mod gpu_context;
 use crate::memory::{interrupts::InterruptRequester, BusLine};
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 use gpu_backend::GpuBackend;
-use gpu_context::GpuContext;
 
 use crossbeam::{
     atomic::AtomicCell,
@@ -24,11 +23,12 @@ use vulkano::{
 };
 
 use std::{
+    ops::Range,
     sync::{Arc, Mutex},
     thread::JoinHandle,
 };
 
-use self::gpu_context::GpuSharedState;
+use self::gpu_context::{DrawingTextureParams, DrawingVertex, GpuSharedState};
 
 bitflags::bitflags! {
     #[derive(Default)]
@@ -134,11 +134,51 @@ impl GpuStat {
     fn dither_enabled(&self) -> bool {
         self.intersects(Self::DITHER_ENABLED)
     }
+
+    /// Drawing commands that use textures will update gpustat
+    fn update_from_texture_params(&mut self, texture_params: &DrawingTextureParams) {
+        let x = (texture_params.tex_page_base[0] / 64) & 0xF;
+        let y = (texture_params.tex_page_base[1] / 256) & 1;
+        self.bits &= !0x81FF;
+        self.bits |= x;
+        self.bits |= y << 4;
+        self.bits |= (texture_params.semi_transparency_mode as u32) << 5;
+        self.bits |= (texture_params.tex_page_color_mode as u32) << 7;
+        self.bits |= (texture_params.texture_disable as u32) << 15;
+    }
 }
 
 enum BackendCommand {
-    BlitFront(bool),
-    GpuCommand(Box<dyn Gp0Command>),
+    BlitFront {
+        full_vram: bool,
+    },
+    DrawPolyline {
+        vertices: Vec<DrawingVertex>,
+        semi_transparent: bool,
+    },
+    DrawPolygon {
+        vertices: Vec<DrawingVertex>,
+        texture_params: DrawingTextureParams,
+        textured: bool,
+        texture_blending: bool,
+        semi_transparent: bool,
+    },
+    WriteVramBlock {
+        block_range: (Range<u32>, Range<u32>),
+        block: Vec<u16>,
+    },
+    VramVramBlit {
+        src: (Range<u32>, Range<u32>),
+        dst: (Range<u32>, Range<u32>),
+    },
+    VramReadBlock {
+        block_range: (Range<u32>, Range<u32>),
+    },
+    FillColor {
+        top_left: (u32, u32),
+        size: (u32, u32),
+        color: (u8, u8, u8),
+    },
 }
 
 pub struct Gpu {
@@ -186,6 +226,7 @@ impl Gpu {
         ));
 
         let shared_state = Arc::new(Mutex::new(GpuSharedState {
+            gpu_stat: gpu_stat.clone(),
             allow_texture_disable: false,
             textured_rect_flip: (false, false),
 
@@ -347,7 +388,7 @@ impl Gpu {
 
         // send command for next frame from now, so when we recv later, its mostly will be ready
         self.gpu_backend_sender
-            .send(BackendCommand::BlitFront(full_vram))
+            .send(BackendCommand::BlitFront { full_vram })
             .unwrap();
 
         if let Some(img) = self.current_front_image.as_ref() {
@@ -417,8 +458,6 @@ impl Gpu {
                 log::trace!("gp0 extra param {:08X}", data);
                 cmd.add_param(data);
                 if !cmd.still_need_params() {
-                    // take the self reference from here, so that we can update the gpu_stat
-                    // without issues
                     let cmd = self.current_command.take().unwrap();
 
                     self.gpu_stat
@@ -426,9 +465,9 @@ impl Gpu {
                         .unwrap();
 
                     log::info!("executing command {:?}", cmd.cmd_type());
-                    self.gpu_backend_sender
-                        .send(BackendCommand::GpuCommand(cmd))
-                        .unwrap();
+                    if let Some(backend_cmd) = cmd.exec_command(self.shared_state.clone()) {
+                        self.gpu_backend_sender.send(backend_cmd).unwrap();
+                    }
 
                     // ready for next command
                     self.gpu_stat
@@ -441,119 +480,6 @@ impl Gpu {
                 unreachable!();
             }
         } else {
-            // some env commands must be synced
-            if data >> 29 == 7 {
-                let mut shared_state = self.shared_state.lock().unwrap();
-                let cmd = data >> 24;
-                match cmd {
-                    0xe1 => {
-                        // NOTE: this is also duplicated in the frontend for keeping stat up to date
-                        // Draw Mode setting
-
-                        // 0-3   Texture page X Base   (N*64)
-                        // 4     Texture page Y Base   (N*256)
-                        // 5-6   Semi Transparency     (0=B/2+F/2, 1=B+F, 2=B-F, 3=B+F/4)
-                        // 7-8   Texture page colors   (0=4bit, 1=8bit, 2=15bit, 3=Reserved)
-                        // 9     Dither 24bit to 15bit (0=Off/strip LSBs, 1=Dither Enabled)
-                        // 10    Drawing to display area (0=Prohibited, 1=Allowed)
-                        // 11    Texture Disable (0=Normal, 1=Disable if GP1(09h).Bit0=1)   ;GPUSTAT.15
-                        let stat_lower_11_bits = data & 0x7FF;
-                        let stat_bit_15_texture_disable = (data >> 11) & 1 == 1;
-
-                        let textured_rect_x_flip = (data >> 12) & 1 == 1;
-                        let textured_rect_y_flip = (data >> 13) & 1 == 1;
-                        shared_state.textured_rect_flip =
-                            (textured_rect_x_flip, textured_rect_y_flip);
-
-                        self.gpu_stat
-                            .fetch_update(|mut s| {
-                                s.bits &= !0x87FF;
-                                s.bits |= stat_lower_11_bits;
-                                if stat_bit_15_texture_disable && shared_state.allow_texture_disable
-                                {
-                                    s.bits |= 1 << 15;
-                                }
-                                Some(s)
-                            })
-                            .unwrap();
-                    }
-                    0xe2 => {
-                        shared_state.cached_gp0_e2 = data;
-
-                        // Texture window settings
-                        let mask_x = data & 0x1F;
-                        let mask_y = (data >> 5) & 0x1F;
-                        let offset_x = (data >> 10) & 0x1F;
-                        let offset_y = (data >> 15) & 0x1F;
-
-                        shared_state.texture_window_mask = (mask_x, mask_y);
-                        shared_state.texture_window_offset = (offset_x, offset_y);
-
-                        log::info!(
-                            "texture window mask = {:?}, offset = {:?}",
-                            shared_state.texture_window_mask,
-                            shared_state.texture_window_offset
-                        );
-                    }
-                    0xe3 => {
-                        shared_state.cached_gp0_e3 = data;
-
-                        // Set Drawing Area top left
-                        let x = data & 0x3ff;
-                        let y = (data >> 10) & 0x3ff;
-                        shared_state.drawing_area_top_left = (x, y);
-                        log::info!(
-                            "drawing area top left = {:?}",
-                            shared_state.drawing_area_top_left,
-                        );
-                    }
-                    0xe4 => {
-                        shared_state.cached_gp0_e4 = data;
-
-                        // Set Drawing Area bottom right
-                        let x = data & 0x3ff;
-                        let y = (data >> 10) & 0x3ff;
-                        shared_state.drawing_area_bottom_right = (x, y);
-                        log::info!(
-                            "drawing area bottom right = {:?}",
-                            shared_state.drawing_area_bottom_right,
-                        );
-                    }
-                    0xe5 => {
-                        shared_state.cached_gp0_e5 = data;
-
-                        // Set Drawing offset
-                        // TODO: test the accuracy of the sign extension
-                        let x = data & 0x7ff;
-                        let sign_extend = 0xfffff800 * ((x >> 10) & 1);
-                        let x = (x | sign_extend) as i32;
-                        let y = (data >> 11) & 0x7ff;
-                        let sign_extend = 0xfffff800 * ((y >> 10) & 1);
-                        let y = (y | sign_extend) as i32;
-                        shared_state.drawing_offset = (x, y);
-                        log::info!("drawing offset = {:?}", shared_state.drawing_offset,);
-                    }
-                    0xe6 => {
-                        // NOTE: this is also duplicated in the frontend for keeping stat up to date
-                        // Mask Bit Setting
-
-                        //  11    Set mask while drawing (0=TextureBit15, 1=ForceBit15=1)
-                        //  12    Check mask before draw (0=Draw Always, 1=Draw if Bit15=0)
-                        let stat_bits_11_12 = data & 3;
-
-                        self.gpu_stat
-                            .fetch_update(|mut s| {
-                                s.bits &= !(3 << 11);
-                                s.bits |= stat_bits_11_12;
-                                Some(s)
-                            })
-                            .unwrap();
-                    }
-                    _ => todo!("gp0 environment command {:02X}", cmd),
-                }
-                return;
-            }
-
             let mut cmd = instantiate_gp0_command(data);
             log::info!("creating new command {:?}", cmd.cmd_type());
             if cmd.still_need_params() {
@@ -563,9 +489,9 @@ impl Gpu {
                     .unwrap();
             } else {
                 log::info!("executing command {:?}", cmd.cmd_type());
-                self.gpu_backend_sender
-                    .send(BackendCommand::GpuCommand(cmd))
-                    .unwrap();
+                if let Some(backend_cmd) = cmd.exec_command(self.shared_state.clone()) {
+                    self.gpu_backend_sender.send(backend_cmd).unwrap();
+                }
             }
         }
     }

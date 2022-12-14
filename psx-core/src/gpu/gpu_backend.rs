@@ -52,12 +52,82 @@ impl GpuBackend {
     fn run(mut self) {
         loop {
             match self.gpu_backend_receiver.recv() {
-                Ok(BackendCommand::BlitFront(full_vram)) => {
+                Ok(BackendCommand::BlitFront { full_vram }) => {
                     self.gpu_context.blit_to_front(full_vram);
                 }
-                Ok(BackendCommand::GpuCommand(mut command)) => {
-                    assert!(!command.still_need_params());
-                    command.exec_command(&mut self.gpu_context);
+                Ok(BackendCommand::DrawPolyline {
+                    vertices,
+                    semi_transparent,
+                }) => {
+                    self.gpu_context.draw_polyline(&vertices, semi_transparent);
+                }
+                Ok(BackendCommand::DrawPolygon {
+                    vertices,
+                    texture_params,
+                    textured,
+                    texture_blending,
+                    semi_transparent,
+                }) => {
+                    self.gpu_context.draw_polygon(
+                        &vertices,
+                        texture_params,
+                        textured,
+                        texture_blending,
+                        semi_transparent,
+                    );
+                }
+                Ok(BackendCommand::WriteVramBlock { block_range, block }) => {
+                    self.gpu_context.write_vram_block(block_range, &block);
+                }
+                Ok(BackendCommand::VramVramBlit { src, dst }) => {
+                    // TODO: use vulkan image copy itself
+                    let block = self.gpu_context.read_vram_block(src);
+                    self.gpu_context.write_vram_block(dst, &block);
+                }
+                Ok(BackendCommand::VramReadBlock { block_range }) => {
+                    let src = (block_range.0.start, block_range.1.start);
+                    let size = (
+                        block_range.0.end - block_range.0.start,
+                        block_range.1.end - block_range.1.start,
+                    );
+
+                    let block = self.gpu_context.read_vram_block(block_range);
+
+                    let mut block_counter = 0;
+                    while block_counter < block.len() {
+                        // used for debugging only
+                        let vram_pos = (
+                            (block_counter as u32 % size.0) + src.0,
+                            (block_counter as u32 / size.0) + src.1,
+                        );
+                        let d1 = block[block_counter];
+                        let d2 = if block_counter + 1 < block.len() {
+                            block[block_counter + 1]
+                        } else {
+                            0
+                        };
+                        block_counter += 2;
+
+                        let data = ((d2 as u32) << 16) | d1 as u32;
+                        log::info!("IN TRANSFERE, src={:?}, data={:08X}", vram_pos, data);
+
+                        // TODO: send full block
+                        self.gpu_context.send_to_gpu_read(data);
+                    }
+                    // after sending all the data, we set the gpu_stat bit to indicate that
+                    // the data can be read now
+                    self.gpu_context
+                        .gpu_stat
+                        .fetch_update(|s| Some(s | GpuStat::READY_FOR_TO_SEND_VRAM))
+                        .unwrap();
+                    log::info!("DONE TRANSFERE");
+                }
+                Ok(BackendCommand::FillColor {
+                    top_left,
+                    size,
+                    color,
+                }) => {
+                    self.gpu_context.fill_color(top_left, size, color);
                 }
                 Err(_) => {}
             }

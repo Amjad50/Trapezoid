@@ -176,12 +176,12 @@ vulkano::impl_vertex!(
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct DrawingTextureParams {
-    clut_base: [u32; 2],
-    tex_page_base: [u32; 2],
-    semi_transparency_mode: u8,
-    tex_page_color_mode: u8,
-    texture_disable: bool,
-    texture_flip: (bool, bool),
+    pub clut_base: [u32; 2],
+    pub tex_page_base: [u32; 2],
+    pub semi_transparency_mode: u8,
+    pub tex_page_color_mode: u8,
+    pub texture_disable: bool,
+    pub texture_flip: (bool, bool),
 }
 
 impl DrawingTextureParams {
@@ -249,8 +249,9 @@ struct BufferedDrawsState {
     drawing_offset: (i32, i32),
 }
 
-#[derive(Copy, Clone)]
 pub struct GpuSharedState {
+    pub(super) gpu_stat: Arc<AtomicCell<GpuStat>>,
+
     pub(super) allow_texture_disable: bool,
     pub(super) textured_rect_flip: (bool, bool),
 
@@ -541,25 +542,6 @@ impl GpuContext {
 }
 
 impl GpuContext {
-    /// Drawing commands that use textures will update gpustat
-    fn update_gpu_stat_from_texture_params(&mut self, texture_params: &DrawingTextureParams) {
-        let x = (texture_params.tex_page_base[0] / 64) & 0xF;
-        let y = (texture_params.tex_page_base[1] / 256) & 1;
-        self.gpu_stat
-            .fetch_update(|mut s| {
-                s.bits &= !0x81FF;
-                s.bits |= x;
-                s.bits |= y << 4;
-                s.bits |= (texture_params.semi_transparency_mode as u32) << 5;
-                s.bits |= (texture_params.tex_page_color_mode as u32) << 7;
-                s.bits |= (texture_params.texture_disable as u32) << 15;
-                Some(s)
-            })
-            .unwrap();
-    }
-}
-
-impl GpuContext {
     pub fn write_vram_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
         self.check_and_flush_buffered_draws(None);
 
@@ -686,7 +668,7 @@ impl GpuContext {
         self.schedule_back_image_update();
     }
 
-    pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
+    pub fn read_vram_block(&mut self, block_range: (Range<u32>, Range<u32>)) -> Vec<u16> {
         self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 
@@ -1129,7 +1111,7 @@ impl GpuContext {
         &mut self,
         vertices: &[DrawingVertex],
         draw_type: DrawType,
-        mut texture_params: DrawingTextureParams,
+        texture_params: DrawingTextureParams,
         textured: bool,
         texture_blending: bool,
         semi_transparent: bool,
@@ -1140,7 +1122,6 @@ impl GpuContext {
         let (drawing_left, drawing_top) = shared_state.drawing_area_top_left;
         let (drawing_right, drawing_bottom) = shared_state.drawing_area_bottom_right;
         let drawing_offset = shared_state.drawing_offset;
-        let allow_texture_disable = shared_state.allow_texture_disable;
 
         let left = drawing_left;
         let top = drawing_top;
@@ -1148,12 +1129,6 @@ impl GpuContext {
         let width = drawing_right + 1 - drawing_left;
 
         drop(shared_state);
-        if textured {
-            if !allow_texture_disable {
-                texture_params.texture_disable = false;
-            }
-            self.update_gpu_stat_from_texture_params(&texture_params);
-        };
 
         let mut semi_transparency_mode = if textured {
             texture_params.semi_transparency_mode
