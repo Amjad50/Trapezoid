@@ -315,6 +315,18 @@ impl VkDisplay {
             DisplayType::Headless => {}
         }
     }
+
+    fn toggle_full_vram_display(&mut self) {
+        match self.display_type {
+            DisplayType::Windowed {
+                ref mut full_vram_display,
+                ..
+            } => {
+                *full_vram_display = !*full_vram_display;
+            }
+            DisplayType::Headless => {}
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -328,7 +340,7 @@ struct PsxEmuArgs {
     /// logs to the console, which can be useful for testing)
     #[clap(short, long)]
     windowed: bool,
-    /// Display the full vram
+    /// Initial value for `display full vram`, can be changed later with [V] key
     #[clap(short, long)]
     vram: bool,
     /// Play audio
@@ -409,6 +421,7 @@ fn main() {
                         match input.virtual_keycode {
                             // Pause CPU and enable debug
                             Some(VirtualKeyCode::Slash) => psx.pause_cpu(),
+                            Some(VirtualKeyCode::V) => display.toggle_full_vram_display(),
                             _ => {}
                         }
                     }
