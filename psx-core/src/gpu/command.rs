@@ -274,6 +274,7 @@ impl Gp0Command for LineCommand {
 struct RectangleCommand {
     textured: bool,
     semi_transparent: bool,
+    texture_blending: bool,
     size_mode: u8,
     size: [f32; 2],
     vertices: Vec<DrawingVertex>,
@@ -291,6 +292,7 @@ impl Gp0Command for RectangleCommand {
             size: [0.0; 2],
             textured: (data0 >> 26) & 1 == 1,
             semi_transparent: (data0 >> 25) & 1 == 1,
+            texture_blending: (data0 >> 24) & 1 == 0, // enabled with 0
             vertices: vec![DrawingVertex::new_with_color(data0); 6],
             texture_params: DrawingTextureParams::default(),
             current_input_state: 0,
@@ -403,7 +405,7 @@ impl Gp0Command for RectangleCommand {
             vertices: self.vertices,
             texture_params: self.texture_params,
             textured: self.textured,
-            texture_blending: false,
+            texture_blending: self.texture_blending,
             semi_transparent: self.semi_transparent,
             state_snapshot: state_snapshot.clone(),
         })
