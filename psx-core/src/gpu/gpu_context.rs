@@ -890,23 +890,12 @@ impl GpuContext {
     }
 
     fn new_command_buffer_builder(&mut self) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
-        let mut builder = AutoCommandBufferBuilder::primary(
+        let builder = AutoCommandBufferBuilder::primary(
             &self.command_buffer_allocator,
             self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
-
-        // copy to the back buffer
-        // NOTE: For some reason, removing this results in conflict error from vulkano
-        //       not sure, if there is a bug with the conflict checker or not, but
-        //       for now, we add this command in the beginning before binding the image as texture.
-        builder
-            .copy_image(CopyImageInfo::images(
-                self.render_image.clone(),
-                self.render_image_back_image.clone(),
-            ))
-            .unwrap();
 
         builder
     }
