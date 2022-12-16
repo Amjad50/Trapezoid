@@ -80,7 +80,7 @@ pub fn vertex_position_from_u32(position: u32) -> [f32; 2] {
 pub struct DrawingVertex {
     position: [f32; 2],
     color: [f32; 3],
-    tex_coord: [u32; 2],
+    tex_coord: [i32; 2],
 }
 
 impl DrawingVertex {
@@ -95,12 +95,12 @@ impl DrawingVertex {
     }
 
     #[inline]
-    pub fn tex_coord(&mut self) -> [u32; 2] {
+    pub fn tex_coord(&mut self) -> [i32; 2] {
         self.tex_coord
     }
 
     #[inline]
-    pub fn set_tex_coord(&mut self, tex_coord: [u32; 2]) {
+    pub fn set_tex_coord(&mut self, tex_coord: [i32; 2]) {
         self.tex_coord = tex_coord;
     }
 
@@ -127,7 +127,7 @@ impl DrawingVertex {
 
     #[inline]
     pub fn tex_coord_from_u32(&mut self, tex_coord: u32) {
-        self.tex_coord = [(tex_coord & 0xFF), ((tex_coord >> 8) & 0xFF)];
+        self.tex_coord = [(tex_coord & 0xFF) as i32, ((tex_coord >> 8) & 0xFF) as i32];
     }
 }
 
@@ -143,7 +143,7 @@ impl DrawingVertex {
 struct DrawingVertexFull {
     position: [f32; 2],
     color: [f32; 3],
-    tex_coord: [u32; 2],
+    tex_coord: [i32; 2],
 
     clut_base: [u32; 2],
     tex_page_base: [u32; 2],

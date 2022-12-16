@@ -106,11 +106,13 @@ void main() {
             divider = 1;
         }
 
-        float x = v_tex_coord.x / divider;
-        float y = v_tex_coord.y;
+        // texture flip and texture repeat support
+        // flipped textures, will have decrement in number
+        // and might flip to negative as well, we can handle that by mod
+        vec2 norm_coord = mod(v_tex_coord, 255);
 
-        uint ux = uint(x);
-        uint uy = uint(y);
+        float x = norm_coord.x / divider;
+        float y = norm_coord.y;
 
         vec4 color_value = fetch_color_from_texture_float(vec2(v_tex_page_base) + vec2(x, y));
 
@@ -119,7 +121,7 @@ void main() {
             uint color_u16 = u16_from_color_with_alpha(color_value);
 
             uint mask = 0xFFFFu >> (16u - (16u / divider));
-            uint clut_index_shift = (uint(floor(v_tex_coord.x)) % divider) * (16u / divider);
+            uint clut_index_shift = (uint(x) % divider) * (16u / divider);
             uint clut_index = (color_u16 >> clut_index_shift) & mask;
 
             color_value = fetch_color_from_texture(v_clut_base + uvec2(clut_index, 0));

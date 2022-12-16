@@ -276,7 +276,7 @@ struct RectangleCommand {
     semi_transparent: bool,
     texture_blending: bool,
     size_mode: u8,
-    size: [u32; 2],
+    size: [i32; 2],
     vertices: Vec<DrawingVertex>,
     texture_params: DrawingTextureParams,
     current_input_state: u8,
@@ -330,7 +330,7 @@ impl Gp0Command for RectangleCommand {
             2 => {
                 // variable size input
                 let s = vertex_position_from_u32(param);
-                self.size = [s[0] as u32, s[1] as u32];
+                self.size = [s[0] as i32, s[1] as i32];
                 self.current_input_state = 3;
             }
             _ => unreachable!(),
@@ -342,7 +342,6 @@ impl Gp0Command for RectangleCommand {
         gpu_stat: Arc<AtomicCell<GpuStat>>,
         state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
-        // TODO: Add texture repeat of U,V exceed 255
         assert!(!self.still_need_params());
 
         // compute the location of other vertices
@@ -358,24 +357,22 @@ impl Gp0Command for RectangleCommand {
         if size[0] == 0 || size[1] == 0 {
             return None; // empty rect
         }
+        // The tex_coords, are large i32 numbers, they can be negative or more
+        // than 255, and the shader will handle repeating and flipping based on the values.
         let size_f32 = [size[0] as f32, size[1] as f32];
         let mut bottom_right_tex = [top_left_tex[0], top_left_tex[1]];
         if state_snapshot.textured_rect_flip.0 {
-            bottom_right_tex[0] = bottom_right_tex[0].wrapping_sub(size[0] as u32 - 1);
+            bottom_right_tex[0] -= size[0] - 1;
         } else {
-            bottom_right_tex[0] += size[0] as u32;
+            bottom_right_tex[0] += size[0];
         }
         if state_snapshot.textured_rect_flip.1 {
-            bottom_right_tex[1] = bottom_right_tex[1].wrapping_sub(size[1] as u32 - 1);
+            bottom_right_tex[1] -= size[1] - 1;
         } else {
-            bottom_right_tex[1] += size[1] as u32;
+            bottom_right_tex[1] += size[1];
         }
-        bottom_right_tex[0] = bottom_right_tex[0].min(255);
-        bottom_right_tex[1] = bottom_right_tex[1].min(255);
 
         // top right
-        // NOTE: for some reason, -1 when computing tex coords is needed
-        //  check if its true or not.
         self.vertices[1].set_position([top_left[0] + size_f32[0], top_left[1]]);
         self.vertices[1].set_tex_coord([bottom_right_tex[0], top_left_tex[1]]);
         // bottom left

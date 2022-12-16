@@ -2,7 +2,7 @@
 
 layout(location = 0)  in vec2 position;
 layout(location = 1)  in vec3  color;
-layout(location = 2)  in uvec2 tex_coord;
+layout(location = 2)  in ivec2 tex_coord;
 
 layout(location = 3)  in uvec2 clut_base;
 layout(location = 4)  in uvec2 tex_page_base;
