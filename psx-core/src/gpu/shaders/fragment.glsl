@@ -7,11 +7,10 @@ layout(location = 2)  flat in uvec2 v_clut_base;
 layout(location = 3)  flat in uvec2 v_tex_page_base;
 layout(location = 4)  flat in uint  v_semi_transparency_mode;
 layout(location = 5)  flat in uint  v_tex_page_color_mode;
-layout(location = 6)  flat in uvec2 v_texture_flip;
-layout(location = 7)  flat in uint  v_semi_transparent;
-layout(location = 8)  flat in uint  v_dither_enabled;
-layout(location = 9)  flat in uint  v_is_textured;
-layout(location = 10) flat in uint  v_is_texture_blended;
+layout(location = 6)  flat in uint  v_semi_transparent;
+layout(location = 7)  flat in uint  v_dither_enabled;
+layout(location = 8)  flat in uint  v_is_textured;
+layout(location = 9) flat in uint  v_is_texture_blended;
 
 layout(location = 0) out vec4 f_color;
 
@@ -112,14 +111,6 @@ void main() {
 
         uint ux = uint(x);
         uint uy = uint(y);
-
-        // texture flips
-        if (v_texture_flip.x == 1) {
-            x = (255 / divider) - x;
-        }
-        if (v_texture_flip.y == 1) {
-            y = 255 - y;
-        }
 
         vec4 color_value = fetch_color_from_texture_float(vec2(v_tex_page_base) + vec2(x, y));
 

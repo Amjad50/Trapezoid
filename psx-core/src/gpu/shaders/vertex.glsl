@@ -8,11 +8,10 @@ layout(location = 3)  in uvec2 clut_base;
 layout(location = 4)  in uvec2 tex_page_base;
 layout(location = 5)  in uint  semi_transparency_mode;
 layout(location = 6)  in uint  tex_page_color_mode;
-layout(location = 7)  in uvec2 texture_flip;
-layout(location = 8)  in uint  semi_transparent;
-layout(location = 9)  in uint  dither_enabled;
-layout(location = 10) in uint  is_textured;
-layout(location = 11) in uint  is_texture_blended;
+layout(location = 7)  in uint  semi_transparent;
+layout(location = 8)  in uint  dither_enabled;
+layout(location = 9)  in uint  is_textured;
+layout(location = 10) in uint  is_texture_blended;
 
 
 layout(location = 0)  out vec3  v_color;
@@ -22,11 +21,10 @@ layout(location = 2)  flat out uvec2 v_clut_base;
 layout(location = 3)  flat out uvec2 v_tex_page_base;
 layout(location = 4)  flat out uint  v_semi_transparency_mode;
 layout(location = 5)  flat out uint  v_tex_page_color_mode;
-layout(location = 6)  flat out uvec2 v_texture_flip;
-layout(location = 7)  flat out uint  v_semi_transparent;
-layout(location = 8)  flat out uint  v_dither_enabled;
-layout(location = 9)  flat out uint  v_is_textured;
-layout(location = 10) flat out uint  v_is_texture_blended;
+layout(location = 6)  flat out uint  v_semi_transparent;
+layout(location = 7)  flat out uint  v_dither_enabled;
+layout(location = 8)  flat out uint  v_is_textured;
+layout(location = 9) flat out uint  v_is_texture_blended;
 
 layout(push_constant) uniform PushConstantData {
     ivec2 offset;
@@ -45,7 +43,6 @@ void main() {
     v_tex_page_base          = tex_page_base;
     v_semi_transparency_mode = semi_transparency_mode;
     v_tex_page_color_mode    = tex_page_color_mode;
-    v_texture_flip           = texture_flip;
     v_semi_transparent       = semi_transparent;
     v_dither_enabled         = dither_enabled;
     v_is_textured            = is_textured;

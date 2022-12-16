@@ -149,7 +149,6 @@ struct DrawingVertexFull {
     tex_page_base: [u32; 2],
     semi_transparency_mode: u32, // u8
     tex_page_color_mode: u32,    // u8
-    texture_flip: [u32; 2],      // (bool, bool)
 
     semi_transparent: u32,   // bool
     dither_enabled: u32,     // bool
@@ -166,7 +165,6 @@ vulkano::impl_vertex!(
     tex_page_base,
     semi_transparency_mode,
     tex_page_color_mode,
-    texture_flip,
     semi_transparent,
     dither_enabled,
     is_textured,
@@ -180,7 +178,6 @@ pub struct DrawingTextureParams {
     pub semi_transparency_mode: u8,
     pub tex_page_color_mode: u8,
     pub texture_disable: bool,
-    pub texture_flip: (bool, bool),
 }
 
 impl DrawingTextureParams {
@@ -212,11 +209,6 @@ impl DrawingTextureParams {
         let x = param & 0x3F;
         let y = (param >> 6) & 0x1FF;
         self.clut_base = [x * 16, y];
-    }
-
-    #[inline]
-    pub fn set_texture_flip(&mut self, flip: (bool, bool)) {
-        self.texture_flip = flip;
     }
 }
 
@@ -1131,10 +1123,6 @@ impl GpuContext {
             tex_page_base: texture_params.tex_page_base,
             semi_transparency_mode: semi_transparency_mode as u32,
             tex_page_color_mode: texture_params.tex_page_color_mode as u32,
-            texture_flip: [
-                texture_params.texture_flip.0 as u32,
-                texture_params.texture_flip.1 as u32,
-            ],
             semi_transparent: semi_transparent as u32,
             dither_enabled: gpu_stat.dither_enabled() as u32,
             is_textured: textured as u32,

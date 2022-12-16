@@ -276,7 +276,7 @@ struct RectangleCommand {
     semi_transparent: bool,
     texture_blending: bool,
     size_mode: u8,
-    size: [f32; 2],
+    size: [u32; 2],
     vertices: Vec<DrawingVertex>,
     texture_params: DrawingTextureParams,
     current_input_state: u8,
@@ -289,7 +289,7 @@ impl Gp0Command for RectangleCommand {
     {
         Self {
             size_mode: ((data0 >> 27) & 3) as u8,
-            size: [0.0; 2],
+            size: [0; 2],
             textured: (data0 >> 26) & 1 == 1,
             semi_transparent: (data0 >> 25) & 1 == 1,
             texture_blending: (data0 >> 24) & 1 == 0, // enabled with 0
@@ -329,7 +329,8 @@ impl Gp0Command for RectangleCommand {
             }
             2 => {
                 // variable size input
-                self.size = vertex_position_from_u32(param);
+                let s = vertex_position_from_u32(param);
+                self.size = [s[0] as u32, s[1] as u32];
                 self.current_input_state = 3;
             }
             _ => unreachable!(),
@@ -343,51 +344,56 @@ impl Gp0Command for RectangleCommand {
     ) -> Option<BackendCommand> {
         // TODO: Add texture repeat of U,V exceed 255
         assert!(!self.still_need_params());
+
         // compute the location of other vertices
         let top_left = self.vertices[0].position();
         let top_left_tex = self.vertices[0].tex_coord();
         let size = match self.size_mode {
             0 => &self.size,
-            1 => &[1.0; 2],
-            2 => &[8.0; 2],
-            3 => &[16.0; 2],
+            1 => &[1; 2],
+            2 => &[8; 2],
+            3 => &[16; 2],
             _ => unreachable!(),
         };
-        let size_coord = [size[0] as i32, size[1] as i32];
+        if size[0] == 0 || size[1] == 0 {
+            return None; // empty rect
+        }
+        let size_f32 = [size[0] as f32, size[1] as f32];
+        let mut bottom_right_tex = [top_left_tex[0], top_left_tex[1]];
+        if state_snapshot.textured_rect_flip.0 {
+            bottom_right_tex[0] = bottom_right_tex[0].wrapping_sub(size[0] as u32 - 1);
+        } else {
+            bottom_right_tex[0] += size[0] as u32;
+        }
+        if state_snapshot.textured_rect_flip.1 {
+            bottom_right_tex[1] = bottom_right_tex[1].wrapping_sub(size[1] as u32 - 1);
+        } else {
+            bottom_right_tex[1] += size[1] as u32;
+        }
+        bottom_right_tex[0] = bottom_right_tex[0].min(255);
+        bottom_right_tex[1] = bottom_right_tex[1].min(255);
 
         // top right
         // NOTE: for some reason, -1 when computing tex coords is needed
         //  check if its true or not.
-        self.vertices[1].set_position([top_left[0] + size[0], top_left[1]]);
-        self.vertices[1].set_tex_coord([
-            (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u32,
-            top_left_tex[1],
-        ]);
+        self.vertices[1].set_position([top_left[0] + size_f32[0], top_left[1]]);
+        self.vertices[1].set_tex_coord([bottom_right_tex[0], top_left_tex[1]]);
         // bottom left
-        self.vertices[2].set_position([top_left[0], top_left[1] + size[1]]);
-        self.vertices[2].set_tex_coord([
-            top_left_tex[0],
-            (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
-        ]);
+        self.vertices[2].set_position([top_left[0], top_left[1] + size_f32[1]]);
+        self.vertices[2].set_tex_coord([top_left_tex[0], bottom_right_tex[1]]);
         // copies of top right and bottom left for the second triangle
         self.vertices[3] = self.vertices[1];
         self.vertices[4] = self.vertices[2];
 
         // bottom right
-        self.vertices[5].set_position([top_left[0] + size[0], top_left[1] + size[1]]);
-        self.vertices[5].set_tex_coord([
-            (top_left_tex[0] as i32 + size_coord[0] - 1).min(255).max(0) as u32,
-            (top_left_tex[1] as i32 + size_coord[1] - 1).min(255).max(0) as u32,
-        ]);
+        self.vertices[5].set_position([top_left[0] + size_f32[0], top_left[1] + size_f32[1]]);
+        self.vertices[5].set_tex_coord(bottom_right_tex);
 
-        log::info!("RECTANGLE executing {:#?}", self);
         if self.textured {
             // it will just take what is needed from the stat, which include the tex page
             // to use and color mode
             self.texture_params
                 .tex_page_from_gpustat(gpu_stat.load().bits);
-            self.texture_params
-                .set_texture_flip(state_snapshot.textured_rect_flip);
 
             if !state_snapshot.allow_texture_disable {
                 self.texture_params.texture_disable = false;
@@ -399,6 +405,7 @@ impl Gp0Command for RectangleCommand {
                 })
                 .unwrap();
         }
+        log::info!("RECTANGLE executing {:#?}", self);
 
         state_snapshot.gpu_stat = gpu_stat.load();
         Some(BackendCommand::DrawPolygon {
