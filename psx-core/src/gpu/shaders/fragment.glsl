@@ -121,7 +121,7 @@ void main() {
             uint color_u16 = u16_from_color_with_alpha(color_value);
 
             uint mask = 0xFFFFu >> (16u - (16u / divider));
-            uint clut_index_shift = (uint(x) % divider) * (16u / divider);
+            uint clut_index_shift = (uint(norm_coord.x) % divider) * (16u / divider);
             uint clut_index = (color_u16 >> clut_index_shift) & mask;
 
             color_value = fetch_color_from_texture(v_clut_base + uvec2(clut_index, 0));
