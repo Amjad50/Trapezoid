@@ -23,7 +23,7 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-const MAX_CPU_CYCLES_TO_CLOCK: u32 = 1000;
+const MAX_CPU_CYCLES_TO_CLOCK: u32 = 2000;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PsxConfig {
@@ -67,7 +67,7 @@ impl Psx {
         if self.excess_cpu_cycles == 0 {
             // this number doesn't mean anything
             // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
-            let cpu_cycles = self.cpu.clock(&mut self.bus, 32);
+            let cpu_cycles = self.cpu.clock(&mut self.bus, 56);
             if cpu_cycles == 0 {
                 return (true, 0);
             }
