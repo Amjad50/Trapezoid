@@ -1,21 +1,25 @@
 use bytemuck::{Pod, Zeroable};
-use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::Sender;
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, CpuBufferPool};
+use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, PrimaryCommandBuffer,
-    SubpassContents,
+    AutoCommandBufferBuilder, BufferImageCopy, ClearColorImageInfo, CommandBufferInheritanceInfo,
+    CommandBufferUsage, CopyBufferToImageInfo, CopyImageInfo, CopyImageToBufferInfo, ImageCopy,
+    PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassContents,
 };
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::device::{Device, Queue};
-use vulkano::format::{ClearValue, Format};
+use vulkano::format::Format;
 use vulkano::image::view::{ImageView, ImageViewCreateInfo};
-use vulkano::image::{ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage};
+use vulkano::image::{ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage};
+use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::pipeline::graphics::color_blend::{
     AttachmentBlend, BlendFactor, BlendOp, ColorBlendAttachmentState, ColorBlendState,
     ColorComponents,
 };
 use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
+use vulkano::pipeline::graphics::render_pass::PipelineRenderPassType::BeginRenderPass;
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
 use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint, StateMode};
@@ -27,7 +31,7 @@ use vulkano::sampler::{
 use vulkano::sync::{self, GpuFuture};
 
 use super::front_blit::FrontBlit;
-use super::GpuStat;
+use super::GpuStateSnapshot;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -35,7 +39,12 @@ use std::sync::Arc;
 mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "src/gpu/shaders/vertex.glsl"
+        path: "src/gpu/shaders/vertex.glsl",
+        types_meta: {
+            use bytemuck::{Pod, Zeroable};
+
+            #[derive(Clone, Copy, Zeroable, Pod)]
+        },
     }
 }
 
@@ -71,7 +80,7 @@ pub fn vertex_position_from_u32(position: u32) -> [f32; 2] {
 pub struct DrawingVertex {
     position: [f32; 2],
     color: [f32; 3],
-    tex_coord: [u32; 2],
+    tex_coord: [i32; 2],
 }
 
 impl DrawingVertex {
@@ -86,12 +95,12 @@ impl DrawingVertex {
     }
 
     #[inline]
-    pub fn tex_coord(&mut self) -> [u32; 2] {
+    pub fn tex_coord(&mut self) -> [i32; 2] {
         self.tex_coord
     }
 
     #[inline]
-    pub fn set_tex_coord(&mut self, tex_coord: [u32; 2]) {
+    pub fn set_tex_coord(&mut self, tex_coord: [i32; 2]) {
         self.tex_coord = tex_coord;
     }
 
@@ -118,7 +127,7 @@ impl DrawingVertex {
 
     #[inline]
     pub fn tex_coord_from_u32(&mut self, tex_coord: u32) {
-        self.tex_coord = [(tex_coord & 0xFF), ((tex_coord >> 8) & 0xFF)];
+        self.tex_coord = [(tex_coord & 0xFF) as i32, ((tex_coord >> 8) & 0xFF) as i32];
     }
 }
 
@@ -134,13 +143,12 @@ impl DrawingVertex {
 struct DrawingVertexFull {
     position: [f32; 2],
     color: [f32; 3],
-    tex_coord: [u32; 2],
+    tex_coord: [i32; 2],
 
     clut_base: [u32; 2],
     tex_page_base: [u32; 2],
     semi_transparency_mode: u32, // u8
     tex_page_color_mode: u32,    // u8
-    texture_flip: [u32; 2],      // (bool, bool)
 
     semi_transparent: u32,   // bool
     dither_enabled: u32,     // bool
@@ -157,7 +165,6 @@ vulkano::impl_vertex!(
     tex_page_base,
     semi_transparency_mode,
     tex_page_color_mode,
-    texture_flip,
     semi_transparent,
     dither_enabled,
     is_textured,
@@ -166,12 +173,11 @@ vulkano::impl_vertex!(
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct DrawingTextureParams {
-    clut_base: [u32; 2],
-    tex_page_base: [u32; 2],
-    semi_transparency_mode: u8,
-    tex_page_color_mode: u8,
-    texture_disable: bool,
-    texture_flip: (bool, bool),
+    pub clut_base: [u32; 2],
+    pub tex_page_base: [u32; 2],
+    pub semi_transparency_mode: u8,
+    pub tex_page_color_mode: u8,
+    pub texture_disable: bool,
 }
 
 impl DrawingTextureParams {
@@ -204,11 +210,6 @@ impl DrawingTextureParams {
         let y = (param >> 6) & 0x1FF;
         self.clut_base = [x * 16, y];
     }
-
-    #[inline]
-    pub fn set_texture_flip(&mut self, flip: (bool, bool)) {
-        self.texture_flip = flip;
-    }
 }
 
 /// The type of the draw command, informs how the drawing vertices should be handled
@@ -240,34 +241,17 @@ struct BufferedDrawsState {
 }
 
 pub struct GpuContext {
-    pub(super) gpu_stat: Arc<AtomicCell<GpuStat>>,
     pub(super) gpu_front_image_sender: Sender<Arc<StorageImage>>,
-    gpu_read_sender: Sender<u32>,
-
-    pub(super) allow_texture_disable: bool,
-    pub(super) textured_rect_flip: (bool, bool),
-
-    pub(super) drawing_area_top_left: (u32, u32),
-    pub(super) drawing_area_bottom_right: (u32, u32),
-    pub(super) drawing_offset: (i32, i32),
-    pub(super) texture_window_mask: (u32, u32),
-    pub(super) texture_window_offset: (u32, u32),
-
-    pub(super) vram_display_area_start: (u32, u32),
-    pub(super) display_horizontal_range: (u32, u32),
-    pub(super) display_vertical_range: (u32, u32),
-
-    // These are only used for handleing GP1(0x10) command, so instead of creating
-    // the values again from the individual parts, we just cache it
-    pub(super) cached_gp0_e2: u32,
-    pub(super) cached_gp0_e3: u32,
-    pub(super) cached_gp0_e4: u32,
-    pub(super) cached_gp0_e5: u32,
 
     pub(super) device: Arc<Device>,
     queue: Arc<Queue>,
+
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    command_buffer_allocator: StandardCommandBufferAllocator,
+
     render_image: Arc<StorageImage>,
     render_image_back_image: Arc<StorageImage>,
+    should_update_back_image: bool,
 
     render_image_framebuffer: Arc<Framebuffer>,
     polygon_pipelines: Vec<Arc<GraphicsPipeline>>,
@@ -275,6 +259,7 @@ pub struct GpuContext {
     descriptor_set: Arc<PersistentDescriptorSet>,
 
     vertex_buffer_pool: CpuBufferPool<DrawingVertexFull>,
+    vram_write_buffer_pool: CpuBufferPool<u16>,
     buffered_draw_vertices: Vec<DrawingVertexFull>,
     current_buffered_draws_state: Option<BufferedDrawsState>,
 
@@ -290,12 +275,15 @@ impl GpuContext {
     pub(super) fn new(
         device: Arc<Device>,
         queue: Arc<Queue>,
-        gpu_stat: Arc<AtomicCell<GpuStat>>,
-        gpu_read_sender: Sender<u32>,
         gpu_front_image_sender: Sender<Arc<StorageImage>>,
     ) -> Self {
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone());
+        let command_buffer_allocator =
+            StandardCommandBufferAllocator::new(device.clone(), Default::default());
+
         let render_image = StorageImage::with_usage(
-            device.clone(),
+            &memory_allocator,
             ImageDimensions::Dim2d {
                 width: 1024,
                 height: 512,
@@ -303,19 +291,19 @@ impl GpuContext {
             },
             Format::A1R5G5B5_UNORM_PACK16,
             ImageUsage {
-                transfer_source: true,
-                transfer_destination: true,
+                transfer_src: true,
+                transfer_dst: true,
                 color_attachment: true,
                 sampled: true,
-                ..ImageUsage::none()
+                ..ImageUsage::empty()
             },
-            ImageCreateFlags::none(),
-            [queue.family()],
+            ImageCreateFlags::empty(),
+            [queue.queue_family_index()],
         )
         .unwrap();
 
         let render_image_back_image = StorageImage::with_usage(
-            device.clone(),
+            &memory_allocator,
             ImageDimensions::Dim2d {
                 width: 1024,
                 height: 512,
@@ -323,28 +311,25 @@ impl GpuContext {
             },
             Format::A1R5G5B5_UNORM_PACK16,
             ImageUsage {
-                transfer_destination: true,
+                transfer_dst: true,
                 sampled: true,
-                ..ImageUsage::none()
+                ..ImageUsage::empty()
             },
-            ImageCreateFlags::none(),
-            [queue.family()],
+            ImageCreateFlags::empty(),
+            [queue.queue_family_index()],
         )
         .unwrap();
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
-                device.clone(),
-                queue.family(),
+                &command_buffer_allocator,
+                queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
             .unwrap();
 
         builder
-            .clear_color_image(
-                render_image.clone(),
-                ClearValue::Float([0.0, 0.0, 0.0, 0.0]),
-            )
+            .clear_color_image(ClearColorImageInfo::image(render_image.clone()))
             .unwrap();
         // add command to clear the render image, and keep the future
         // for stacking later
@@ -439,6 +424,7 @@ impl GpuContext {
         .unwrap();
 
         let descriptor_set = PersistentDescriptorSet::new(
+            &descriptor_set_allocator,
             layout.clone(),
             [WriteDescriptorSet::image_view_sampler(
                 0,
@@ -456,54 +442,41 @@ impl GpuContext {
         )
         .unwrap();
 
-        let vertex_buffer_pool = CpuBufferPool::vertex_buffer(device.clone());
+        let vertex_buffer_pool = CpuBufferPool::vertex_buffer(memory_allocator.clone());
+        let vram_write_buffer_pool = CpuBufferPool::upload(memory_allocator.clone());
 
-        let (front_blit, front_blit_init_future) =
-            FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
+        let front_blit = FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
 
-        let gpu_future = Some(image_clear_future.join(front_blit_init_future).boxed());
+        let gpu_future = Some(image_clear_future.boxed());
 
         let command_builder = AutoCommandBufferBuilder::primary(
-            device.clone(),
-            queue.family(),
+            &command_buffer_allocator,
+            queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
 
         Self {
-            gpu_stat,
-            gpu_read_sender,
             gpu_front_image_sender,
 
-            allow_texture_disable: false,
-            textured_rect_flip: (false, false),
-
-            drawing_area_top_left: (0, 0),
-            drawing_area_bottom_right: (0, 0),
-            drawing_offset: (0, 0),
-            texture_window_mask: (0, 0),
-            texture_window_offset: (0, 0),
-
-            cached_gp0_e2: 0,
-            cached_gp0_e3: 0,
-            cached_gp0_e4: 0,
-            cached_gp0_e5: 0,
-
-            vram_display_area_start: (0, 0),
-            display_horizontal_range: (0, 0),
-            display_vertical_range: (0, 0),
             device,
             queue,
+
+            memory_allocator,
+            command_buffer_allocator,
+
             render_image,
             render_image_framebuffer,
 
             render_image_back_image,
+            should_update_back_image: false,
 
             polygon_pipelines,
             polyline_pipelines,
             descriptor_set,
 
             vertex_buffer_pool,
+            vram_write_buffer_pool,
             buffered_draw_vertices: Vec::new(),
             current_buffered_draws_state: None,
 
@@ -515,39 +488,10 @@ impl GpuContext {
             buffered_commands: 0,
         }
     }
-
-    pub(super) fn read_gpu_stat(&self) -> GpuStat {
-        self.gpu_stat.load()
-    }
-
-    pub(super) fn send_to_gpu_read(&self, value: u32) {
-        self.gpu_read_sender.send(value).unwrap();
-    }
-}
-
-impl GpuContext {
-    /// Drawing commands that use textures will update gpustat
-    fn update_gpu_stat_from_texture_params(&mut self, texture_params: &DrawingTextureParams) {
-        let x = (texture_params.tex_page_base[0] / 64) & 0xF;
-        let y = (texture_params.tex_page_base[1] / 256) & 1;
-        self.gpu_stat
-            .fetch_update(|mut s| {
-                s.bits &= !0x81FF;
-                s.bits |= x;
-                s.bits |= y << 4;
-                s.bits |= (texture_params.semi_transparency_mode as u32) << 5;
-                s.bits |= (texture_params.tex_page_color_mode as u32) << 7;
-                s.bits |= (texture_params.texture_disable as u32) << 15;
-                Some(s)
-            })
-            .unwrap();
-    }
 }
 
 impl GpuContext {
     pub fn write_vram_block(&mut self, block_range: (Range<u32>, Range<u32>), block: &[u16]) {
-        // TODO: check for out-of-bound writes here
-
         self.check_and_flush_buffered_draws(None);
 
         let left = block_range.0.start;
@@ -555,34 +499,125 @@ impl GpuContext {
         let width = block_range.0.len() as u32;
         let height = block_range.1.len() as u32;
 
-        let buffer = CpuAccessibleBuffer::from_iter(
-            self.device.clone(),
-            BufferUsage::transfer_source(),
-            false,
-            block.iter().cloned(),
-        )
-        .unwrap();
+        let buffer = self
+            .vram_write_buffer_pool
+            .from_iter(block.iter().cloned())
+            .unwrap();
 
-        self.command_builder
-            .copy_buffer_to_image_dimensions(
-                buffer,
-                self.render_image.clone(),
-                [left, top, 0],
-                [width, height, 1],
-                0,
-                1,
-                0,
+        let overflow_x = left + width > 1024;
+        let overflow_y = top + height > 512;
+        if overflow_x || overflow_y {
+            let stage_image = StorageImage::new(
+                &self.memory_allocator,
+                ImageDimensions::Dim2d {
+                    width,
+                    height,
+                    array_layers: 1,
+                },
+                Format::A1R5G5B5_UNORM_PACK16,
+                Some(self.queue.queue_family_index()),
             )
             .unwrap();
+
+            self.command_builder
+                .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
+                    buffer,
+                    stage_image.clone(),
+                ))
+                .unwrap();
+
+            // if we are not overflowing in a direction, just keep the old value
+            let not_overflowing_width = (1024 - left).min(width);
+            let not_overflowing_height = (512 - top).min(height);
+            let remaining_width = width - not_overflowing_width;
+            let remaining_height = height - not_overflowing_height;
+
+            // copy the not overflowing content
+            self.command_builder
+                .copy_image(CopyImageInfo {
+                    regions: [ImageCopy {
+                        src_subresource: stage_image.subresource_layers(),
+                        src_offset: [0, 0, 0],
+                        dst_subresource: self.render_image.subresource_layers(),
+                        dst_offset: [left, top, 0],
+                        extent: [not_overflowing_width, not_overflowing_height, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyImageInfo::images(stage_image.clone(), self.render_image.clone())
+                })
+                .unwrap();
+
+            if overflow_x {
+                self.command_builder
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: stage_image.subresource_layers(),
+                            src_offset: [not_overflowing_width, 0, 0],
+                            dst_subresource: self.render_image.subresource_layers(),
+                            dst_offset: [0, top, 0],
+                            extent: [remaining_width, not_overflowing_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(stage_image.clone(), self.render_image.clone())
+                    })
+                    .unwrap();
+            }
+            if overflow_y {
+                self.command_builder
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: stage_image.subresource_layers(),
+                            src_offset: [0, not_overflowing_height, 0],
+                            dst_subresource: self.render_image.subresource_layers(),
+                            dst_offset: [left, 0, 0],
+                            extent: [not_overflowing_width, remaining_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(stage_image.clone(), self.render_image.clone())
+                    })
+                    .unwrap();
+            }
+            if overflow_x && overflow_y {
+                self.command_builder
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: stage_image.subresource_layers(),
+                            src_offset: [not_overflowing_width, not_overflowing_height, 0],
+                            dst_subresource: self.render_image.subresource_layers(),
+                            dst_offset: [0, 0, 0],
+                            extent: [remaining_width, remaining_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(stage_image, self.render_image.clone())
+                    })
+                    .unwrap();
+            }
+        } else {
+            self.command_builder
+                .copy_buffer_to_image(CopyBufferToImageInfo {
+                    regions: [BufferImageCopy {
+                        image_subresource: self.render_image.subresource_layers(),
+                        image_offset: [left, top, 0],
+                        image_extent: [width, height, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyBufferToImageInfo::buffer_image(buffer, self.render_image.clone())
+                })
+                .unwrap();
+        }
+
         self.increment_command_builder_commands_and_flush();
 
         // update back image when loading textures
-        self.update_back_image();
+        self.schedule_back_image_update();
     }
 
-    pub fn read_vram_block(&mut self, block_range: &(Range<u32>, Range<u32>)) -> Vec<u16> {
-        // TODO: check for out-of-bound reads here
-
+    pub fn read_vram_block(&mut self, block_range: (Range<u32>, Range<u32>)) -> Vec<u16> {
         self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 
@@ -593,31 +628,129 @@ impl GpuContext {
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
-                self.device.clone(),
-                self.queue.family(),
+                &self.command_buffer_allocator,
+                self.queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
             .unwrap();
 
         let buffer = CpuAccessibleBuffer::from_iter(
-            self.device.clone(),
-            BufferUsage::transfer_destination(),
+            &self.memory_allocator,
+            BufferUsage {
+                transfer_dst: true,
+                ..BufferUsage::empty()
+            },
             false,
             (0..width * height).map(|_| 0u16),
         )
         .unwrap();
 
-        builder
-            .copy_image_to_buffer_dimensions(
-                self.render_image.clone(),
-                buffer.clone(),
-                [left, top, 0],
-                [width, height, 1],
-                0,
-                1,
-                0,
+        let overflow_x = left + width > 1024;
+        let overflow_y = top + height > 512;
+        if overflow_x || overflow_y {
+            let stage_image = StorageImage::new(
+                &self.memory_allocator,
+                ImageDimensions::Dim2d {
+                    width,
+                    height,
+                    array_layers: 1,
+                },
+                Format::A1R5G5B5_UNORM_PACK16,
+                Some(self.queue.queue_family_index()),
             )
             .unwrap();
+
+            // if we are not overflowing in a direction, just keep the old value
+            let not_overflowing_width = (1024 - left).min(width);
+            let not_overflowing_height = (512 - top).min(height);
+            let remaining_width = width - not_overflowing_width;
+            let remaining_height = height - not_overflowing_height;
+
+            // copy the not overflowing content
+            builder
+                .copy_image(CopyImageInfo {
+                    regions: [ImageCopy {
+                        src_subresource: self.render_image.subresource_layers(),
+                        src_offset: [left, top, 0],
+                        dst_subresource: stage_image.subresource_layers(),
+                        dst_offset: [0, 0, 0],
+                        extent: [not_overflowing_width, not_overflowing_height, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyImageInfo::images(self.render_image.clone(), stage_image.clone())
+                })
+                .unwrap();
+
+            if overflow_x {
+                builder
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: self.render_image.subresource_layers(),
+                            src_offset: [0, top, 0],
+                            dst_subresource: stage_image.subresource_layers(),
+                            dst_offset: [not_overflowing_width, 0, 0],
+                            extent: [remaining_width, not_overflowing_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(self.render_image.clone(), stage_image.clone())
+                    })
+                    .unwrap();
+            }
+            if overflow_y {
+                builder
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: self.render_image.subresource_layers(),
+                            src_offset: [left, 0, 0],
+                            dst_subresource: stage_image.subresource_layers(),
+                            dst_offset: [0, not_overflowing_height, 0],
+                            extent: [not_overflowing_width, remaining_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(self.render_image.clone(), stage_image.clone())
+                    })
+                    .unwrap();
+            }
+            if overflow_x && overflow_y {
+                builder
+                    .copy_image(CopyImageInfo {
+                        regions: [ImageCopy {
+                            src_subresource: self.render_image.subresource_layers(),
+                            src_offset: [0, 0, 0],
+                            dst_subresource: stage_image.subresource_layers(),
+                            dst_offset: [not_overflowing_width, not_overflowing_height, 0],
+                            extent: [remaining_width, remaining_height, 1],
+                            ..Default::default()
+                        }]
+                        .into(),
+                        ..CopyImageInfo::images(self.render_image.clone(), stage_image.clone())
+                    })
+                    .unwrap();
+            }
+
+            builder
+                .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
+                    stage_image,
+                    buffer.clone(),
+                ))
+                .unwrap();
+        } else {
+            builder
+                .copy_image_to_buffer(CopyImageToBufferInfo {
+                    regions: [BufferImageCopy {
+                        image_subresource: self.render_image.subresource_layers(),
+                        image_offset: [left, top, 0],
+                        image_extent: [width, height, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyImageToBufferInfo::image_buffer(self.render_image.clone(), buffer.clone())
+                })
+                .unwrap();
+        }
 
         let command_buffer = builder.build().unwrap();
 
@@ -662,23 +795,27 @@ impl GpuContext {
 
         // Creates buffer of the desired color, then clear it
         let buffer = CpuAccessibleBuffer::from_iter(
-            self.device.clone(),
-            BufferUsage::transfer_source(),
+            &self.memory_allocator,
+            BufferUsage {
+                transfer_src: true,
+                ..BufferUsage::empty()
+            },
             false,
             (0..size.0 * size.1).map(|_| u16_color),
         )
         .unwrap();
 
         self.command_builder
-            .copy_buffer_to_image_dimensions(
-                buffer,
-                self.render_image.clone(),
-                [top_left.0, top_left.1, 0],
-                [width, height, 1],
-                0,
-                1,
-                0,
-            )
+            .copy_buffer_to_image(CopyBufferToImageInfo {
+                regions: [BufferImageCopy {
+                    image_subresource: self.render_image.subresource_layers(),
+                    image_offset: [top_left.0, top_left.1, 0],
+                    image_extent: [width, height, 1],
+                    ..Default::default()
+                }]
+                .into(),
+                ..CopyBufferToImageInfo::buffer_image(buffer, self.render_image.clone())
+            })
             .unwrap();
         self.increment_command_builder_commands_and_flush();
     }
@@ -745,51 +882,31 @@ impl GpuContext {
     }
 
     fn new_command_buffer_builder(&mut self) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
-        let mut builder = AutoCommandBufferBuilder::primary(
-            self.device.clone(),
-            self.queue.family(),
+        let builder = AutoCommandBufferBuilder::primary(
+            &self.command_buffer_allocator,
+            self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
 
-        // copy to the back buffer
-        // NOTE: For some reason, removing this results in conflict error from vulkano
-        //       not sure, if there is a bug with the conflict checker or not, but
-        //       for now, we add this command in the beginning before binding the image as texture.
-        builder
-            .copy_image(
-                self.render_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                self.render_image_back_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                [1024, 512, 1],
-                1,
-            )
-            .unwrap();
-
         builder
     }
 
-    fn update_back_image(&mut self) {
+    fn schedule_back_image_update(&mut self) {
+        self.should_update_back_image = true;
+    }
+
+    fn update_back_image_if_needed(&mut self) {
         // copy to the back buffer
-        self.command_builder
-            .copy_image(
-                self.render_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                self.render_image_back_image.clone(),
-                [0, 0, 0],
-                0,
-                0,
-                [1024, 512, 1],
-                1,
-            )
-            .unwrap();
+        if self.should_update_back_image {
+            self.should_update_back_image = false;
+            self.command_builder
+                .copy_image(CopyImageInfo::images(
+                    self.render_image.clone(),
+                    self.render_image_back_image.clone(),
+                ))
+                .unwrap();
+        }
     }
 
     fn flush_command_builder(&mut self) {
@@ -838,7 +955,7 @@ impl GpuContext {
         // we create a "cloned iter" here so that we don't clone the vector
         let vertex_buffer = self
             .vertex_buffer_pool
-            .chunk(self.buffered_draw_vertices.iter().cloned())
+            .from_iter(self.buffered_draw_vertices.iter().cloned())
             .unwrap();
 
         let pipelines_set = match current_state.draw_type {
@@ -856,11 +973,19 @@ impl GpuContext {
             drawing_size: [current_state.width, current_state.height],
         };
 
-        let mut secondary_buffer = AutoCommandBufferBuilder::secondary_graphics(
-            self.device.clone(),
-            self.queue.family(),
+        let subpass = match pipeline.render_pass() {
+            BeginRenderPass(subpass) => subpass.clone(),
+            _ => unreachable!(),
+        };
+
+        let mut secondary_buffer = AutoCommandBufferBuilder::secondary(
+            &self.command_buffer_allocator,
+            self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
-            pipeline.subpass().clone(),
+            CommandBufferInheritanceInfo {
+                render_pass: Some(subpass.into()),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -887,9 +1012,11 @@ impl GpuContext {
 
         self.command_builder
             .begin_render_pass(
-                self.render_image_framebuffer.clone(),
+                RenderPassBeginInfo {
+                    clear_values: vec![None],
+                    ..RenderPassBeginInfo::framebuffer(self.render_image_framebuffer.clone())
+                },
                 SubpassContents::SecondaryCommandBuffers,
-                [ClearValue::None],
             )
             .unwrap()
             .execute_commands(secondary_buffer.build().unwrap())
@@ -922,27 +1049,24 @@ impl GpuContext {
         &mut self,
         vertices: &[DrawingVertex],
         draw_type: DrawType,
-        mut texture_params: DrawingTextureParams,
+        texture_params: DrawingTextureParams,
         textured: bool,
         texture_blending: bool,
         semi_transparent: bool,
+        state_snapshot: GpuStateSnapshot,
     ) {
-        let gpu_stat = self.read_gpu_stat();
+        let gpu_stat = state_snapshot.gpu_stat;
 
-        let (drawing_left, drawing_top) = self.drawing_area_top_left;
-        let (drawing_right, drawing_bottom) = self.drawing_area_bottom_right;
+        let (drawing_left, drawing_top) = state_snapshot.drawing_area_top_left;
+        let (drawing_right, drawing_bottom) = state_snapshot.drawing_area_bottom_right;
+        let drawing_offset = state_snapshot.drawing_offset;
 
         let left = drawing_left;
         let top = drawing_top;
         let height = drawing_bottom + 1 - drawing_top;
         let width = drawing_right + 1 - drawing_left;
 
-        if textured {
-            if !self.allow_texture_disable {
-                texture_params.texture_disable = false;
-            }
-            self.update_gpu_stat_from_texture_params(&texture_params);
-        };
+        drop(state_snapshot);
 
         let mut semi_transparency_mode = if textured {
             texture_params.semi_transparency_mode
@@ -965,7 +1089,7 @@ impl GpuContext {
                 // flush previous batch because semi_transparent mode 3 cannot be grouped
                 // with other draws, since it relies on updated back image
                 self.check_and_flush_buffered_draws(None);
-                self.update_back_image();
+                self.schedule_back_image_update();
                 semi_transparent_mode_3 = true;
             }
         } else {
@@ -975,11 +1099,16 @@ impl GpuContext {
             semi_transparency_mode = 3;
         }
 
+        // update back image only if we are going to use it
+        if textured || semi_transparent_mode_3 {
+            self.update_back_image_if_needed();
+        }
+
         // flush previous draws if this is a different state
         self.check_and_flush_buffered_draws(Some(BufferedDrawsState {
             semi_transparency_mode,
             draw_type,
-            drawing_offset: self.drawing_offset,
+            drawing_offset,
             left,
             top,
             width,
@@ -994,10 +1123,6 @@ impl GpuContext {
             tex_page_base: texture_params.tex_page_base,
             semi_transparency_mode: semi_transparency_mode as u32,
             tex_page_color_mode: texture_params.tex_page_color_mode as u32,
-            texture_flip: [
-                texture_params.texture_flip.0 as u32,
-                texture_params.texture_flip.1 as u32,
-            ],
             semi_transparent: semi_transparent as u32,
             dither_enabled: gpu_stat.dither_enabled() as u32,
             is_textured: textured as u32,
@@ -1011,13 +1136,14 @@ impl GpuContext {
         }
     }
 
-    pub fn draw_polygon(
+    pub(super) fn draw_polygon(
         &mut self,
         vertices: &[DrawingVertex],
         texture_params: DrawingTextureParams,
         textured: bool,
         texture_blending: bool,
         semi_transparent: bool,
+        state_snapshot: GpuStateSnapshot,
     ) {
         self.draw(
             vertices,
@@ -1026,10 +1152,16 @@ impl GpuContext {
             textured,
             texture_blending,
             semi_transparent,
+            state_snapshot,
         );
     }
 
-    pub fn draw_polyline(&mut self, vertices: &[DrawingVertex], semi_transparent: bool) {
+    pub(super) fn draw_polyline(
+        &mut self,
+        vertices: &[DrawingVertex],
+        semi_transparent: bool,
+        state_snapshot: GpuStateSnapshot,
+    ) {
         // Textures are not supported for polylines
         self.draw(
             vertices,
@@ -1038,11 +1170,13 @@ impl GpuContext {
             false,
             false,
             semi_transparent,
+            state_snapshot,
         );
     }
 
-    pub fn blit_to_front(&mut self, full_vram: bool) {
-        let gpu_stat = self.read_gpu_stat();
+    pub(super) fn blit_to_front(&mut self, full_vram: bool, state_snapshot: GpuStateSnapshot) {
+        let gpu_stat = state_snapshot.gpu_stat;
+        let vram_display_area_start = state_snapshot.vram_display_area_start;
         self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 
@@ -1050,10 +1184,7 @@ impl GpuContext {
             ([0; 2], [1024, 512])
         } else {
             (
-                [
-                    self.vram_display_area_start.0,
-                    self.vram_display_area_start.1,
-                ],
+                [vram_display_area_start.0, vram_display_area_start.1],
                 [
                     gpu_stat.horizontal_resolution(),
                     gpu_stat.vertical_resolution(),
@@ -1062,7 +1193,7 @@ impl GpuContext {
         };
 
         let front_image = StorageImage::with_usage(
-            self.device.clone(),
+            &self.memory_allocator,
             ImageDimensions::Dim2d {
                 width: size[0],
                 height: size[1],
@@ -1070,12 +1201,12 @@ impl GpuContext {
             },
             Format::B8G8R8A8_UNORM,
             ImageUsage {
-                transfer_source: true,
+                transfer_src: true,
                 color_attachment: true,
-                ..ImageUsage::none()
+                ..ImageUsage::empty()
             },
-            ImageCreateFlags::none(),
-            Some(self.queue.family()),
+            ImageCreateFlags::empty(),
+            Some(self.queue.queue_family_index()),
         )
         .unwrap();
 

@@ -7,11 +7,10 @@ layout(location = 2)  flat in uvec2 v_clut_base;
 layout(location = 3)  flat in uvec2 v_tex_page_base;
 layout(location = 4)  flat in uint  v_semi_transparency_mode;
 layout(location = 5)  flat in uint  v_tex_page_color_mode;
-layout(location = 6)  flat in uvec2 v_texture_flip;
-layout(location = 7)  flat in uint  v_semi_transparent;
-layout(location = 8)  flat in uint  v_dither_enabled;
-layout(location = 9)  flat in uint  v_is_textured;
-layout(location = 10) flat in uint  v_is_texture_blended;
+layout(location = 6)  flat in uint  v_semi_transparent;
+layout(location = 7)  flat in uint  v_dither_enabled;
+layout(location = 8)  flat in uint  v_is_textured;
+layout(location = 9) flat in uint  v_is_texture_blended;
 
 layout(location = 0) out vec4 f_color;
 
@@ -63,8 +62,14 @@ vec4 get_color_with_semi_transparency(vec3 color, bool semi_transparency_param) 
     return vec4(color, alpha);
 }
 
+vec4 fetch_color_from_texture_float(vec2 coord) {
+    return texture(back_tex, coord / SCREEN_DIM, 0);
+}
+
 vec4 fetch_color_from_texture(uvec2 coord) {
-    return texture(back_tex, vec2(coord) / SCREEN_DIM, 0);
+    coord.x = coord.x & 1023u;
+    coord.y = coord.y & 511u;
+    return texelFetch(back_tex, ivec2(coord), 0);
 }
 
 uint u16_from_color_with_alpha(vec4 raw_color_value) {
@@ -91,8 +96,6 @@ void main() {
     }
 
     if (v_is_textured == 1) {
-        uvec2 tex_coord = uvec2(round(v_tex_coord));
-
         // how many pixels in 16 bit
         // 0 => 4
         // 1 => 2
@@ -103,32 +106,29 @@ void main() {
             divider = 1;
         }
 
-        uint x = tex_coord.x / divider;
-        uint y = tex_coord.y;
+        // texture flip and texture repeat support
+        // flipped textures, will have decrement in number
+        // and might flip to negative as well, we can handle that by mod
+        vec2 norm_coord = mod(v_tex_coord, 255);
 
-        // texture flips
-        if (v_texture_flip.x == 1) {
-            x = (255u / divider) - x;
-        }
-        if (v_texture_flip.y == 1) {
-            y = 255u - y;
-        }
+        float x = norm_coord.x / divider;
+        float y = norm_coord.y;
 
-        vec4 color_value = fetch_color_from_texture(v_tex_page_base + uvec2(x, y));
+        vec4 color_value = fetch_color_from_texture_float(vec2(v_tex_page_base) + vec2(x, y));
 
         // if we need clut, then compute it
         if (v_tex_page_color_mode == 0u || v_tex_page_color_mode == 1u) {
             uint color_u16 = u16_from_color_with_alpha(color_value);
 
             uint mask = 0xFFFFu >> (16u - (16u / divider));
-            uint clut_index_shift = (tex_coord.x % divider) * (16u / divider);
+            uint clut_index_shift = (uint(norm_coord.x) % divider) * (16u / divider);
             uint clut_index = (color_u16 >> clut_index_shift) & mask;
 
             color_value = fetch_color_from_texture(v_clut_base + uvec2(clut_index, 0));
         }
 
         // if its all 0, then its transparent
-        if (color_value == vec4(0.0)) {
+        if (color_value == vec4(0)) {
             discard;
         }
 
