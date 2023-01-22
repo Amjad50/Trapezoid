@@ -83,32 +83,50 @@ impl Psx {
         (false, added_clock)
     }
 
-    pub fn clock_based_on_audio(&mut self) {
+    pub fn clock_based_on_audio(&mut self, max_clocks: u32) -> bool {
         // sync the CPU clocks to the SPU so that the audio would be clearer.
         const CYCLES_PER_FRAME: u32 = 564480;
 
+        let mut clocks = 0;
+
         while self.cpu_frame_cycles < CYCLES_PER_FRAME {
+            if clocks >= max_clocks {
+                return false;
+            }
+
             let (halted, added_clock) = self.common_clock();
             if halted {
-                return;
+                return true;
             }
             self.cpu_frame_cycles += added_clock;
+            clocks += added_clock;
         }
         self.cpu_frame_cycles -= CYCLES_PER_FRAME;
+
+        true
     }
 
-    pub fn clock_based_on_video(&mut self) {
+    pub fn clock_based_on_video(&mut self, max_clocks: u32) -> bool {
         let mut prev_vblank = self.bus.gpu().in_vblank();
         let mut current_vblank = prev_vblank;
 
+        let mut clocks = 0;
+
         while !current_vblank || prev_vblank {
             if self.common_clock().0 {
-                return;
+                return true;
+            } else {
+                clocks += self.common_clock().1;
+                if clocks >= max_clocks {
+                    return false;
+                }
             }
 
             prev_vblank = current_vblank;
             current_vblank = self.bus.gpu().in_vblank();
         }
+
+        true
     }
 
     pub fn change_controller_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {

@@ -431,15 +431,15 @@ fn main() {
         }
         *control_flow = ControlFlow::Poll;
 
-        // clock for one frame, this may take more time than one frame
-        // and would result in low UI response, but currently, the FPS is generally
-        // good, so it shouldn't be a big issue.
-        psx.clock_based_on_video();
+        // Run the CPU for 100000 cycles, this allows for some time for UI
+        // to be responsive and not spend the time on emulation alone
+        // A full frame is generally around 564480 cycles
+        if psx.clock_based_on_audio(100000) {
+            display.render_frame(&mut psx);
+        }
         let audio_buffer = psx.take_audio_buffer();
         if args.audio {
             audio_player.queue(&audio_buffer);
         }
-
-        display.render_frame(&mut psx);
     });
 }
