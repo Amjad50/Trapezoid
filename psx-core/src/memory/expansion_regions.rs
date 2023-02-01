@@ -10,12 +10,14 @@ use super::BusLine;
 //
 // For now using as ram
 pub struct ExpansionRegion1 {
-    data: [u8; 0x80000],
+    data: Box<[u8; 0x80000]>,
 }
 
 impl Default for ExpansionRegion1 {
     fn default() -> Self {
-        Self { data: [0; 0x80000] }
+        Self {
+            data: Box::new([0; 0x80000]),
+        }
     }
 }
 
