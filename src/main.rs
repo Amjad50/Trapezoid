@@ -79,6 +79,7 @@ impl VkDisplay {
                     .position(|(i, q)| {
                         q.queue_flags.intersects(&QueueFlags {
                             graphics: true,
+                            compute: true,
                             ..QueueFlags::empty()
                         }) && p.surface_support(i as u32, &surface).unwrap_or(false)
                     })
@@ -144,7 +145,7 @@ impl VkDisplay {
                         ..ImageUsage::empty()
                     },
                     composite_alpha: CompositeAlpha::Opaque,
-                    present_mode: PresentMode::Immediate,
+                    present_mode: PresentMode::Fifo,
                     ..Default::default()
                 },
             )
