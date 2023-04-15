@@ -18,7 +18,7 @@ vulkano = "0.33"
 winit = "0.28"
 vulkano-win = "0.33"
 ringbuf = { version = "0.3.1", default-features = false, features = ["alloc"] }
-cpal = { version = "0.14.0", default-features = false }
+cpal = { version = "0.15", default-features = false }
 
 [workspace]
 members = [

@@ -3,7 +3,8 @@ use std::{collections::HashSet, io::Write, process, thread};
 use crossbeam::channel::{Receiver, Sender};
 use rustyline::{
     completion::Completer, error::ReadlineError, highlight::Highlighter, hint::Hinter,
-    history::History, line_buffer::LineBuffer, validate::Validator, CompletionType, Config, Editor,
+    history::MemHistory, line_buffer::LineBuffer, validate::Validator, Changeset, CompletionType,
+    Config, Editor,
 };
 
 use crate::cpu::register;
@@ -94,10 +95,9 @@ impl Completer for EditorHelper {
             Ok((0, Vec::with_capacity(0)))
         }
     }
-
-    fn update(&self, line: &mut LineBuffer, start: usize, elected: &str) {
+    fn update(&self, line: &mut LineBuffer, start: usize, elected: &str, cl: &mut Changeset) {
         let end = line.pos();
-        line.replace(start..end, elected);
+        line.replace(start..end, elected, cl);
     }
 }
 impl rustyline::Helper for EditorHelper {}
@@ -116,7 +116,7 @@ enum EditorCmd {
     Stop,
 }
 
-fn create_editor() -> Editor<EditorHelper> {
+fn create_editor() -> Editor<EditorHelper, MemHistory> {
     let conf = Config::builder()
         .auto_add_history(true)
         .completion_type(CompletionType::List)
@@ -153,7 +153,7 @@ impl Debugger {
         let (editor_tx, editor_rx) = crossbeam::channel::bounded(1);
 
         thread::spawn(move || {
-            let mut history = History::new();
+            let mut history = MemHistory::new();
             let mut editor = None;
 
             loop {
