@@ -32,7 +32,7 @@ impl DigitalControllerKey {
 const JOY_CTRL_ACKKNOWLEDGE: u16 = 0b0000000000010000;
 const JOY_CTRL_RESET: u16 = 0b0000000001000000;
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct JoyControl: u16 {
         const TX_ENABLE            = 0b0000000000000001;
         const JOY_SELECT           = 0b0000000000000010;
@@ -73,7 +73,7 @@ impl JoyControl {
 }
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct JoyMode: u16 {
         const BAUDRATE_RELOAD_FACTOR = 0b0000000000000011;
         const CHARACTER_LENGTH       = 0b0000000000001100;
@@ -86,7 +86,7 @@ bitflags! {
 
 impl JoyMode {
     fn baudrate_reload_factor_shift(&self) -> u32 {
-        let bits = (self.bits & Self::BAUDRATE_RELOAD_FACTOR.bits) as u32;
+        let bits = (self.bits() & Self::BAUDRATE_RELOAD_FACTOR.bits()) as u32;
 
         if bits == 1 {
             0
@@ -99,7 +99,7 @@ impl JoyMode {
     }
 
     fn character_length(&self) -> u8 {
-        let bits = ((self.bits & Self::CHARACTER_LENGTH.bits) >> 2) as u8;
+        let bits = ((self.bits() & Self::CHARACTER_LENGTH.bits()) >> 2) as u8;
 
         5 + bits
     }
@@ -850,7 +850,7 @@ impl Default for ControllerAndMemoryCard {
         let baudrate_timer = baudrate_timer_reload / 2;
         Self {
             ctrl: JoyControl::empty(),
-            mode: JoyMode::from_bits_truncate(0x000D),
+            mode: JoyMode::from_bits_retain(0x000D),
             stat: JoyStat::TX_READY_1 | JoyStat::TX_READY_2,
             baudrate_timer_reload,
             baudrate_timer,
@@ -932,7 +932,7 @@ impl ControllerAndMemoryCard {
 impl ControllerAndMemoryCard {
     fn get_stat(&self) -> u32 {
         let timer = self.baudrate_timer & 0x1FFFFF;
-        self.stat.bits | (timer << 11)
+        self.stat.bits() | (timer << 11)
     }
 
     fn trigger_baudrate_reload(&mut self) {
@@ -990,8 +990,8 @@ impl BusLine for ControllerAndMemoryCard {
     fn read_u16(&mut self, addr: u32) -> u16 {
         match addr {
             0x4 => self.get_stat() as u16,
-            0x8 => self.mode.bits,
-            0xA => self.ctrl.bits,
+            0x8 => self.mode.bits(),
+            0xA => self.ctrl.bits(),
             0xE => self.baudrate_timer_reload as u16,
             _ => unreachable!(),
         }
@@ -1000,11 +1000,11 @@ impl BusLine for ControllerAndMemoryCard {
     fn write_u16(&mut self, addr: u32, data: u16) {
         match addr {
             0x8 => {
-                self.mode = JoyMode::from_bits_truncate(data);
+                self.mode = JoyMode::from_bits_retain(data);
                 log::info!("joy mode write {:04X} => {:?}", data, self.mode);
             }
             0xA => {
-                self.ctrl = JoyControl::from_bits_truncate(data);
+                self.ctrl = JoyControl::from_bits_retain(data);
                 log::info!("joy ctrl write {:04X} => {:?}", data, self.ctrl);
                 if data & JOY_CTRL_ACKKNOWLEDGE != 0 {
                     log::info!("joy acknowledge interrupt");

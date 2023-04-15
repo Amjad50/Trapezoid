@@ -390,7 +390,7 @@ impl Gp0Command for RectangleCommand {
             // it will just take what is needed from the stat, which include the tex page
             // to use and color mode
             self.texture_params
-                .tex_page_from_gpustat(gpu_stat.load().bits);
+                .tex_page_from_gpustat(gpu_stat.load().bits());
 
             if !state_snapshot.allow_texture_disable {
                 self.texture_params.texture_disable = false;
@@ -833,10 +833,10 @@ impl Gp0Command for EnvironmentCommand {
 
                 gpu_stat
                     .fetch_update(|mut s| {
-                        s.bits &= !0x87FF;
-                        s.bits |= stat_lower_11_bits;
+                        s &= GpuStat::from_bits_retain(!0x87FF);
+                        s |= GpuStat::from_bits_retain(stat_lower_11_bits);
                         if stat_bit_15_texture_disable && state_snapshot.allow_texture_disable {
-                            s.bits |= 1 << 15;
+                            s |= GpuStat::DISABLE_TEXTURE; // 1 << 15
                         }
                         Some(s)
                     })
@@ -904,12 +904,12 @@ impl Gp0Command for EnvironmentCommand {
 
                 //  11    Set mask while drawing (0=TextureBit15, 1=ForceBit15=1)
                 //  12    Check mask before draw (0=Draw Always, 1=Draw if Bit15=0)
-                let stat_bits_11_12 = data & 3;
+                let stat_bits_11_12 = (data & 3) << 11;
 
                 gpu_stat
                     .fetch_update(|mut s| {
-                        s.bits &= !(3 << 11);
-                        s.bits |= stat_bits_11_12;
+                        s &= GpuStat::from_bits_retain(!(3 << 11));
+                        s |= GpuStat::from_bits_retain(stat_bits_11_12);
                         Some(s)
                     })
                     .unwrap();
