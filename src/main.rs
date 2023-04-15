@@ -376,7 +376,6 @@ fn main() {
     .unwrap();
 
     let mut last_frame_time = Instant::now();
-    let mut render_done = false;
 
     let mut audio_player = AudioPlayer::new(44100);
     if args.audio {
@@ -384,8 +383,8 @@ fn main() {
     }
 
     event_loop.run(move |event, _target, control_flow| {
-        if let Event::WindowEvent { event, .. } = event {
-            match event {
+        match event {
+            Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
                     return;
@@ -431,28 +430,25 @@ fn main() {
                     }
                 }
                 _ => {}
+            },
+            Event::MainEventsCleared => {
+                // limit the frame rate to 60 fps if the display support more than that
+                if last_frame_time.elapsed().as_micros() < 16667 {
+                    return;
+                }
+                last_frame_time = Instant::now();
+
+                psx.clock_full_audio_frame();
+                display.render_frame(&mut psx);
+
+                let audio_buffer = psx.take_audio_buffer();
+                if args.audio {
+                    audio_player.queue(&audio_buffer);
+                }
             }
+            _ => {}
         }
+
         *control_flow = ControlFlow::Poll;
-
-        if render_done {
-            if last_frame_time.elapsed().as_micros() < 16667 {
-                return;
-            }
-            render_done = false;
-            last_frame_time = Instant::now();
-        }
-
-        // Run the CPU for 100000 cycles, this allows for some time for UI
-        // to be responsive and not spend the time on emulation alone
-        // A full frame is generally around 564480 cycles
-        if psx.clock_based_on_audio(100000) {
-            display.render_frame(&mut psx);
-            render_done = true;
-        }
-        let audio_buffer = psx.take_audio_buffer();
-        if args.audio {
-            audio_player.queue(&audio_buffer);
-        }
     });
 }
