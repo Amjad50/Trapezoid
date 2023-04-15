@@ -41,14 +41,16 @@ impl Debugger {
     #[inline]
     pub fn trace_instruction(
         &mut self,
-        _pc: u32,
+        _regs: &Registers,
         _jumping: bool,
         _instruction: &Instruction,
     ) -> bool {
         false
     }
 
-    pub fn trace_write(&mut self, _addr: u32) {}
+    pub fn trace_write(&mut self, _addr: u32, _bits: u32) {}
+
+    pub fn trace_read(&mut self, _addr: u32, _bits: u32) {}
 }
 
 pub trait CpuBusProvider: BusLine {
