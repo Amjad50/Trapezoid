@@ -129,6 +129,34 @@ impl Psx {
         true
     }
 
+    pub fn clock_full_audio_frame(&mut self) {
+        // sync the CPU clocks to the SPU so that the audio would be clearer.
+        const CYCLES_PER_FRAME: u32 = 564480;
+
+        let mut clocks = 0;
+        while clocks < CYCLES_PER_FRAME {
+            let (halted, added_clock) = self.common_clock();
+            if halted {
+                return;
+            }
+            clocks += added_clock;
+        }
+    }
+
+    pub fn clock_full_video_frame(&mut self) {
+        let mut prev_vblank = self.bus.gpu().in_vblank();
+        let mut current_vblank = prev_vblank;
+
+        while !current_vblank || prev_vblank {
+            if self.common_clock().0 {
+                return;
+            }
+
+            prev_vblank = current_vblank;
+            current_vblank = self.bus.gpu().in_vblank();
+        }
+    }
+
     pub fn change_controller_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {
         self.bus
             .controller_mem_card_mut()

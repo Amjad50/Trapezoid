@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use bytemuck::{Pod, Zeroable};
 use vulkano::{
-    buffer::{BufferUsage, CpuAccessibleBuffer, DeviceLocalBuffer},
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder,
         CommandBufferExecFuture, CommandBufferUsage, CopyBufferToImageInfo, CopyImageToBufferInfo,
@@ -17,11 +16,11 @@ use vulkano::{
         view::{ImageView, ImageViewCreateInfo},
         ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage,
     },
-    memory::allocator::StandardMemoryAllocator,
+    memory::allocator::{AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator},
     pipeline::{
         graphics::{
             input_assembly::{InputAssemblyState, PrimitiveTopology},
-            vertex_input::BuffersDefinition,
+            vertex_input::Vertex as VertexTrait,
             viewport::{Viewport, ViewportState},
         },
         ComputePipeline, GraphicsPipeline, Pipeline, PipelineBindPoint,
@@ -60,11 +59,6 @@ void main() {
     tex_coords = (position  + 1.0) / 2.0;
     tex_coords = tex_coords * size + topleft;
 }",
-        types_meta: {
-            use bytemuck::{Pod, Zeroable};
-
-            #[derive(Clone, Copy, Zeroable, Pod)]
-        },
     }
 }
 
@@ -133,13 +127,12 @@ void main() {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Default, Debug, Clone, Copy, VertexTrait, BufferContents)]
 #[repr(C)]
 struct Vertex {
+    #[format(R32G32_SFLOAT)]
     position: [f32; 2],
 }
-
-vulkano::impl_vertex!(Vertex, position);
 
 pub(super) struct FrontBlit {
     device: Arc<Device>,
@@ -151,15 +144,15 @@ pub(super) struct FrontBlit {
     texture_image: Arc<StorageImage>,
 
     texture_24bit_image: Arc<StorageImage>,
-    texture_24bit_in_buffer: Arc<DeviceLocalBuffer<[u16]>>,
-    texture_24bit_out_buffer: Arc<DeviceLocalBuffer<[u32]>>,
+    texture_24bit_in_buffer: Subbuffer<[u16]>,
+    texture_24bit_out_buffer: Subbuffer<[u32]>,
     texture_24bit_desc_set: Arc<PersistentDescriptorSet>,
 
     render_pass: Arc<RenderPass>,
     g_pipeline: Arc<GraphicsPipeline>,
     c_pipeline: Arc<ComputePipeline>,
 
-    vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
+    vertex_buffer: Subbuffer<[Vertex]>,
 }
 
 impl FrontBlit {
@@ -192,7 +185,7 @@ impl FrontBlit {
         .unwrap();
 
         let g_pipeline = GraphicsPipeline::start()
-            .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
+            .vertex_input_state(Vertex::per_vertex())
             .vertex_shader(vs.entry_point("main").unwrap(), ())
             .input_assembly_state(
                 InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
@@ -220,37 +213,37 @@ impl FrontBlit {
                 array_layers: 1,
             },
             Format::B8G8R8A8_UNORM,
-            ImageUsage {
-                transfer_dst: true,
-                sampled: true,
-                ..ImageUsage::empty()
-            },
+            ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
             ImageCreateFlags::empty(),
             [queue.queue_family_index()],
         )
         .unwrap();
 
-        let texture_24bit_in_buffer = DeviceLocalBuffer::<[u16]>::array(
+        let texture_24bit_in_buffer = Buffer::new_slice::<u16>(
             &memory_allocator,
-            1024 * 512,
-            BufferUsage {
-                transfer_dst: true,
-                storage_buffer: true,
-                ..BufferUsage::empty()
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
             },
-            [queue.queue_family_index()],
+            AllocationCreateInfo {
+                usage: MemoryUsage::DeviceOnly,
+                ..Default::default()
+            },
+            1024 * 512,
         )
         .unwrap();
 
-        let texture_24bit_out_buffer = DeviceLocalBuffer::<[u32]>::array(
+        let texture_24bit_out_buffer = Buffer::new_slice::<u32>(
             &memory_allocator,
-            1024 * 512,
-            BufferUsage {
-                transfer_src: true,
-                storage_buffer: true,
-                ..BufferUsage::empty()
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC | BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
             },
-            [queue.queue_family_index()],
+            AllocationCreateInfo {
+                usage: MemoryUsage::DeviceOnly,
+                ..Default::default()
+            },
+            1024 * 512,
         )
         .unwrap();
 
@@ -264,13 +257,16 @@ impl FrontBlit {
         )
         .unwrap();
 
-        let vertex_buffer = CpuAccessibleBuffer::from_iter(
+        let vertex_buffer = Buffer::from_iter(
             &memory_allocator,
-            BufferUsage {
-                vertex_buffer: true,
-                ..BufferUsage::empty()
+            BufferCreateInfo {
+                usage: BufferUsage::VERTEX_BUFFER,
+                ..Default::default()
             },
-            false,
+            AllocationCreateInfo {
+                usage: MemoryUsage::Upload,
+                ..Default::default()
+            },
             [
                 Vertex {
                     position: [-1.0, -1.0],
@@ -404,7 +400,7 @@ impl FrontBlit {
         )
         .unwrap();
 
-        let push_constants = vs::ty::PushConstantData { topleft, size };
+        let push_constants = vs::PushConstantData { topleft, size };
 
         builder
             .begin_render_pass(

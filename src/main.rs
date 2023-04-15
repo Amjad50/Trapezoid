@@ -77,11 +77,9 @@ impl VkDisplay {
                     .iter()
                     .enumerate()
                     .position(|(i, q)| {
-                        q.queue_flags.intersects(&QueueFlags {
-                            graphics: true,
-                            compute: true,
-                            ..QueueFlags::empty()
-                        }) && p.surface_support(i as u32, &surface).unwrap_or(false)
+                        q.queue_flags
+                            .intersects(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
+                            && p.surface_support(i as u32, &surface).unwrap_or(false)
                     })
                     .map(|i| (p, i as u32))
             })
@@ -140,10 +138,7 @@ impl VkDisplay {
                     min_image_count: caps.min_image_count,
                     image_format: format,
                     image_extent: dimensions,
-                    image_usage: ImageUsage {
-                        transfer_dst: true,
-                        ..ImageUsage::empty()
-                    },
+                    image_usage: ImageUsage::TRANSFER_DST,
                     composite_alpha: CompositeAlpha::Opaque,
                     present_mode: PresentMode::Fifo,
                     ..Default::default()
@@ -185,10 +180,8 @@ impl VkDisplay {
                 p.queue_family_properties()
                     .iter()
                     .position(|q| {
-                        q.queue_flags.intersects(&QueueFlags {
-                            graphics: true,
-                            ..QueueFlags::empty()
-                        })
+                        q.queue_flags
+                            .intersects(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
                     })
                     .map(|i| (p, i as u32))
             })
@@ -375,14 +368,16 @@ fn main() {
     )
     .unwrap();
 
+    let mut last_frame_time = Instant::now();
+
     let mut audio_player = AudioPlayer::new(44100);
     if args.audio {
         audio_player.play();
     }
 
     event_loop.run(move |event, _target, control_flow| {
-        if let Event::WindowEvent { event, .. } = event {
-            match event {
+        match event {
+            Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
                     return;
@@ -428,19 +423,25 @@ fn main() {
                     }
                 }
                 _ => {}
-            }
-        }
-        *control_flow = ControlFlow::Poll;
+            },
+            Event::MainEventsCleared => {
+                // limit the frame rate to 60 fps if the display support more than that
+                if last_frame_time.elapsed().as_micros() < 16667 {
+                    return;
+                }
+                last_frame_time = Instant::now();
 
-        // Run the CPU for 100000 cycles, this allows for some time for UI
-        // to be responsive and not spend the time on emulation alone
-        // A full frame is generally around 564480 cycles
-        if psx.clock_based_on_audio(100000) {
-            display.render_frame(&mut psx);
+                psx.clock_full_audio_frame();
+                display.render_frame(&mut psx);
+
+                let audio_buffer = psx.take_audio_buffer();
+                if args.audio {
+                    audio_player.queue(&audio_buffer);
+                }
+            }
+            _ => {}
         }
-        let audio_buffer = psx.take_audio_buffer();
-        if args.audio {
-            audio_player.queue(&audio_buffer);
-        }
+
+        *control_flow = ControlFlow::Poll;
     });
 }

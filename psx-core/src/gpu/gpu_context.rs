@@ -1,34 +1,43 @@
-use bytemuck::{Pod, Zeroable};
 use crossbeam::channel::Sender;
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, CpuBufferPool};
-use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
-use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, BufferImageCopy, ClearColorImageInfo, CommandBufferInheritanceInfo,
-    CommandBufferUsage, CopyBufferToImageInfo, CopyImageInfo, CopyImageToBufferInfo, ImageCopy,
-    PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassContents,
+use vulkano::{
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
+    command_buffer::{
+        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, BufferImageCopy,
+        ClearAttachment, ClearColorImageInfo, ClearRect, CommandBufferInheritanceInfo,
+        CommandBufferUsage, CopyBufferToImageInfo, CopyImageInfo, CopyImageToBufferInfo, ImageCopy,
+        PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract, RenderPassBeginInfo,
+        SubpassContents,
+    },
+    descriptor_set::{
+        allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
+    },
+    device::{Device, Queue},
+    format::{ClearColorValue, Format},
+    image::{
+        view::{ImageView, ImageViewCreateInfo},
+        ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage,
+    },
+    memory::allocator::{AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator},
+    pipeline::{
+        graphics::{
+            color_blend::{
+                AttachmentBlend, BlendFactor, BlendOp, ColorBlendAttachmentState, ColorBlendState,
+                ColorComponents,
+            },
+            input_assembly::{InputAssemblyState, PrimitiveTopology},
+            render_pass::PipelineRenderPassType::BeginRenderPass,
+            vertex_input::Vertex,
+            viewport::{Viewport, ViewportState},
+        },
+        GraphicsPipeline, Pipeline, PipelineBindPoint, StateMode,
+    },
+    render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
+    sampler::{
+        ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
+        SamplerMipmapMode,
+    },
+    sync::{self, GpuFuture},
 };
-use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
-use vulkano::device::{Device, Queue};
-use vulkano::format::Format;
-use vulkano::image::view::{ImageView, ImageViewCreateInfo};
-use vulkano::image::{ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage};
-use vulkano::memory::allocator::StandardMemoryAllocator;
-use vulkano::pipeline::graphics::color_blend::{
-    AttachmentBlend, BlendFactor, BlendOp, ColorBlendAttachmentState, ColorBlendState,
-    ColorComponents,
-};
-use vulkano::pipeline::graphics::input_assembly::{InputAssemblyState, PrimitiveTopology};
-use vulkano::pipeline::graphics::render_pass::PipelineRenderPassType::BeginRenderPass;
-use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
-use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
-use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint, StateMode};
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, Subpass};
-use vulkano::sampler::{
-    ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
-    SamplerMipmapMode,
-};
-use vulkano::sync::{self, GpuFuture};
 
 use super::front_blit::FrontBlit;
 use super::GpuStateSnapshot;
@@ -40,11 +49,6 @@ mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
         path: "src/gpu/shaders/vertex.glsl",
-        types_meta: {
-            use bytemuck::{Pod, Zeroable};
-
-            #[derive(Clone, Copy, Zeroable, Pod)]
-        },
     }
 }
 
@@ -53,15 +57,6 @@ mod fs {
         ty: "fragment",
         path: "src/gpu/shaders/fragment.glsl"
     }
-}
-
-/// helper to convert opengl colors into u16
-#[inline]
-fn gl_pixel_to_u16(pixel: &(u8, u8, u8, u8)) -> u16 {
-    ((pixel.3 & 1) as u16) << 15
-        | ((pixel.2 >> 3) as u16) << 10
-        | ((pixel.1 >> 3) as u16) << 5
-        | (pixel.0 >> 3) as u16
 }
 
 #[inline]
@@ -75,7 +70,7 @@ pub fn vertex_position_from_u32(position: u32) -> [f32; 2] {
     [x as f32, y as f32]
 }
 
-#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
+#[derive(Copy, Clone, Debug, Default)]
 #[repr(C)]
 pub struct DrawingVertex {
     position: [f32; 2],
@@ -138,38 +133,34 @@ impl DrawingVertex {
 ///
 /// TODO: some old GPUs might not support more than 8 vertex data, check on that.
 ///       We can group multiple data together into a single u32.
-#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
+#[derive(Copy, Clone, Debug, Default, Vertex, BufferContents)]
 #[repr(C)]
 struct DrawingVertexFull {
+    #[format(R32G32_SFLOAT)]
     position: [f32; 2],
+    #[format(R32G32B32_SFLOAT)]
     color: [f32; 3],
+    #[format(R32G32_SINT)]
     tex_coord: [i32; 2],
 
+    #[format(R32G32_UINT)]
     clut_base: [u32; 2],
+    #[format(R32G32_UINT)]
     tex_page_base: [u32; 2],
+    #[format(R32_UINT)]
     semi_transparency_mode: u32, // u8
-    tex_page_color_mode: u32,    // u8
+    #[format(R32_UINT)]
+    tex_page_color_mode: u32, // u8
 
-    semi_transparent: u32,   // bool
-    dither_enabled: u32,     // bool
-    is_textured: u32,        // bool
+    #[format(R32_UINT)]
+    semi_transparent: u32, // bool
+    #[format(R32_UINT)]
+    dither_enabled: u32, // bool
+    #[format(R32_UINT)]
+    is_textured: u32, // bool
+    #[format(R32_UINT)]
     is_texture_blended: u32, // bool
 }
-
-vulkano::impl_vertex!(
-    DrawingVertexFull,
-    position,
-    color,
-    tex_coord,
-    clut_base,
-    tex_page_base,
-    semi_transparency_mode,
-    tex_page_color_mode,
-    semi_transparent,
-    dither_enabled,
-    is_textured,
-    is_texture_blended
-);
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct DrawingTextureParams {
@@ -258,8 +249,6 @@ pub struct GpuContext {
     polyline_pipelines: Vec<Arc<GraphicsPipeline>>,
     descriptor_set: Arc<PersistentDescriptorSet>,
 
-    vertex_buffer_pool: CpuBufferPool<DrawingVertexFull>,
-    vram_write_buffer_pool: CpuBufferPool<u16>,
     buffered_draw_vertices: Vec<DrawingVertexFull>,
     current_buffered_draws_state: Option<BufferedDrawsState>,
 
@@ -290,13 +279,10 @@ impl GpuContext {
                 array_layers: 1,
             },
             Format::A1R5G5B5_UNORM_PACK16,
-            ImageUsage {
-                transfer_src: true,
-                transfer_dst: true,
-                color_attachment: true,
-                sampled: true,
-                ..ImageUsage::empty()
-            },
+            ImageUsage::TRANSFER_SRC
+                | ImageUsage::TRANSFER_DST
+                | ImageUsage::SAMPLED
+                | ImageUsage::COLOR_ATTACHMENT,
             ImageCreateFlags::empty(),
             [queue.queue_family_index()],
         )
@@ -310,11 +296,7 @@ impl GpuContext {
                 array_layers: 1,
             },
             Format::A1R5G5B5_UNORM_PACK16,
-            ImageUsage {
-                transfer_dst: true,
-                sampled: true,
-                ..ImageUsage::empty()
-            },
+            ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
             ImageCreateFlags::empty(),
             [queue.queue_family_index()],
         )
@@ -361,7 +343,7 @@ impl GpuContext {
         let polygon_pipelines = (0..5)
             .map(|transparency_mode| {
                 GraphicsPipeline::start()
-                    .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertexFull>())
+                    .vertex_input_state(DrawingVertexFull::per_vertex())
                     .vertex_shader(vs.entry_point("main").unwrap(), ())
                     .input_assembly_state(
                         InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
@@ -379,7 +361,7 @@ impl GpuContext {
         let polyline_pipelines = (0..5)
             .map(|transparency_mode| {
                 GraphicsPipeline::start()
-                    .vertex_input_state(BuffersDefinition::new().vertex::<DrawingVertexFull>())
+                    .vertex_input_state(DrawingVertexFull::per_vertex())
                     .vertex_shader(vs.entry_point("main").unwrap(), ())
                     .input_assembly_state(
                         InputAssemblyState::new().topology(PrimitiveTopology::LineList),
@@ -442,9 +424,6 @@ impl GpuContext {
         )
         .unwrap();
 
-        let vertex_buffer_pool = CpuBufferPool::vertex_buffer(memory_allocator.clone());
-        let vram_write_buffer_pool = CpuBufferPool::upload(memory_allocator.clone());
-
         let front_blit = FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
 
         let gpu_future = Some(image_clear_future.boxed());
@@ -475,8 +454,6 @@ impl GpuContext {
             polyline_pipelines,
             descriptor_set,
 
-            vertex_buffer_pool,
-            vram_write_buffer_pool,
             buffered_draw_vertices: Vec::new(),
             current_buffered_draws_state: None,
 
@@ -499,10 +476,19 @@ impl GpuContext {
         let width = block_range.0.len() as u32;
         let height = block_range.1.len() as u32;
 
-        let buffer = self
-            .vram_write_buffer_pool
-            .from_iter(block.iter().cloned())
-            .unwrap();
+        let buffer = Buffer::from_iter(
+            &self.memory_allocator,
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                usage: MemoryUsage::Upload,
+                ..Default::default()
+            },
+            block.iter().cloned(),
+        )
+        .unwrap();
 
         let overflow_x = left + width > 1024;
         let overflow_y = top + height > 512;
@@ -634,14 +620,17 @@ impl GpuContext {
             )
             .unwrap();
 
-        let buffer = CpuAccessibleBuffer::from_iter(
+        let buffer = Buffer::new_slice::<u16>(
             &self.memory_allocator,
-            BufferUsage {
-                transfer_dst: true,
-                ..BufferUsage::empty()
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_DST,
+                ..Default::default()
             },
-            false,
-            (0..width * height).map(|_| 0u16),
+            AllocationCreateInfo {
+                usage: MemoryUsage::Download,
+                ..Default::default()
+            },
+            (width * height) as u64,
         )
         .unwrap();
 
@@ -788,34 +777,33 @@ impl GpuContext {
             height = 512 - top_left.1;
         }
 
-        // TODO: check that the gl color encoding works well with vulkano
-        let u16_color = gl_pixel_to_u16(&(color.0, color.1, color.2, 0));
-
-        // TODO: for now vulkano does not support clear rect, but later change this
-
-        // Creates buffer of the desired color, then clear it
-        let buffer = CpuAccessibleBuffer::from_iter(
-            &self.memory_allocator,
-            BufferUsage {
-                transfer_src: true,
-                ..BufferUsage::empty()
-            },
-            false,
-            (0..size.0 * size.1).map(|_| u16_color),
-        )
-        .unwrap();
-
         self.command_builder
-            .copy_buffer_to_image(CopyBufferToImageInfo {
-                regions: [BufferImageCopy {
-                    image_subresource: self.render_image.subresource_layers(),
-                    image_offset: [top_left.0, top_left.1, 0],
-                    image_extent: [width, height, 1],
-                    ..Default::default()
-                }]
-                .into(),
-                ..CopyBufferToImageInfo::buffer_image(buffer, self.render_image.clone())
-            })
+            .begin_render_pass(
+                RenderPassBeginInfo {
+                    clear_values: vec![None],
+                    ..RenderPassBeginInfo::framebuffer(self.render_image_framebuffer.clone())
+                },
+                SubpassContents::Inline,
+            )
+            .unwrap()
+            .clear_attachments(
+                [ClearAttachment::Color {
+                    color_attachment: 0,
+                    clear_value: ClearColorValue::Float([
+                        color.0 as f32 / 255.0,
+                        color.1 as f32 / 255.0,
+                        color.2 as f32 / 255.0,
+                        0.0,
+                    ]),
+                }],
+                [ClearRect {
+                    offset: [top_left.0, top_left.1],
+                    extent: [width, height],
+                    array_layers: 0..1,
+                }],
+            )
+            .unwrap()
+            .end_render_pass()
             .unwrap();
         self.increment_command_builder_commands_and_flush();
     }
@@ -868,10 +856,7 @@ impl GpuContext {
             logic_op: None,
             attachments: vec![ColorBlendAttachmentState {
                 blend,
-                color_write_mask: ColorComponents {
-                    a: false,
-                    ..ColorComponents::all()
-                },
+                color_write_mask: ColorComponents::R | ColorComponents::G | ColorComponents::B,
                 color_write_enable: StateMode::Fixed(true),
             }],
             blend_constants: match semi_transparency_mode {
@@ -953,10 +938,19 @@ impl GpuContext {
         assert!(vertices_len > 0);
 
         // we create a "cloned iter" here so that we don't clone the vector
-        let vertex_buffer = self
-            .vertex_buffer_pool
-            .from_iter(self.buffered_draw_vertices.iter().cloned())
-            .unwrap();
+        let vertex_buffer = Buffer::from_iter(
+            &self.memory_allocator,
+            BufferCreateInfo {
+                usage: BufferUsage::VERTEX_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                usage: MemoryUsage::Upload,
+                ..Default::default()
+            },
+            self.buffered_draw_vertices.iter().cloned(),
+        )
+        .unwrap();
 
         let pipelines_set = match current_state.draw_type {
             DrawType::Polygon => &self.polygon_pipelines,
@@ -964,7 +958,7 @@ impl GpuContext {
         };
         let pipeline = &pipelines_set[current_state.semi_transparency_mode as usize];
 
-        let push_constants = vs::ty::PushConstantData {
+        let push_constants = vs::PushConstantData {
             offset: [
                 current_state.drawing_offset.0,
                 current_state.drawing_offset.1,
@@ -1200,11 +1194,7 @@ impl GpuContext {
                 array_layers: 1,
             },
             Format::B8G8R8A8_UNORM,
-            ImageUsage {
-                transfer_src: true,
-                color_attachment: true,
-                ..ImageUsage::empty()
-            },
+            ImageUsage::TRANSFER_SRC | ImageUsage::COLOR_ATTACHMENT,
             ImageCreateFlags::empty(),
             Some(self.queue.queue_family_index()),
         )
