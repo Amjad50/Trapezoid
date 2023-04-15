@@ -77,11 +77,9 @@ impl VkDisplay {
                     .iter()
                     .enumerate()
                     .position(|(i, q)| {
-                        q.queue_flags.intersects(&QueueFlags {
-                            graphics: true,
-                            compute: true,
-                            ..QueueFlags::empty()
-                        }) && p.surface_support(i as u32, &surface).unwrap_or(false)
+                        q.queue_flags
+                            .intersects(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
+                            && p.surface_support(i as u32, &surface).unwrap_or(false)
                     })
                     .map(|i| (p, i as u32))
             })
@@ -140,10 +138,7 @@ impl VkDisplay {
                     min_image_count: caps.min_image_count,
                     image_format: format,
                     image_extent: dimensions,
-                    image_usage: ImageUsage {
-                        transfer_dst: true,
-                        ..ImageUsage::empty()
-                    },
+                    image_usage: ImageUsage::TRANSFER_DST,
                     composite_alpha: CompositeAlpha::Opaque,
                     present_mode: PresentMode::Fifo,
                     ..Default::default()
@@ -185,10 +180,8 @@ impl VkDisplay {
                 p.queue_family_properties()
                     .iter()
                     .position(|q| {
-                        q.queue_flags.intersects(&QueueFlags {
-                            graphics: true,
-                            ..QueueFlags::empty()
-                        })
+                        q.queue_flags
+                            .intersects(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
                     })
                     .map(|i| (p, i as u32))
             })
