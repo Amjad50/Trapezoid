@@ -12,7 +12,7 @@ debugger = ["psx-core/debugger"]
 [dependencies]
 psx-core = { path = "./psx-core", version = "*" }
 env_logger = { version = "0.10", default-features = false, features = ["auto-color"] }
-clap = { version = "3.0.0", features = ["derive"] }
+clap = { version = "4.2", features = ["derive"] }
 
 vulkano = "0.33"
 winit = "0.28"
