@@ -11,14 +11,14 @@ debugger = ["psx-core/debugger"]
 
 [dependencies]
 psx-core = { path = "./psx-core", version = "*" }
-env_logger = { version = "0.9", default-features = false, features = ["termcolor", "atty"] }
-clap = { version = "3.0.0", features = ["derive"] }
+env_logger = { version = "0.10", default-features = false, features = ["auto-color"] }
+clap = { version = "4.2", features = ["derive"] }
 
 vulkano = "0.33"
 winit = "0.28"
 vulkano-win = "0.33"
 ringbuf = { version = "0.3.1", default-features = false, features = ["alloc"] }
-cpal = { version = "0.14.0", default-features = false }
+cpal = { version = "0.15", default-features = false }
 
 [workspace]
 members = [

@@ -143,7 +143,7 @@ impl VoicesFlag {
 }
 
 bitflags::bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Clone, Copy)]
     struct ADSRConfig: u32 {
         const SUSTAIN_LEVEL                    = 0b00000000000000000000000000001111;
         // decay step is fixed (-8)
@@ -390,7 +390,7 @@ impl Voice {
                 // `End+Mute`: jump to Loop-address, set ENDX flag, Release, Env=0000h
                 self.set_adsr_state(ADSRState::Release);
                 // clear the adsr envelope
-                self.adsr_config.bits = 0;
+                self.adsr_config = ADSRConfig::empty();
             }
         }
 
@@ -598,7 +598,7 @@ impl Spu {
 
             // reflect the spu stat
             self.stat.remove(SpuStat::CURRENT_SPU_MODE);
-            self.stat |= SpuStat::from_bits_truncate(self.control.bits() & 0x3F);
+            self.stat |= SpuStat::from_bits_retain(self.control.bits() & 0x3F);
 
             // handle memory transfers
             match self.control.ram_transfer_mode() {
@@ -818,12 +818,12 @@ impl BusLine for Spu {
                     0x8 => {
                         let f = self.voices[voice_idx].adsr_config.bits();
                         self.voices[voice_idx].adsr_config =
-                            ADSRConfig::from_bits_truncate((f & 0xFFFF0000) | data as u32);
+                            ADSRConfig::from_bits_retain((f & 0xFFFF0000) | data as u32);
                     }
                     0xA => {
                         let f = self.voices[voice_idx].adsr_config.bits();
                         self.voices[voice_idx].adsr_config =
-                            ADSRConfig::from_bits_truncate((f & 0xFFFF) | ((data as u32) << 16));
+                            ADSRConfig::from_bits_retain((f & 0xFFFF) | ((data as u32) << 16));
                     }
                     0xC => self.voices[voice_idx].adsr_current_vol = data,
                     0xE => self.voices[voice_idx].adpcm_repeat_address = data,
@@ -994,7 +994,7 @@ impl BusLine for Spu {
                 self.data_fifo.push_back(data);
             }
             0x1AA => {
-                self.control = SpuControl::from_bits_truncate(data);
+                self.control = SpuControl::from_bits_retain(data);
 
                 // ack interrupt/clear flag
                 if !self.control.intersects(SpuControl::IRQ9_ENABLE) {

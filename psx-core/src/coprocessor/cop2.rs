@@ -99,7 +99,7 @@ impl GteCommand {
 }
 
 bitflags::bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Clone, Copy)]
     struct Flag: u32 {
         const IR0_SATURATED_TO_P0000_P1000                = 0b00000000000000000001000000000000;
         const SY2_SATURATED_TO_N0400_P03FF                = 0b00000000000000000010000000000000;
@@ -127,9 +127,9 @@ bitflags::bitflags! {
 impl Flag {
     fn bits_with_error(&self) -> u32 {
         // error bit is set if any of the bits (30-22, 18-13)
-        let error = (self.bits & 0b01111111100001111110000000000000 != 0) as u32;
+        let error = (self.bits() & 0b01111111100001111110000000000000 != 0) as u32;
 
-        self.bits | error << 31
+        self.bits() | error << 31
     }
 }
 
@@ -874,14 +874,14 @@ impl Gte {
             28 => self.dqb = data as i32,
             29 => self.zsf3 = data as i16,
             30 => self.zsf4 = data as i16,
-            31 => self.flag = Flag::from_bits_truncate(data),
+            31 => self.flag = Flag::from_bits_retain(data),
             _ => unreachable!(),
         }
     }
 
     pub fn execute_command(&mut self, cmd: u32) {
         // clear before start of command
-        self.flag.bits = 0;
+        self.flag = Flag::empty();
 
         let cmd = GteCommand::from_u32(cmd);
 

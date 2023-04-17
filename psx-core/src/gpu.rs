@@ -27,7 +27,7 @@ use std::{ops::Range, sync::Arc, thread::JoinHandle};
 use self::gpu_context::{DrawingTextureParams, DrawingVertex};
 
 bitflags::bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
     struct GpuStat: u32 {
         const TEXTURE_PAGE_X_BASE      = 0b00000000000000000000000000001111;
         const TEXTURE_PAGE_Y_BASE      = 0b00000000000000000000000000010000;
@@ -59,7 +59,7 @@ bitflags::bitflags! {
 
 impl GpuStat {
     fn _texture_page_coords(&self) -> (u32, u32) {
-        let x = (self.bits & Self::TEXTURE_PAGE_X_BASE.bits) * 64;
+        let x = (self.bits() & Self::TEXTURE_PAGE_X_BASE.bits()) * 64;
         let y = (self.intersects(Self::TEXTURE_PAGE_Y_BASE) as u32) * 256;
 
         (x, y)
@@ -78,7 +78,7 @@ impl GpuStat {
             // 1: 320
             // 2: 512
             // 3: 640
-            let resolution_multiplier = (self.bits & Self::HORIZONTAL_RESOLUTION1.bits) >> 17;
+            let resolution_multiplier = (self.bits() & Self::HORIZONTAL_RESOLUTION1.bits()) >> 17;
             let resoltion = 0x100 | ((resolution_multiplier & 1) << 6);
             resoltion << (resolution_multiplier >> 1)
         }
@@ -98,7 +98,7 @@ impl GpuStat {
             //
             // The second two numbers are half the first two, so we can use the
             // second bit to divide by 2.
-            let resolution_bits = (self.bits & Self::HORIZONTAL_RESOLUTION1.bits) >> 17;
+            let resolution_bits = (self.bits() & Self::HORIZONTAL_RESOLUTION1.bits()) >> 17;
 
             // add 2 if the first bit is set
             let base = 8 + ((resolution_bits & 1) * 2);
@@ -124,7 +124,7 @@ impl GpuStat {
     }
 
     fn semi_transparency_mode(&self) -> u8 {
-        ((self.bits & Self::SEMI_TRASPARENCY.bits) >> 5) as u8
+        ((self.bits() & Self::SEMI_TRASPARENCY.bits()) >> 5) as u8
     }
 
     fn dither_enabled(&self) -> bool {
@@ -135,12 +135,12 @@ impl GpuStat {
     fn update_from_texture_params(&mut self, texture_params: &DrawingTextureParams) {
         let x = (texture_params.tex_page_base[0] / 64) & 0xF;
         let y = (texture_params.tex_page_base[1] / 256) & 1;
-        self.bits &= !0x81FF;
-        self.bits |= x;
-        self.bits |= y << 4;
-        self.bits |= (texture_params.semi_transparency_mode as u32) << 5;
-        self.bits |= (texture_params.tex_page_color_mode as u32) << 7;
-        self.bits |= (texture_params.texture_disable as u32) << 15;
+        *self &= Self::from_bits_retain(!0x81FF);
+        *self |= Self::from_bits_retain(x);
+        *self |= Self::from_bits_retain(y << 4);
+        *self |= Self::from_bits_retain((texture_params.semi_transparency_mode as u32) << 5);
+        *self |= Self::from_bits_retain((texture_params.tex_page_color_mode as u32) << 7);
+        *self |= Self::from_bits_retain((texture_params.texture_disable as u32) << 15);
     }
 }
 
@@ -457,7 +457,7 @@ impl Gpu {
         // Ready to receive Cmd Word
         // Ready to receive DMA Block
         let out =
-            self.gpu_stat.load().bits | (((self.drawing_odd && !self.in_vblank) as u32) << 31);
+            self.gpu_stat.load().bits() | (((self.drawing_odd && !self.in_vblank) as u32) << 31);
 
         log::trace!("GPUSTAT = {:08X}", out);
         log::trace!("GPUSTAT = {:?}", self.gpu_stat);
@@ -589,7 +589,7 @@ impl Gpu {
                 self.gpu_stat
                     .fetch_update(|mut s| {
                         s.remove(GpuStat::DMA_DIRECTION);
-                        s.bits |= (data & 3) << 29;
+                        s |= GpuStat::from_bits_retain((data & 3) << 29);
                         Some(s)
                     })
                     .unwrap();
@@ -644,11 +644,11 @@ impl Gpu {
 
                 self.gpu_stat
                     .fetch_update(|mut s| {
-                        s.bits &= !0x7f6000;
-                        s.bits |= stat_bits_17_22 << 17;
-                        s.bits |= stat_bit_14_reverse_flag << 14;
-                        s.bits |= stat_bit_16_horizontal_resolution_2 << 16;
-                        s.bits |= interlace_field << 13;
+                        s &= GpuStat::from_bits_retain(!0x7f6000);
+                        s |= GpuStat::from_bits_retain(stat_bits_17_22 << 17);
+                        s |= GpuStat::from_bits_retain(stat_bit_14_reverse_flag << 14);
+                        s |= GpuStat::from_bits_retain(stat_bit_16_horizontal_resolution_2 << 16);
+                        s |= GpuStat::from_bits_retain(interlace_field << 13);
                         Some(s)
                     })
                     .unwrap();

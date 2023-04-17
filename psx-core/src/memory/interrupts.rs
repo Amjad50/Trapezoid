@@ -1,7 +1,7 @@
 use super::BusLine;
 
 bitflags::bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug, Clone, Copy)]
     struct InterruptFlags: u16 {
         const VBLANK                 = 1 << 0;
         const GPU                    = 1 << 1;
@@ -43,8 +43,8 @@ impl Interrupts {
 impl BusLine for Interrupts {
     fn read_u32(&mut self, addr: u32) -> u32 {
         match addr {
-            0 => self.stat.bits as u32,
-            4 => self.mask.bits as u32,
+            0 => self.stat.bits() as u32,
+            4 => self.mask.bits() as u32,
             _ => unreachable!(),
         }
     }
@@ -53,12 +53,12 @@ impl BusLine for Interrupts {
         log::info!("write interrupts 32, regs {:X} = {:08X}", addr, data);
         match addr {
             0 => {
-                let bits_to_keep = InterruptFlags::from_bits_truncate(data as u16);
-                self.stat.bits &= bits_to_keep.bits;
+                let bits_to_keep = InterruptFlags::from_bits_retain(data as u16);
+                self.stat &= bits_to_keep;
                 log::info!("write interrupts stat {:?}", self.stat);
             }
             4 => {
-                self.mask = InterruptFlags::from_bits_truncate(data as u16);
+                self.mask = InterruptFlags::from_bits_retain(data as u16);
                 log::info!("write interrupts mask {:?}", self.mask);
             }
             _ => unreachable!(),
@@ -67,9 +67,9 @@ impl BusLine for Interrupts {
 
     fn read_u16(&mut self, addr: u32) -> u16 {
         match addr {
-            0 => self.stat.bits,
+            0 => self.stat.bits(),
             2 => 0,
-            4 => self.mask.bits,
+            4 => self.mask.bits(),
             6 => 0,
             _ => unreachable!(),
         }
@@ -79,13 +79,13 @@ impl BusLine for Interrupts {
         log::info!("write interrupts 16, regs {:X} = {:08X}", addr, data);
         match addr {
             0 => {
-                let bits_to_keep = InterruptFlags::from_bits_truncate(data);
-                self.stat.bits &= bits_to_keep.bits;
+                let bits_to_keep = InterruptFlags::from_bits_retain(data);
+                self.stat &= bits_to_keep;
                 log::info!("write interrupts stat {:?}", self.stat);
             }
             2 => {}
             4 => {
-                self.mask = InterruptFlags::from_bits_truncate(data);
+                self.mask = InterruptFlags::from_bits_retain(data);
                 log::info!("write interrupts mask {:?}", self.mask);
             }
             6 => {}

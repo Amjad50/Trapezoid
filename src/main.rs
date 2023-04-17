@@ -324,7 +324,7 @@ impl VkDisplay {
 }
 
 #[derive(Parser, Debug)]
-#[clap(version = "0.1.0", author = "Amjad Alsharafi", about = "PSX emulator")]
+#[command(version, author, about = "PSX emulator")]
 struct PsxEmuArgs {
     /// The bios file to run
     bios: PathBuf,
@@ -332,16 +332,16 @@ struct PsxEmuArgs {
     disk_file: Option<PathBuf>,
     /// Turn on window display (without this, it will only print the
     /// logs to the console, which can be useful for testing)
-    #[clap(short, long)]
+    #[arg(short, long)]
     windowed: bool,
     /// Initial value for `display full vram`, can be changed later with [V] key
-    #[clap(short, long)]
+    #[arg(short, long)]
     vram: bool,
     /// Play audio
-    #[clap(short, long)]
+    #[arg(short, long)]
     audio: bool,
     /// Print tty debug output to the console
-    #[clap(short, long)]
+    #[arg(short, long)]
     debug: bool,
 }
 

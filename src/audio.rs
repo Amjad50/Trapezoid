@@ -36,7 +36,7 @@ impl AudioPlayer {
         };
 
         let output_stream = output_device
-            .build_output_stream(&config, output_data_fn, Self::err_fn)
+            .build_output_stream(&config, output_data_fn, Self::err_fn, None)
             .expect("failed to build an output audio stream");
 
         Self {

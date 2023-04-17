@@ -4,7 +4,7 @@ use super::interrupts::InterruptRequester;
 use super::BusLine;
 
 bitflags::bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct ChannelControl: u32 {
         const DIRECTION_FROM_RAM       = 0b00000000000000000000000000000001;
         const ADDRESS_STEP_DIRECTION   = 0b00000000000000000000000000000010;
@@ -30,7 +30,7 @@ impl ChannelControl {
     }
 
     fn sync_mode(&self) -> u32 {
-        (self.bits & Self::SYNC_MODE.bits) >> 9
+        (self.bits() & Self::SYNC_MODE.bits()) >> 9
     }
 
     fn in_progress(&self) -> bool {
@@ -43,17 +43,17 @@ impl ChannelControl {
 
     /// In words units
     fn chopping_dma_window_size(&self) -> u32 {
-        1 << ((self.bits & Self::CHOPPING_DMA_WINDOW_SIZE.bits) >> 16)
+        1 << ((self.bits() & Self::CHOPPING_DMA_WINDOW_SIZE.bits()) >> 16)
     }
 
     /// In words units
     fn chopping_cpu_window_size(&self) -> u8 {
-        1 << ((self.bits & Self::CHOPPING_CPU_WINDOW_SIZE.bits) >> 20)
+        1 << ((self.bits() & Self::CHOPPING_CPU_WINDOW_SIZE.bits()) >> 20)
     }
 }
 
 bitflags::bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct DmaInterruptRegister: u32 {
         const UNKNOWN                = 0b00000000000000000000000000111111;
         const FORCE_IRQ              = 0b00000000000000001000000000000000;
@@ -76,9 +76,9 @@ impl DmaInterruptRegister {
         assert!(channel < 7);
 
         // only set if enabled
-        if (self.bits >> 16) & (1 << channel) != 0 {
+        if (self.bits() >> 16) & (1 << channel) != 0 {
             log::info!("requesting interrupt channel {}", channel);
-            self.bits |= 1 << (channel + 24);
+            *self |= Self::from_bits_retain(1 << (channel + 24));
         }
     }
 
@@ -86,8 +86,8 @@ impl DmaInterruptRegister {
     fn compute_irq_master_flag(&self) -> bool {
         self.intersects(DmaInterruptRegister::FORCE_IRQ)
             || (self.intersects(DmaInterruptRegister::IRQ_MASTER_ENABLE)
-                && (((self.bits & DmaInterruptRegister::IRQ_ENABLE.bits) >> 16)
-                    & ((self.bits & DmaInterruptRegister::IRQ_FLAGS.bits) >> 24)
+                && (((self.bits() & DmaInterruptRegister::IRQ_ENABLE.bits()) >> 16)
+                    & ((self.bits() & DmaInterruptRegister::IRQ_FLAGS.bits()) >> 24)
                     != 0))
     }
 }
@@ -113,7 +113,7 @@ impl DmaChannel {
                 out
             }
             0x8 => {
-                let out = self.channel_control.bits;
+                let out = self.channel_control.bits();
                 log::info!("Dma channel read control {:08X}", out);
                 out
             }
@@ -138,7 +138,7 @@ impl DmaChannel {
             }
             0x8 => {
                 log::info!("Dma channel control write {:08X}", data);
-                self.channel_control = ChannelControl::from_bits_truncate(data);
+                self.channel_control = ChannelControl::from_bits_retain(data);
                 log::info!("Dma channel control write {:?}", self.channel_control);
             }
             // mirror
@@ -397,7 +397,7 @@ impl Dma {
 
                 (n_entries + 1, channel.base_address == 0xFFFFFF)
             }
-            _ => unreachable!(),
+            _ => unreachable!("{}", channel.channel_control.sync_mode()),
         }
     }
 
@@ -651,7 +651,7 @@ impl BusLine for Dma {
                 self.channels[channel_index as usize].read(addr & 0xF)
             }
             0xF0 => self.control,
-            0xF4 => self.interrupt.bits,
+            0xF4 => self.interrupt.bits(),
             _ => unreachable!(),
         }
     }
@@ -681,7 +681,7 @@ impl BusLine for Dma {
             }
             0xF4 => {
                 // we will keep the upper-most bit
-                let old_interrupt = self.interrupt.bits;
+                let old_interrupt = self.interrupt.bits();
                 let new_data = data & 0xFFFFFF;
                 // and the flags will be reset on write
                 let irq_flags_reset = data & 0x7F000000;
@@ -693,11 +693,11 @@ impl BusLine for Dma {
 
                 let new_interrupt = ((old_interrupt & 0xFF000000) & !irq_flags_reset) | new_data;
 
-                self.interrupt = DmaInterruptRegister::from_bits_truncate(new_interrupt);
+                self.interrupt = DmaInterruptRegister::from_bits_retain(new_interrupt);
                 log::info!(
                     "DMA interrupt input: {:08X}, result: {:08X}, {:?}",
                     data,
-                    self.interrupt.bits,
+                    self.interrupt.bits(),
                     self.interrupt
                 );
             }

@@ -33,7 +33,7 @@ const fn extend_sign<const N: usize>(x: u16) -> i32 {
 }
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     pub struct MdecStatus: u32 {
         const DATA_OUT_FIFO_EMPTY     = 0b1000_0000_0000_0000_0000_0000_0000_0000;
         const DATA_IN_FIFO_FULL       = 0b0100_0000_0000_0000_0000_0000_0000_0000;
@@ -51,13 +51,13 @@ bitflags! {
 
 impl MdecStatus {
     fn output_depth(&self) -> u8 {
-        ((self.bits & Self::DATA_OUTPUT_DEPTH.bits) >> 25) as u8
+        ((self.bits() & Self::DATA_OUTPUT_DEPTH.bits()) >> 25) as u8
     }
 
     fn set_current_block(&mut self, block: BlockType) {
         let block = block as u32;
         self.remove(Self::CURRENT_BLOCK);
-        self.bits |= (block << 16) & Self::CURRENT_BLOCK.bits;
+        *self |= Self::from_bits_retain(block << 16) & Self::CURRENT_BLOCK;
     }
 }
 
@@ -528,7 +528,7 @@ impl Mdec {
             self.params_ptr = 0;
 
             // Bit25-28 are copied to STAT.23-26
-            self.status.bits |= ((input >> 25) & 0b1111) << 23;
+            self.status |= MdecStatus::from_bits_retain(((input >> 25) & 0b1111) << 23);
 
             match cmd {
                 // Decode macroblocks
@@ -577,7 +577,7 @@ impl Mdec {
         // reset MDEC
         if (data >> 31) & 1 != 0 {
             // clear everything and set `current_block` to 4
-            self.status.bits = 0x80040000;
+            self.status = MdecStatus::from_bits_retain(0x80040000);
         }
 
         // enable data in request

@@ -2,7 +2,7 @@ use crate::memory::{interrupts::InterruptRequester, BusLine};
 use bitflags::bitflags;
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct CounterMode: u16 {
         const SYNC_ENABLE        = 0b0000000000000001;
         const SYNC_MODE          = 0b0000000000000110;
@@ -26,11 +26,11 @@ impl CounterMode {
     }
 
     fn sync_mode(&self) -> u8 {
-        ((self.bits & Self::SYNC_MODE.bits) >> 1) as u8
+        ((self.bits() & Self::SYNC_MODE.bits()) >> 1) as u8
     }
 
     fn clk_source(&self) -> u8 {
-        ((self.bits & Self::CLK_SOURCE.bits) >> 8) as u8
+        ((self.bits() & Self::CLK_SOURCE.bits()) >> 8) as u8
     }
 
     fn reset_after_target(&self) -> bool {
@@ -93,7 +93,7 @@ impl TimerBase {
         match index {
             0 => self.counter,
             1 => {
-                let out = self.mode.bits;
+                let out = self.mode.bits();
                 // reset after read
                 self.mode
                     .remove(CounterMode::REACHED_FFFF | CounterMode::REACHED_TARGET);
@@ -115,14 +115,14 @@ impl TimerBase {
                 // reset one shot irq suppress
                 self.one_shot_suppress_irqs = false;
 
-                let mode = CounterMode::from_bits_truncate(data & 0x3FF);
+                let mode = CounterMode::from_bits_retain(data & 0x3FF);
                 if data & 0x400 != 0 {
                     // reset IRQ request
                     self.mode.insert(CounterMode::NOT_IRQ_REQUEST);
                 }
 
-                self.mode.bits &= !0x3FF;
-                self.mode.bits |= mode.bits;
+                self.mode &= CounterMode::from_bits_retain(!0x3FF);
+                self.mode |= mode;
 
                 // reset on write to mode
                 self.counter = 0;

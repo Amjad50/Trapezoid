@@ -32,7 +32,7 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct CdromStatus: u8 {
         const ERROR        = 0b00000001;
         const MOTOR_ON     = 0b00000010;
@@ -46,7 +46,7 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct CdromMode: u8 {
         const DOUBLE_SPEED            = 0b10000000;
         const XA_ADPCM                = 0b01000000;
@@ -60,7 +60,7 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct CodingInfo: u8 {
         const EMPHASIS                = 0b01000000;
         // (0=4 bits, 1=8 bits)
@@ -432,9 +432,9 @@ impl Cdrom {
                     // GetStat
                     log::info!("cdrom cmd: GetStat");
                     // TODO: handle errors
-                    assert!(self.status.bits & 0b101 == 0);
+                    assert!(self.status.bits() & 0b101 == 0);
 
-                    self.write_to_response_fifo(self.status.bits);
+                    self.write_to_response_fifo(self.status.bits());
                     self.request_interrupt_0_7(3);
 
                     self.reset_command();
@@ -453,7 +453,7 @@ impl Cdrom {
                     self.set_loc_params = Some(params);
 
                     log::info!("cdrom cmd: SetLoc({:?})", params);
-                    self.write_to_response_fifo(self.status.bits);
+                    self.write_to_response_fifo(self.status.bits());
                     self.request_interrupt_0_7(3);
 
                     self.reset_command();
@@ -467,7 +467,7 @@ impl Cdrom {
                         log::info!("cdrom cmd: ReadN");
                         self.do_seek();
 
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
@@ -525,7 +525,7 @@ impl Cdrom {
                         {
                             self.deliver_adpcm_to_spu(
                                 self.cursor_sector_position,
-                                CodingInfo::from_bits_truncate(coding_info),
+                                CodingInfo::from_bits_retain(coding_info),
                                 spu,
                             );
 
@@ -562,7 +562,7 @@ impl Cdrom {
                                 sector_read = true;
                             }
 
-                            self.write_to_response_fifo(self.status.bits);
+                            self.write_to_response_fifo(self.status.bits());
                             self.request_interrupt_0_7(1);
                         }
 
@@ -587,13 +587,13 @@ impl Cdrom {
                         // FIRST
                         log::info!("cdrom cmd: Pause");
 
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
                     } else {
                         // SECOND
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(2);
                         self.reset_command();
                     }
@@ -626,14 +626,14 @@ impl Cdrom {
                         self.set_loc_params = None;
                         self.cursor_sector_position = 0;
 
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
                     } else {
                         // SECOND
 
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(2);
                         self.reset_command();
                     }
@@ -642,7 +642,7 @@ impl Cdrom {
                     // Demute
 
                     log::info!("cdrom cmd: Demute");
-                    self.write_to_response_fifo(self.status.bits);
+                    self.write_to_response_fifo(self.status.bits());
                     self.request_interrupt_0_7(3);
 
                     self.reset_command();
@@ -650,10 +650,10 @@ impl Cdrom {
                 0x0E => {
                     // Setmode
 
-                    self.mode = CdromMode::from_bits_truncate(self.read_next_parameter().unwrap());
+                    self.mode = CdromMode::from_bits_retain(self.read_next_parameter().unwrap());
                     log::info!("cdrom cmd: Setmode({:?})", self.mode);
 
-                    self.write_to_response_fifo(self.status.bits);
+                    self.write_to_response_fifo(self.status.bits());
                     self.request_interrupt_0_7(3);
 
                     self.reset_command();
@@ -667,13 +667,13 @@ impl Cdrom {
 
                         self.do_seek();
 
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
                     } else {
                         // SECOND
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(2);
                         self.reset_command();
                     }
@@ -692,7 +692,7 @@ impl Cdrom {
                     if self.command_state.is_none() {
                         // FIRST
                         log::info!("cdrom cmd: GetID");
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
@@ -722,13 +722,13 @@ impl Cdrom {
                     if self.command_state.is_none() {
                         // FIRST
                         log::info!("cdrom cmd: GetToc");
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(3);
                         // any data for now, just to proceed to SECOND
                         self.command_state = Some(0);
                     } else {
                         // SECOND
-                        self.write_to_response_fifo(self.status.bits);
+                        self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(2);
                         self.reset_command();
                     }
@@ -879,7 +879,7 @@ impl Cdrom {
 
 impl Cdrom {
     fn read_index_status(&self) -> u8 {
-        self.index | self.fifo_status.bits
+        self.index | self.fifo_status.bits()
     }
 
     fn write_interrupt_enable_register(&mut self, data: u8) {
