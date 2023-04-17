@@ -4,7 +4,7 @@ mod debugger;
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use audio::AudioPlayer;
-use psx_core::{cpu::CpuState, DigitalControllerKey, Psx, PsxConfig};
+use psx_core::{DigitalControllerKey, Psx, PsxConfig};
 
 use clap::Parser;
 use vulkano::{

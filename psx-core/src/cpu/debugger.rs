@@ -3,10 +3,8 @@ use std::collections::HashSet;
 use super::{
     instruction::{Instruction, Opcode},
     register::Registers,
-    CpuState,
+    CpuBusProvider, CpuState,
 };
-
-use crate::memory::hw_registers::HW_REGISTERS;
 
 pub struct Debugger {
     instruction_trace: bool,
@@ -24,6 +22,7 @@ pub struct Debugger {
     in_breakpoint: bool,
     // allow to execute one instruction only
     step: bool,
+    step_over: bool,
 
     last_instruction: Instruction,
 }
@@ -43,6 +42,7 @@ impl Debugger {
             read_breakpoints: HashSet::new(),
             in_breakpoint: false,
             step: false,
+            step_over: false,
 
             last_instruction: Instruction::from_u32(0, 0),
         }
@@ -65,6 +65,36 @@ impl Debugger {
         self.paused = false;
     }
 
+    /// Perform some processing that is required by the `Debugger` but require access
+    /// to the `bus`, since we don't have that normally unless we are inside
+    /// the `clock` function in the cpu.
+    ///
+    /// so outside code that wants to use the `Debugger` that require `bus` access, we will stack
+    /// those operations and perform them here.
+    ///
+    /// This is called first by the `clock` function in the `Cpu`.
+    ///
+    pub(crate) fn handle_pending_processing<P: CpuBusProvider>(
+        &mut self,
+        bus: &mut P,
+        regs: &Registers,
+    ) {
+        // need to step over
+        if self.step_over {
+            self.step_over = false;
+
+            // PC is always word aligned
+            let instr = bus.read_u32(regs.pc);
+            let instr = Instruction::from_u32(instr, regs.pc);
+
+            if let Opcode::Jal | Opcode::Jalr = instr.opcode {
+                self.step_over_breakpoints.insert(regs.pc + 8);
+            } else {
+                self.step = true;
+            }
+        }
+    }
+
     pub(crate) fn trace_instruction(
         &mut self,
         regs: &Registers,
@@ -82,7 +112,6 @@ impl Debugger {
             && !self.instruction_breakpoints.is_empty()
             && self.instruction_breakpoints.contains(&regs.pc)
         {
-            println!("Breakpoint hit at {:08X}", regs.pc);
             self.in_breakpoint = true;
             self.set_pause(true);
             self.last_state = CpuState::InstructionBreakpoint(regs.pc);
@@ -149,16 +178,6 @@ impl Debugger {
 
     pub(crate) fn trace_write(&mut self, addr: u32, bits: u8) {
         if self.write_breakpoints.contains(&addr) {
-            let hw_reg_name = HW_REGISTERS
-                .entries()
-                .find(|(_, &v)| v == addr)
-                .map(|(k, _)| format!(" [@{}]", k))
-                .unwrap_or("".to_string());
-
-            println!(
-                "Write Breakpoint u{} hit {:08X}{} at {:08X}",
-                bits, addr, hw_reg_name, self.last_instruction.pc
-            );
             self.set_pause(true);
             self.last_state = CpuState::WriteBreakpoint { addr, bits };
         }
@@ -166,16 +185,6 @@ impl Debugger {
 
     pub(crate) fn trace_read(&mut self, addr: u32, bits: u8) {
         if self.read_breakpoints.contains(&addr) {
-            let hw_reg_name = HW_REGISTERS
-                .entries()
-                .find(|(_, &v)| v == addr)
-                .map(|(k, _)| format!(" [@{}]", k))
-                .unwrap_or("".to_string());
-
-            println!(
-                "Read Breakpoint u{} hit {:08X}{} at {:08X}",
-                bits, addr, hw_reg_name, self.last_instruction.pc
-            );
             self.set_pause(true);
             self.last_state = CpuState::ReadBreakpoint { addr, bits };
         }
@@ -188,26 +197,15 @@ impl Debugger {
     }
 
     pub fn step_over(&mut self) {
-
-        // PC is always word aligned
-        // let instr = Self::bus_read_u32(bus, regs.pc).unwrap();
-        // let instr = Instruction::from_u32(instr, regs.pc);
-
-        // if let Opcode::Jal | Opcode::Jalr = instr.opcode {
-        //     self.step_over_breakpoints.insert(regs.pc + 8);
-        // } else {
-        //     self.step = true;
-        // }
+        self.step_over = true;
     }
 
     pub fn set_instruction_trace(&mut self, trace: bool) {
         self.instruction_trace = trace;
-        println!("Instruction trace: {}", self.instruction_trace);
     }
 
     pub fn add_breakpoint(&mut self, address: u32) {
         self.instruction_breakpoints.insert(address);
-        println!("Breakpoint added: 0x{:08X}", address);
     }
 
     pub fn remove_breakpoint(&mut self, address: u32) -> bool {
@@ -216,7 +214,6 @@ impl Debugger {
 
     pub fn add_write_breakpoint(&mut self, address: u32) {
         self.write_breakpoints.insert(address);
-        println!("Write Breakpoint added: 0x{:08X}", address);
     }
 
     pub fn remove_write_breakpoint(&mut self, address: u32) -> bool {
@@ -225,26 +222,25 @@ impl Debugger {
 
     pub fn add_read_breakpoint(&mut self, address: u32) {
         self.read_breakpoints.insert(address);
-        println!("Read Breakpoint added: 0x{:08X}", address);
     }
 
     pub fn remove_read_breakpoint(&mut self, address: u32) -> bool {
         self.read_breakpoints.remove(&address)
     }
 
-    // fn bus_read_u32<P: CpuBusProvider>(bus: &mut P, addr: u32) -> Option<u32> {
-    //     if addr % 4 != 0 {
-    //         println!("[0x{:08X}]: Address must be aligned to 4 bytes", addr);
-    //         return None;
-    //     }
-    //     Some(bus.read_u32(addr))
-    // }
+    pub fn instruction_breakpoints(&self) -> &HashSet<u32> {
+        &self.instruction_breakpoints
+    }
 
-    // fn bus_read_u16<P: CpuBusProvider>(bus: &mut P, addr: u32) -> Option<u16> {
-    //     if addr % 2 != 0 {
-    //         println!("[0x{:08X}]: Address must be aligned to 2 bytes", addr);
-    //         return None;
-    //     }
-    //     Some(bus.read_u16(addr))
-    // }
+    pub fn write_breakpoints(&self) -> &HashSet<u32> {
+        &self.write_breakpoints
+    }
+
+    pub fn read_breakpoints(&self) -> &HashSet<u32> {
+        &self.read_breakpoints
+    }
+
+    pub fn call_stack(&self) -> &[u32] {
+        &self.call_stack
+    }
 }

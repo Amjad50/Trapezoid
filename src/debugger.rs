@@ -1,7 +1,7 @@
 use std::{io::Write, process, sync::mpsc, thread};
 
 use psx_core::{
-    cpu::{CpuState, CPU_REGISTERS},
+    cpu::{CpuState, RegisterType, CPU_REGISTERS},
     Psx, HW_REGISTERS,
 };
 use rustyline::{
@@ -268,42 +268,51 @@ impl Debugger {
                 }
                 Some("tt") => {
                     psx.cpu().debugger().set_instruction_trace(true);
+                    println!("Instruction trace: {}", true);
                 }
                 Some("tf") => {
                     psx.cpu().debugger().set_instruction_trace(false);
+                    println!("Instruction trace: {}", false);
                 }
                 Some("stack") => {
-                    //let n = addr.unwrap_or(10);
-                    //let sp = regs.read(register::RegisterType::Sp);
-                    //println!("Stack: SP=0x{:08X}", sp);
-                    //for i in 0..n {
-                    //    let d = Self::bus_read_u32(bus, sp + i * 4);
-                    //    if let Some(d) = d {
-                    //        println!("    {:08X}", d);
-                    //    } else {
-                    //        break;
-                    //    }
-                    //}
+                    let n = addr.unwrap_or(10);
+                    let sp = psx.cpu().registers().read(RegisterType::Sp);
+                    println!("Stack: SP=0x{:08X}", sp);
+                    for i in 0..n {
+                        let d = psx.bus_read_u32(sp + i * 4);
+                        if let Some(d) = d {
+                            println!("    {:08X}", d);
+                        } else {
+                            println!("    <invalid address>, must be 32bit aligned");
+                            break;
+                        }
+                    }
                 }
                 Some("bt") => {
-                    // let limit = modifier
-                    //     .and_then(|m| m.parse::<usize>().ok())
-                    //     .unwrap_or(self.call_stack.len());
+                    let call_stack = psx.cpu().debugger().call_stack();
+                    let limit = modifier
+                        .and_then(|m| m.parse::<usize>().ok())
+                        .unwrap_or(call_stack.len());
 
-                    // for (i, frame) in self.call_stack.iter().enumerate().rev().take(limit) {
-                    //     println!("#{:02}:      {:08X}", i, frame);
-                    // }
+                    for (i, frame) in call_stack.iter().enumerate().rev().take(limit) {
+                        println!("#{:02}:      {:08X}", i, frame);
+                    }
                 }
                 Some("b") => {
                     if let Some(addr) = addr {
                         psx.cpu().debugger().add_breakpoint(addr);
+                        println!("Breakpoint added: 0x{:08X}", addr);
                     } else {
                         println!("Usage: b <address>");
                     }
                 }
                 Some("rb") => {
                     if let Some(addr) = addr {
-                        psx.cpu().debugger().remove_breakpoint(addr);
+                        if psx.cpu().debugger().remove_breakpoint(addr) {
+                            println!("Breakpoint removed: 0x{:08X}", addr);
+                        } else {
+                            println!("Breakpoint not found: 0x{:08X}", addr);
+                        }
                     } else {
                         println!("Usage: rb <address>");
                     }
@@ -311,13 +320,18 @@ impl Debugger {
                 Some("bw") => {
                     if let Some(addr) = addr {
                         psx.cpu().debugger().add_write_breakpoint(addr);
+                        println!("Write Breakpoint added: 0x{:08X}", addr);
                     } else {
                         println!("Usage: bw <address>");
                     }
                 }
                 Some("rbw") => {
                     if let Some(addr) = addr {
-                        psx.cpu().debugger().remove_write_breakpoint(addr);
+                        if psx.cpu().debugger().remove_write_breakpoint(addr) {
+                            println!("Write Breakpoint removed: 0x{:08X}", addr);
+                        } else {
+                            println!("Write Breakpoint not found: 0x{:08X}", addr);
+                        }
                     } else {
                         println!("Usage: rbw <address>");
                     }
@@ -325,71 +339,78 @@ impl Debugger {
                 Some("br") => {
                     if let Some(addr) = addr {
                         psx.cpu().debugger().add_read_breakpoint(addr);
+                        println!("Read Breakpoint added: 0x{:08X}", addr);
                     } else {
                         println!("Usage: br <address>");
                     }
                 }
                 Some("rbr") => {
                     if let Some(addr) = addr {
-                        psx.cpu().debugger().remove_read_breakpoint(addr);
+                        if psx.cpu().debugger().remove_read_breakpoint(addr) {
+                            println!("Read Breakpoint removed: 0x{:08X}", addr);
+                        } else {
+                            println!("Read Breakpoint not found: 0x{:08X}", addr);
+                        }
                     } else {
                         println!("Usage: rbr <address>");
                     }
                 }
                 Some("lb") => {
-                    // for bp in self.instruction_breakpoints.iter() {
-                    //     println!("Breakpoint: 0x{:08X}", bp);
-                    // }
-                    // for bp in self.write_breakpoints.iter() {
-                    //     println!("Write Breakpoint: 0x{:08X}", bp);
-                    // }
-                    // for bp in self.read_breakpoints.iter() {
-                    //     println!("Read Breakpoint: 0x{:08X}", bp);
-                    // }
+                    for bp in psx.cpu().debugger().instruction_breakpoints().iter() {
+                        println!("Breakpoint: 0x{:08X}", bp);
+                    }
+                    for bp in psx.cpu().debugger().write_breakpoints().iter() {
+                        println!("Write Breakpoint: 0x{:08X}", bp);
+                    }
+                    for bp in psx.cpu().debugger().read_breakpoints().iter() {
+                        println!("Read Breakpoint: 0x{:08X}", bp);
+                    }
                 }
                 Some("m") | Some("m32") => {
-                    // let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
-                    // if let Some(addr) = addr {
-                    //     for i in 0..count {
-                    //         let addr = addr + i * 4;
-                    //         let val = Self::bus_read_u32(bus, addr);
-                    //         if let Some(val) = val {
-                    //             println!("0x{:08X}: 0x{:08X}", addr, val);
-                    //         } else {
-                    //             break;
-                    //         }
-                    //     }
-                    // } else {
-                    //     println!("Usage: m/m32 <address>");
-                    // }
+                    let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
+                    if let Some(addr) = addr {
+                        for i in 0..count {
+                            let addr = addr + i * 4;
+                            let val = psx.bus_read_u32(addr);
+                            if let Some(val) = val {
+                                println!("0x{:08X}: 0x{:08X}", addr, val);
+                            } else {
+                                println!("Invalid address, must be 32bit aligned");
+                                break;
+                            }
+                        }
+                    } else {
+                        println!("Usage: m/m32 <address>");
+                    }
                 }
                 Some("m16") => {
-                    // let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
-                    // if let Some(addr) = addr {
-                    //     for i in 0..count {
-                    //         let addr = addr + i * 2;
-                    //         let val = Self::bus_read_u16(bus, addr);
-                    //         if let Some(val) = val {
-                    //             println!("0x{:08X}: 0x{:04X}", addr, val);
-                    //         } else {
-                    //             break;
-                    //         }
-                    //     }
-                    // } else {
-                    //     println!("Usage: m16 <address>");
-                    // }
+                    let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
+                    if let Some(addr) = addr {
+                        for i in 0..count {
+                            let addr = addr + i * 2;
+                            let val = psx.bus_read_u16(addr);
+                            if let Some(val) = val {
+                                println!("0x{:08X}: 0x{:04X}", addr, val);
+                            } else {
+                                println!("Invalid address, must be 16bit aligned");
+                                break;
+                            }
+                        }
+                    } else {
+                        println!("Usage: m16 <address>");
+                    }
                 }
                 Some("m8") => {
-                    // let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
-                    // if let Some(addr) = addr {
-                    //     for i in 0..count {
-                    //         let addr = addr + i;
-                    //         let val = bus.read_u8(addr);
-                    //         println!("[0x{:08X}] = 0x{:02X}", addr, val);
-                    //     }
-                    // } else {
-                    //     println!("Usage: m8 <address>");
-                    // }
+                    let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
+                    if let Some(addr) = addr {
+                        for i in 0..count {
+                            let addr = addr + i;
+                            let val = psx.bus_read_u8(addr).unwrap();
+                            println!("[0x{:08X}] = 0x{:02X}", addr, val);
+                        }
+                    } else {
+                        println!("Usage: m8 <address>");
+                    }
                 }
                 Some("p") => {
                     if let Some(addr) = addr {
@@ -433,7 +454,7 @@ impl Debugger {
         }
     }
 
-    pub fn handle_cpu_state(&mut self, _psx: &mut Psx, cpu_state: CpuState) {
+    pub fn handle_cpu_state(&mut self, psx: &mut Psx, cpu_state: CpuState) {
         match cpu_state {
             CpuState::Normal => {}
             CpuState::InstructionBreakpoint(addr) => {
@@ -441,11 +462,36 @@ impl Debugger {
                 self.set_enabled(true);
             }
             CpuState::WriteBreakpoint { addr, bits } => {
-                println!("Write breakpoint at {:#x} with bits {:#x}", addr, bits);
+                let hw_reg_name = HW_REGISTERS
+                    .entries()
+                    .find(|(_, &v)| v == addr)
+                    .map(|(k, _)| format!(" [@{}]", k))
+                    .unwrap_or("".to_string());
+
+                println!(
+                    "Write breakpoint at {:08x}{} with bits {:02} at {:08x}",
+                    addr,
+                    hw_reg_name,
+                    bits,
+                    psx.cpu().registers().read(RegisterType::Pc)
+                );
+
                 self.set_enabled(true);
             }
             CpuState::ReadBreakpoint { addr, bits } => {
-                println!("Read breakpoint at {:#x} with bits {:#x}", addr, bits);
+                let hw_reg_name = HW_REGISTERS
+                    .entries()
+                    .find(|(_, &v)| v == addr)
+                    .map(|(k, _)| format!(" [@{}]", k))
+                    .unwrap_or("".to_string());
+
+                println!(
+                    "Read breakpoint at {:08x}{} with bits {:02} at {:08x}",
+                    addr,
+                    hw_reg_name,
+                    bits,
+                    psx.cpu().registers().read(RegisterType::Pc)
+                );
                 self.set_enabled(true);
             }
             CpuState::Step => {

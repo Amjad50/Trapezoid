@@ -14,7 +14,7 @@ mod tests;
 use std::{path::Path, sync::Arc};
 
 pub use memory::hw_registers::HW_REGISTERS;
-use memory::{Bios, CpuBus};
+use memory::{Bios, BusLine, CpuBus};
 
 pub use controller_mem_card::DigitalControllerKey;
 use vulkano::{
@@ -194,5 +194,27 @@ impl Psx {
 
     pub fn cpu(&mut self) -> &mut cpu::Cpu {
         &mut self.cpu
+    }
+
+    pub fn bus_read_u32(&mut self, addr: u32) -> Option<u32> {
+        // make sure its aligned
+        if addr % 4 != 0 {
+            return None;
+        }
+        // TODO: make `read_u32` return Option
+        Some(self.bus.read_u32(addr))
+    }
+
+    pub fn bus_read_u16(&mut self, addr: u32) -> Option<u16> {
+        // make sure its aligned
+        if addr % 2 != 0 {
+            return None;
+        }
+
+        Some(self.bus.read_u16(addr))
+    }
+
+    pub fn bus_read_u8(&mut self, addr: u32) -> Option<u8> {
+        Some(self.bus.read_u8(addr))
     }
 }
