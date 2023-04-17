@@ -116,43 +116,21 @@ pub static CPU_REGISTERS: phf::Map<&'static str, RegisterType> = phf::phf_map! {
     "lo" => RegisterType::Lo,
 };
 
-#[repr(transparent)]
-#[derive(Copy, Clone)]
-pub struct Register {
-    // from 0 to 31 types
-    idx: u8,
-}
+pub const ALL_REG_NAMES: [&str; 35] = [
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
+    "ra", "pc", "hi", "lo",
+];
 
-impl Register {
-    #[inline]
-    pub fn from_byte(idx: u8) -> Self {
-        Register { idx: idx & 0x1F }
-    }
-
-    #[inline]
-    pub fn idx(&self) -> u8 {
-        self.idx
+impl From<u8> for RegisterType {
+    fn from(value: u8) -> Self {
+        REG_TYPES[value as usize]
     }
 }
 
-impl From<Register> for RegisterType {
-    #[inline]
-    fn from(v: Register) -> Self {
-        // convert from number to register type
-        REG_TYPES[v.idx as usize]
-    }
-}
-
-impl From<RegisterType> for Register {
-    #[inline]
-    fn from(v: RegisterType) -> Self {
-        Register { idx: v as u8 }
-    }
-}
-
-impl fmt::Debug for Register {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        RegisterType::from(*self).fmt(f)
+impl fmt::Display for RegisterType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(ALL_REG_NAMES[*self as usize])
     }
 }
 
@@ -182,7 +160,7 @@ impl Registers {
             RegisterType::Pc => self.pc,
             RegisterType::Hi => self.hi,
             RegisterType::Lo => self.lo,
-            _ => self.read_general(ty.into()),
+            _ => self.read_general(ty as u8),
         }
     }
 
@@ -193,18 +171,20 @@ impl Registers {
             RegisterType::Pc => self.pc = data,
             RegisterType::Hi => self.hi = data,
             RegisterType::Lo => self.lo = data,
-            _ => self.write_general(ty.into(), data),
+            _ => self.write_general(ty as u8, data),
         }
     }
 
     #[inline]
-    pub(crate) fn read_general(&self, ty: Register) -> u32 {
-        self.general_regs[ty.idx as usize]
+    pub(crate) fn read_general(&self, idx: u8) -> u32 {
+        assert!(idx < 32);
+        self.general_regs[idx as usize]
     }
 
     #[inline]
-    pub(crate) fn write_general(&mut self, ty: Register, data: u32) {
-        self.general_regs[ty.idx as usize] = data;
+    pub(crate) fn write_general(&mut self, idx: u8, data: u32) {
+        assert!(idx < 32);
+        self.general_regs[idx as usize] = data;
         self.general_regs[0] = 0;
     }
 
@@ -212,7 +192,6 @@ impl Registers {
     // and returns
     #[inline]
     pub(crate) fn write_ra(&mut self, data: u32) {
-        // ra is at index 31
         self.general_regs[RegisterType::Ra as usize] = data;
     }
 }
@@ -226,7 +205,7 @@ impl std::fmt::Debug for Registers {
             f,
             "pc: {:08X}\t{:>4}: {:08X}",
             self.pc,
-            Register::from_byte(1),
+            RegisterType::from(1),
             self.general_regs[1]
         )?;
         // HI and LO
@@ -237,10 +216,10 @@ impl std::fmt::Debug for Registers {
             writeln!(
                 f,
                 "{:>4}: {:08X}\t{:>4}: {:08X}",
-                Register::from_byte(i),
+                RegisterType::from(i),
                 self.general_regs[i as usize],
                 // -2 offset because we are not printing 0 (ZERO) and 1 (AT)
-                Register::from_byte(i + 32 / 2 - 2),
+                RegisterType::from(i + 32 / 2 - 2),
                 self.general_regs[(i + 32 / 2 - 2) as usize]
             )?;
         }
@@ -248,9 +227,9 @@ impl std::fmt::Debug for Registers {
         writeln!(
             f,
             "{:>4}: {:08X}\t{:>4}: {:08X}",
-            Register::from_byte(30),
+            RegisterType::from(30),
             self.general_regs[30],
-            Register::from_byte(31),
+            RegisterType::from(31),
             self.general_regs[31]
         )
     }

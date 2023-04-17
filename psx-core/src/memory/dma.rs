@@ -586,7 +586,6 @@ impl Dma {
         })
     }
 
-    #[allow(dead_code)]
     pub(super) fn clock_dma(
         &mut self,
         dma_bus: &mut super::DmaBus,

@@ -137,7 +137,7 @@ impl Debugger {
                     //
                     // That's why we have to check if the return address is any
                     // of the previous frames.
-                    let target = regs.read_general(self.last_instruction.rs);
+                    let target = regs.read_general(self.last_instruction.rs_raw);
 
                     if !self.call_stack.is_empty() {
                         let mut c = 1;

@@ -1,7 +1,7 @@
 use std::{io::Write, process, sync::mpsc, thread};
 
 use psx_core::{
-    cpu::{CpuInstruction, CpuState, RegisterType, CPU_REGISTERS},
+    cpu::{CpuState, Instruction, RegisterType, CPU_REGISTERS},
     Psx, HW_REGISTERS,
 };
 use rustyline::{
@@ -425,13 +425,13 @@ impl Debugger {
 
                     let previous_instr_d = psx.bus_read_u32(addr - 4);
                     if let Some(previous_instr_d) = previous_instr_d {
-                        let mut previous_instr = CpuInstruction::from_u32(previous_instr_d);
+                        let mut previous_instr = Instruction::from_u32(previous_instr_d, addr - 4);
 
                         for i in 0..count {
                             let addr = addr + i * 4;
                             // will always be aligned
                             let val = psx.bus_read_u32(addr).unwrap();
-                            let instr = CpuInstruction::from_u32(val);
+                            let instr = Instruction::from_u32(val, addr);
                             println!(
                                 "0x{:08X}: {}{}",
                                 addr,
