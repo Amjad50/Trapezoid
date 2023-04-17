@@ -1,7 +1,7 @@
 mod cdrom;
 mod controller_mem_card;
 mod coprocessor;
-mod cpu;
+pub mod cpu;
 mod gpu;
 mod mdec;
 mod memory;
@@ -13,7 +13,7 @@ mod tests;
 
 use std::{path::Path, sync::Arc};
 
-use cpu::Cpu;
+pub use memory::hw_registers::HW_REGISTERS;
 use memory::{Bios, CpuBus};
 
 pub use controller_mem_card::DigitalControllerKey;
@@ -32,7 +32,7 @@ pub struct PsxConfig {
 
 pub struct Psx {
     bus: CpuBus,
-    cpu: Cpu,
+    cpu: cpu::Cpu,
     /// Stores the excess CPU cycles for later execution.
     ///
     /// Sometimes, when running the DMA (mostly CD-ROM) it can generate
@@ -54,7 +54,7 @@ impl Psx {
         let bios = Bios::from_file(bios_file_path)?;
 
         Ok(Self {
-            cpu: Cpu::new(),
+            cpu: cpu::Cpu::new(),
             bus: CpuBus::new(bios, disk_file, config, device, queue),
             excess_cpu_cycles: 0,
             cpu_frame_cycles: 0,
@@ -62,14 +62,18 @@ impl Psx {
     }
 
     #[inline(always)]
-    fn common_clock(&mut self) -> (bool, u32) {
+    fn common_clock(&mut self) -> (u32, cpu::CpuState) {
+        let mut cpu_state = cpu::CpuState::Normal;
         let mut added_clock = 0;
         if self.excess_cpu_cycles == 0 {
             // this number doesn't mean anything
             // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
-            let cpu_cycles = self.cpu.clock(&mut self.bus, 56);
+            let cpu_cycles;
+
+            (cpu_cycles, cpu_state) = self.cpu.clock(&mut self.bus, 56);
+
             if cpu_cycles == 0 {
-                return (true, 0);
+                return (0, cpu_state);
             }
             // the DMA is running of the CPU
             self.excess_cpu_cycles = cpu_cycles + self.bus.clock_dma();
@@ -80,45 +84,47 @@ impl Psx {
         self.excess_cpu_cycles -= cpu_cycles_to_run;
         self.bus.clock_components(cpu_cycles_to_run);
 
-        (false, added_clock)
+        (added_clock, cpu_state)
     }
 
-    pub fn clock_based_on_audio(&mut self, max_clocks: u32) -> bool {
+    /// Return `true` if the frame is finished, `false` otherwise.
+    /// Return the CPU state.
+    pub fn clock_based_on_audio(&mut self, max_clocks: u32) -> (bool, cpu::CpuState) {
         // sync the CPU clocks to the SPU so that the audio would be clearer.
         const CYCLES_PER_FRAME: u32 = 564480;
 
         let mut clocks = 0;
 
         while self.cpu_frame_cycles < CYCLES_PER_FRAME {
-            if clocks >= max_clocks {
-                return false;
-            }
-
-            let (halted, added_clock) = self.common_clock();
-            if halted {
-                return true;
-            }
-            self.cpu_frame_cycles += added_clock;
+            let (added_clock, cpu_state) = self.common_clock();
             clocks += added_clock;
+            self.cpu_frame_cycles += added_clock;
+
+            if clocks >= max_clocks || cpu_state != cpu::CpuState::Normal {
+                return (false, cpu_state);
+            }
         }
         self.cpu_frame_cycles -= CYCLES_PER_FRAME;
 
-        true
+        (true, cpu::CpuState::Normal)
     }
 
-    pub fn clock_based_on_video(&mut self, max_clocks: u32) -> bool {
+    /// Return `true` if the frame is finished, `false` otherwise.
+    /// Return the CPU state.
+    pub fn clock_based_on_video(&mut self, max_clocks: u32) -> (bool, cpu::CpuState) {
         let mut prev_vblank = self.bus.gpu().in_vblank();
         let mut current_vblank = prev_vblank;
 
         let mut clocks = 0;
 
         while !current_vblank || prev_vblank {
-            if self.common_clock().0 {
-                return true;
+            let (added_clock, cpu_state) = self.common_clock();
+            if cpu_state != cpu::CpuState::Normal {
+                return (false, cpu_state);
             } else {
-                clocks += self.common_clock().1;
+                clocks += added_clock;
                 if clocks >= max_clocks {
-                    return false;
+                    return (false, cpu_state);
                 }
             }
 
@@ -126,35 +132,40 @@ impl Psx {
             current_vblank = self.bus.gpu().in_vblank();
         }
 
-        true
+        (true, cpu::CpuState::Normal)
     }
 
-    pub fn clock_full_audio_frame(&mut self) {
+    pub fn clock_full_audio_frame(&mut self) -> cpu::CpuState {
         // sync the CPU clocks to the SPU so that the audio would be clearer.
         const CYCLES_PER_FRAME: u32 = 564480;
 
         let mut clocks = 0;
         while clocks < CYCLES_PER_FRAME {
-            let (halted, added_clock) = self.common_clock();
-            if halted {
-                return;
-            }
+            let (added_clock, cpu_state) = self.common_clock();
             clocks += added_clock;
+            if cpu_state != cpu::CpuState::Normal {
+                return cpu_state;
+            }
         }
+
+        cpu::CpuState::Normal
     }
 
-    pub fn clock_full_video_frame(&mut self) {
+    pub fn clock_full_video_frame(&mut self) -> cpu::CpuState {
         let mut prev_vblank = self.bus.gpu().in_vblank();
         let mut current_vblank = prev_vblank;
 
         while !current_vblank || prev_vblank {
-            if self.common_clock().0 {
-                return;
+            let cpu_state = self.common_clock().1;
+            if cpu_state != cpu::CpuState::Normal {
+                return cpu_state;
             }
 
             prev_vblank = current_vblank;
             current_vblank = self.bus.gpu().in_vblank();
         }
+
+        cpu::CpuState::Normal
     }
 
     pub fn change_controller_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {
@@ -181,9 +192,7 @@ impl Psx {
         self.bus.spu_mut().take_audio_buffer()
     }
 
-    pub fn pause_cpu(&mut self) {
-        self.cpu.set_pause(true);
-        #[cfg(feature = "debugger")]
-        println!("{:?}", self.cpu.registers());
+    pub fn cpu(&mut self) -> &mut cpu::Cpu {
+        &mut self.cpu
     }
 }

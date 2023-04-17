@@ -1286,6 +1286,7 @@ dependencies = [
  "env_logger",
  "psx-core",
  "ringbuf",
+ "rustyline",
  "vulkano",
  "vulkano-win",
  "winit",
@@ -1300,7 +1301,6 @@ dependencies = [
  "crossbeam",
  "log",
  "phf",
- "rustyline",
  "vulkano",
  "vulkano-shaders",
 ]

@@ -1,9 +1,10 @@
 mod audio;
+mod debugger;
 
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use audio::AudioPlayer;
-use psx_core::{DigitalControllerKey, Psx, PsxConfig};
+use psx_core::{cpu::CpuState, DigitalControllerKey, Psx, PsxConfig};
 
 use clap::Parser;
 use vulkano::{
@@ -370,6 +371,8 @@ fn main() {
 
     let mut last_frame_time = Instant::now();
 
+    let mut debugger = debugger::Debugger::new();
+
     let mut audio_player = AudioPlayer::new(44100);
     if args.audio {
         audio_player.play();
@@ -416,7 +419,10 @@ fn main() {
                     } else if pressed {
                         match input.virtual_keycode {
                             // Pause CPU and enable debug
-                            Some(VirtualKeyCode::Slash) => psx.pause_cpu(),
+                            Some(VirtualKeyCode::Slash) => {
+                                println!("{:?}", psx.cpu().registers());
+                                debugger.set_enabled(true);
+                            }
                             Some(VirtualKeyCode::V) => display.toggle_full_vram_display(),
                             _ => {}
                         }
@@ -431,15 +437,27 @@ fn main() {
                 }
                 last_frame_time = Instant::now();
 
-                psx.clock_full_audio_frame();
-                display.render_frame(&mut psx);
+                // if the debugger is enabled, we don't run the emulation
+                if !debugger.enabled() {
+                    let cpu_state = psx.clock_full_audio_frame();
+                    debugger.handle_cpu_state(&mut psx, cpu_state);
 
-                let audio_buffer = psx.take_audio_buffer();
-                if args.audio {
-                    audio_player.queue(&audio_buffer);
+                    let audio_buffer = psx.take_audio_buffer();
+                    if args.audio {
+                        audio_player.queue(&audio_buffer);
+                    }
                 }
+                // keep rendering even when debugger is  running so that
+                // we don't hang the display
+                display.render_frame(&mut psx);
             }
             _ => {}
+        }
+
+        // this is placed outside the emulation event, so that it reacts faster
+        // to user input
+        if debugger.enabled() {
+            debugger.run(&mut psx);
         }
 
         *control_flow = ControlFlow::Poll;

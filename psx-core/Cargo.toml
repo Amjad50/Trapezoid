@@ -7,7 +7,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-debugger = ["dep:rustyline"]
+debugger = []
 
 [dependencies]
 byteorder = "1.4.2"
@@ -18,5 +18,4 @@ vulkano = "0.33"
 vulkano-shaders = "0.33"
 
 crossbeam = "0.8.1"
-rustyline = { version = "11.0", default-features = false, optional = true }
 phf = { version = "0.11.1", default-features = false, features = ["macros"] }

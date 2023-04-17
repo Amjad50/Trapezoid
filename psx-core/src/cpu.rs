@@ -12,7 +12,7 @@ use instruction::{Instruction, Opcode};
 pub use register::{RegisterType, Registers, CPU_REGISTERS};
 
 #[cfg(feature = "debugger")]
-use self::debugger::Debugger;
+pub use self::debugger::Debugger;
 
 #[cfg(not(feature = "debugger"))]
 struct Debugger;
@@ -26,17 +26,17 @@ impl Debugger {
     }
 
     #[inline]
-    pub fn set_pause(&mut self, _pause: bool) {}
-
-    #[inline]
     pub fn paused(&self) -> bool {
         false
     }
 
     #[inline]
-    pub fn handle<P: CpuBusProvider>(&mut self, _regs: &Registers, _bus: &mut P) -> bool {
-        false
+    pub fn last_state(&self) -> CpuState {
+        CpuState::Normal
     }
+
+    #[inline]
+    pub fn clear_state(&mut self) {}
 
     #[inline]
     pub fn trace_instruction(
@@ -48,9 +48,9 @@ impl Debugger {
         false
     }
 
-    pub fn trace_write(&mut self, _addr: u32, _bits: u32) {}
+    pub fn trace_write(&mut self, _addr: u32, _bits: u8) {}
 
-    pub fn trace_read(&mut self, _addr: u32, _bits: u32) {}
+    pub fn trace_read(&mut self, _addr: u32, _bits: u8) {}
 }
 
 pub(crate) trait CpuBusProvider: BusLine {
@@ -70,6 +70,36 @@ enum Exception {
     ReservedInstruction = 0x0A,
     _CoprocessorUnusable = 0x0B,
     ArithmeticOverflow = 0x0C,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum CpuState {
+    /// Normal execution, no breakpoints
+    Normal,
+
+    #[cfg(feature = "debugger")]
+    /// Paused on an execution breakpoint, the pause happen BEFORE execution
+    InstructionBreakpoint(u32),
+
+    #[cfg(feature = "debugger")]
+    /// Paused on a write breakpoint, together with the value that was written
+    /// the pause happen AFTER the operation
+    WriteBreakpoint { addr: u32, bits: u8 },
+
+    #[cfg(feature = "debugger")]
+    /// Paused on a read breakpoint
+    /// the pause happen AFTER the operation
+    ReadBreakpoint { addr: u32, bits: u8 },
+
+    #[cfg(feature = "debugger")]
+    /// Paused after a single instruction was executed
+    Step,
+
+    #[cfg(feature = "debugger")]
+    /// Paused after a single instruction was executed, if the instruction is `Jal` or `Jalr`
+    /// which is used for function calls, the pause will happen after the function returns,
+    /// i.e. step over the function
+    StepOver,
 }
 
 pub struct Cpu {
@@ -99,18 +129,17 @@ impl Cpu {
         }
     }
 
-    pub fn set_pause(&mut self, paused: bool) {
-        self.debugger.set_pause(paused);
-    }
-
     pub fn registers(&self) -> &Registers {
         &self.regs
     }
 
-    pub(crate) fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> u32 {
-        if self.debugger.handle(&self.regs, bus) {
-            return 0;
-        }
+    #[cfg(feature = "debugger")]
+    pub fn debugger(&mut self) -> &mut Debugger {
+        &mut self.debugger
+    }
+
+    pub(crate) fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> (u32, CpuState) {
+        let mut state = CpuState::Normal;
 
         let pending_interrupts = bus.pending_interrupts();
         self.check_and_execute_interrupt(pending_interrupts);
@@ -171,7 +200,12 @@ impl Cpu {
             }
         }
 
-        std::mem::take(&mut self.elapsed_cycles)
+        if self.debugger.paused() {
+            state = self.debugger.last_state();
+            self.debugger.clear_state();
+        }
+
+        (std::mem::take(&mut self.elapsed_cycles), state)
     }
 }
 
