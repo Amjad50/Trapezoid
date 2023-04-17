@@ -230,7 +230,7 @@ impl Debugger {
 
     /// Returns true if the CPU should exit and not execute instructions, since
     /// we are paused.
-    pub fn handle<P: CpuBusProvider>(&mut self, regs: &Registers, bus: &mut P) -> bool {
+    pub(crate) fn handle<P: CpuBusProvider>(&mut self, regs: &Registers, bus: &mut P) -> bool {
         if !self.paused {
             return false;
         }
@@ -251,7 +251,7 @@ impl Debugger {
                         .position(|&r| r == register_name)
                         .map(|i| Register::from_byte(i as u8));
                     match register {
-                        Some(r) => Some(regs.read_register(r)),
+                        Some(r) => Some(regs.read_general(r)),
                         None => match register_name {
                             REG_PC_NAME => Some(regs.pc),
                             REG_HI_NAME => Some(regs.hi),
@@ -301,7 +301,7 @@ impl Debugger {
                     println!("p <addr>/<$reg> - print address or register value");
                     println!("i/[n] [addr] - disassemble instructions");
                 }
-                Some("r") => regs.debug_print(),
+                Some("r") => println!("{:?}", regs),
                 Some("c") => self.set_pause(false),
                 Some("s") => {
                     self.set_pause(false);
@@ -324,7 +324,7 @@ impl Debugger {
                 Some("tf") => self.set_instruction_trace(false),
                 Some("stack") => {
                     let n = addr.unwrap_or(10);
-                    let sp = regs.read_register(register::RegisterType::Sp.into());
+                    let sp = regs.read(register::RegisterType::Sp);
                     println!("Stack: SP=0x{:08X}", sp);
                     for i in 0..n {
                         let d = Self::bus_read_u32(bus, sp + i * 4);
@@ -525,7 +525,7 @@ impl Debugger {
                     //
                     // That's why we have to check if the return address is any
                     // of the previous frames.
-                    let target = regs.read_register(self.last_instruction.rs);
+                    let target = regs.read_general(self.last_instruction.rs);
 
                     if !self.call_stack.is_empty() {
                         let mut c = 1;

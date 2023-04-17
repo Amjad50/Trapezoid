@@ -184,6 +184,6 @@ impl Psx {
     pub fn pause_cpu(&mut self) {
         self.cpu.set_pause(true);
         #[cfg(feature = "debugger")]
-        self.cpu.print_cpu_registers();
+        println!("{:?}", self.cpu.registers());
     }
 }
