@@ -1,7 +1,7 @@
 use std::{io::Write, process, sync::mpsc, thread};
 
 use psx_core::{
-    cpu::{CpuState, RegisterType, CPU_REGISTERS},
+    cpu::{CpuInstruction, CpuState, RegisterType, CPU_REGISTERS},
     Psx, HW_REGISTERS,
 };
 use rustyline::{
@@ -420,27 +420,29 @@ impl Debugger {
                     }
                 }
                 Some("i") | Some("i/") => {
-                    // let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
-                    // let addr = addr.unwrap_or(regs.pc);
+                    let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
+                    let addr = addr.unwrap_or(psx.cpu().registers().read(RegisterType::Pc));
 
-                    // let previous_instr_d = Self::bus_read_u32(bus, addr - 4);
-                    // if let Some(previous_instr_d) = previous_instr_d {
-                    //     let mut previous_instr = Instruction::from_u32(previous_instr_d, addr - 4);
+                    let previous_instr_d = psx.bus_read_u32(addr - 4);
+                    if let Some(previous_instr_d) = previous_instr_d {
+                        let mut previous_instr = CpuInstruction::from_u32(previous_instr_d);
 
-                    //     for i in 0..count {
-                    //         let addr = addr + i * 4;
-                    //         // will always be aligned
-                    //         let val = Self::bus_read_u32(bus, addr).unwrap();
-                    //         let instr = Instruction::from_u32(val, addr);
-                    //         println!(
-                    //             "0x{:08X}: {}{}",
-                    //             addr,
-                    //             if previous_instr.is_branch() { "_" } else { "" },
-                    //             instr
-                    //         );
-                    //         previous_instr = instr;
-                    //     }
-                    // }
+                        for i in 0..count {
+                            let addr = addr + i * 4;
+                            // will always be aligned
+                            let val = psx.bus_read_u32(addr).unwrap();
+                            let instr = CpuInstruction::from_u32(val);
+                            println!(
+                                "0x{:08X}: {}{}",
+                                addr,
+                                if previous_instr.is_branch() { "_" } else { "" },
+                                instr
+                            );
+                            previous_instr = instr;
+                        }
+                    } else {
+                        println!("Invalid address, must be 32bit aligned");
+                    }
                 }
                 Some("") => {}
                 Some(cmd) => println!("Unknown command: {}", cmd),

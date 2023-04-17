@@ -8,7 +8,8 @@ mod register;
 use crate::coprocessor::{Gte, SystemControlCoprocessor};
 use crate::memory::BusLine;
 
-use instruction::{Instruction, Opcode};
+use instruction::Instruction;
+pub use instruction::{Opcode, PublicInstruction as CpuInstruction};
 pub use register::{RegisterType, Registers, CPU_REGISTERS};
 
 #[cfg(feature = "debugger")]
@@ -799,7 +800,7 @@ impl Cpu {
             Opcode::Invalid => {
                 self.execute_exception(Exception::ReservedInstruction);
             }
-            Opcode::Special => unreachable!(),
+            Opcode::SecondaryOpcode => unreachable!(),
             _ => todo!("unimplemented_instruction {:?}", instruction.opcode),
         }
     }

@@ -1,9 +1,15 @@
 use super::instructions_table::{PRIMARY_OPCODES, SECONDARY_OPCODES};
 use super::register::Register;
+use super::RegisterType;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Opcode {
-    Special,
+    #[doc(hidden)]
+    /// This is a special opcode used when parsing the instruction,
+    /// This is not a valid instruction and not avilable in any documentation,
+    /// but is used as a middle step to parse the instruction if the instruction
+    /// has a secondary opcode metadata
+    SecondaryOpcode,
     Invalid,
 
     Nop,
@@ -73,13 +79,13 @@ pub enum Opcode {
     Bne,
     Bgtz,
     Blez,
-    /// depending on the value of `rt` it will execute:
-    ///  rt   | instr
-    /// ---------------
-    ///  0x00 | Bltz
-    ///  0x01 | Bgez
-    ///  0x10 | Bltzal
-    ///  0x11 | Bgezal
+    // depending on the value of `rt` it will execute:
+    //  rt   | instr
+    // ---------------
+    //  0x00 | Bltz
+    //  0x01 | Bgez
+    //  0x10 | Bltzal
+    //  0x11 | Bgezal
     Bcondz,
     Bltz,
     Bgez,
@@ -160,7 +166,7 @@ impl Instruction {
         let opcode = Self::get_opcode_from_primary(primary_identifier);
 
         let opcode = match opcode {
-            Opcode::Special => Self::get_opcode_from_secondary(secondary_identifier),
+            Opcode::SecondaryOpcode => Self::get_opcode_from_secondary(secondary_identifier),
             Opcode::Cop(n) => Self::get_cop_opcode(n, secondary_identifier, rt_raw, rs_raw),
             Opcode::Bcondz => Self::get_bcondz_opcode(rt_raw),
             _ => opcode,
@@ -248,5 +254,54 @@ impl Instruction {
             }
             _ => Opcode::Invalid,
         }
+    }
+}
+
+// A struct that uses `RegisterType`, which is good for public access but less
+// optimial to generate. That's why we are using this ugly solution of wrapping our own
+// `Instruction`, and this resulted in not being able to really find a good name for it.
+/// Instruction representation.
+#[derive(Clone)]
+pub struct PublicInstruction {
+    pub opcode: Opcode,
+
+    pub imm5: u8,
+    pub rd: RegisterType,
+    pub rt: RegisterType,
+    pub rs: RegisterType,
+    pub imm16: u16,
+    pub imm25: u32,
+    pub imm26: u32,
+
+    inner: Instruction,
+}
+
+impl PublicInstruction {
+    pub fn from_u32(data: u32) -> Self {
+        let inner = Instruction::from_u32(data, 0);
+
+        Self {
+            opcode: inner.opcode,
+
+            imm5: inner.imm5,
+            rd: inner.rd.into(),
+            rt: inner.rt.into(),
+            rs: inner.rs.into(),
+            imm16: inner.imm16,
+            imm25: inner.imm25,
+            imm26: inner.imm26,
+
+            inner,
+        }
+    }
+
+    pub fn is_branch(&self) -> bool {
+        self.inner.is_branch()
+    }
+}
+
+impl std::fmt::Display for PublicInstruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
     }
 }
