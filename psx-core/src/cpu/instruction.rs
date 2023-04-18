@@ -127,16 +127,10 @@ pub struct Instruction {
 
     pub opcode: Opcode,
 
-    pub imm5: u8,
-    pub rd_raw: u8,
-    pub rd: RegisterType,
-    pub rt_raw: u8,
-    pub rt: RegisterType,
-    pub rs_raw: u8,
-    pub rs: RegisterType,
-    pub imm16: u16,
-    pub imm25: u32,
-    pub imm26: u32,
+    pub instruction: u32,
+    pub(crate) rd_raw: u8,
+    pub(crate) rt_raw: u8,
+    pub(crate) rs_raw: u8,
 }
 
 impl Instruction {
@@ -146,38 +140,29 @@ impl Instruction {
                 pc,
 
                 opcode: Opcode::Nop,
-                imm5: 0,
+                instruction,
                 rd_raw: 0,
-                rd: RegisterType::from(0),
                 rt_raw: 0,
-                rt: RegisterType::from(0),
                 rs_raw: 0,
-                rs: RegisterType::from(0),
-                imm16: 0,
-                imm25: 0,
-                imm26: 0,
             };
         }
 
         let primary_identifier = (instruction >> 26) as u8;
-        let secondary_identifier = instruction as u8 & 0x3F;
-        let imm5 = (instruction >> 6) as u8 & 0x1F;
         let rd_raw = (instruction >> 11) as u8 & 0x1F;
-        let rd = RegisterType::from(rd_raw);
         let rt_raw = (instruction >> 16) as u8 & 0x1F;
-        let rt = RegisterType::from(rt_raw);
         let rs_raw = (instruction >> 21) as u8 & 0x1F;
-        let rs = RegisterType::from(rs_raw);
-        // combination of the above
-        let imm16 = instruction as u16;
-        let imm26 = instruction & 0x3FFFFFF;
-        let imm25 = instruction & 0x1FFFFFF;
 
         let opcode = Self::get_opcode_from_primary(primary_identifier);
 
         let opcode = match opcode {
-            Opcode::SecondaryOpcode => Self::get_opcode_from_secondary(secondary_identifier),
-            Opcode::Cop(n) => Self::get_cop_opcode(n, secondary_identifier, rt_raw, rs_raw),
+            Opcode::SecondaryOpcode => {
+                let secondary_identifier = instruction as u8 & 0x3F;
+                Self::get_opcode_from_secondary(secondary_identifier)
+            }
+            Opcode::Cop(n) => {
+                let secondary_identifier = instruction as u8 & 0x3F;
+                Self::get_cop_opcode(n, secondary_identifier, rt_raw, rs_raw)
+            }
             Opcode::Bcondz => Self::get_bcondz_opcode(rt_raw),
             _ => opcode,
         };
@@ -186,16 +171,10 @@ impl Instruction {
             pc,
 
             opcode,
-            imm5,
+            instruction,
             rd_raw,
-            rd,
             rt_raw,
-            rt,
             rs_raw,
-            rs,
-            imm16,
-            imm25,
-            imm26,
         }
     }
 
@@ -215,6 +194,41 @@ impl Instruction {
             | Opcode::Bgezal => true,
             _ => false,
         }
+    }
+
+    #[inline]
+    pub fn rd(&self) -> RegisterType {
+        RegisterType::from(self.rd_raw)
+    }
+
+    #[inline]
+    pub fn rt(&self) -> RegisterType {
+        RegisterType::from(self.rd_raw)
+    }
+
+    #[inline]
+    pub fn rs(&self) -> RegisterType {
+        RegisterType::from(self.rd_raw)
+    }
+
+    #[inline]
+    pub const fn imm5(&self) -> u8 {
+        (self.instruction >> 6) as u8 & 0x1F
+    }
+
+    #[inline]
+    pub const fn imm16(&self) -> u16 {
+        self.instruction as u16
+    }
+
+    #[inline]
+    pub const fn imm25(&self) -> u32 {
+        self.instruction & 0x1FFFFFF
+    }
+
+    #[inline]
+    pub const fn imm26(&self) -> u32 {
+        self.instruction & 0x3FFFFFF
     }
 }
 
@@ -372,9 +386,9 @@ const fn opcode_str(opcode: Opcode) -> &'static str {
 fn format_load_store(f: &mut fmt::Formatter, instr: &Instruction) -> fmt::Result {
     let opcode = instr.opcode;
 
-    let src = instr.rs;
-    let off = instr.imm16;
-    let dst = instr.rt;
+    let src = instr.rs();
+    let off = instr.imm16();
+    let dst = instr.rt();
 
     write!(f, "{} {}, 0x{:04X}({})", opcode_str(opcode), dst, off, src)
 }
@@ -383,9 +397,9 @@ fn format_alu(f: &mut fmt::Formatter, instr: &Instruction, imm: bool) -> fmt::Re
     let opcode = instr.opcode;
 
     let (first, third) = if imm {
-        (instr.rt, format!("0x{:04X}", instr.imm16))
+        (instr.rt(), format!("0x{:04X}", instr.imm16()))
     } else {
-        (instr.rd, format!("{}", instr.rt))
+        (instr.rd(), format!("{}", instr.rt()))
     };
 
     write!(
@@ -393,7 +407,7 @@ fn format_alu(f: &mut fmt::Formatter, instr: &Instruction, imm: bool) -> fmt::Re
         "{} {}, {}, {}",
         opcode_str(opcode),
         first,
-        instr.rs,
+        instr.rs(),
         third
     )
 }
@@ -402,17 +416,17 @@ fn format_shift(f: &mut fmt::Formatter, instr: &Instruction, imm: bool) -> fmt::
     let opcode = instr.opcode;
 
     let third = if imm {
-        format!("0x{:02X}", instr.imm5)
+        format!("0x{:02X}", instr.imm5())
     } else {
-        format!("{}", instr.rs)
+        format!("{}", instr.rs())
     };
 
     write!(
         f,
         "{} {}, {}, {}",
         opcode_str(opcode),
-        instr.rd,
-        instr.rt,
+        instr.rd(),
+        instr.rt(),
         third
     )
 }
@@ -420,21 +434,21 @@ fn format_shift(f: &mut fmt::Formatter, instr: &Instruction, imm: bool) -> fmt::
 fn format_mult_div(f: &mut fmt::Formatter, instr: &Instruction) -> fmt::Result {
     let opcode = instr.opcode;
 
-    write!(f, "{} {}, {}", opcode_str(opcode), instr.rs, instr.rt)
+    write!(f, "{} {}, {}", opcode_str(opcode), instr.rs(), instr.rt())
 }
 
 fn format_branch(f: &mut fmt::Formatter, instr: &Instruction, rt: bool) -> fmt::Result {
     let opcode = instr.opcode;
 
-    let dest = instr.imm16;
+    let dest = instr.imm16();
 
     if rt {
         write!(
             f,
             "{} {}, {}, 0x{:04X} => 0x{:08X}",
             opcode_str(opcode),
-            instr.rs,
-            instr.rt,
+            instr.rs(),
+            instr.rt(),
             dest,
             instr
                 .pc
@@ -446,7 +460,7 @@ fn format_branch(f: &mut fmt::Formatter, instr: &Instruction, rt: bool) -> fmt::
             f,
             "{} {}, 0x{:04X} => 0x{:08X}",
             opcode_str(opcode),
-            instr.rs,
+            instr.rs(),
             dest,
             instr
                 .pc
@@ -459,7 +473,7 @@ fn format_branch(f: &mut fmt::Formatter, instr: &Instruction, rt: bool) -> fmt::
 fn format_cop_ops(f: &mut fmt::Formatter, instr: &Instruction) -> fmt::Result {
     let opcode = instr.opcode;
 
-    write!(f, "{} {}, {}", opcode_str(opcode), instr.rt, instr.rd)
+    write!(f, "{} {}, {}", opcode_str(opcode), instr.rt(), instr.rd())
 }
 
 impl fmt::Display for Instruction {
@@ -489,31 +503,37 @@ impl fmt::Display for Instruction {
                 f,
                 "{} {}, 0x{:04X}",
                 opcode_str(self.opcode),
-                self.rt,
-                self.imm16
+                self.rt(),
+                self.imm16()
             ),
             Opcode::Mult | Opcode::Multu | Opcode::Div | Opcode::Divu => format_mult_div(f, self),
-            Opcode::Mfhi => write!(f, "{} {}", opcode_str(self.opcode), self.rd),
-            Opcode::Mthi => write!(f, "{} {}", opcode_str(self.opcode), self.rs),
-            Opcode::Mflo => write!(f, "{} {}", opcode_str(self.opcode), self.rd),
-            Opcode::Mtlo => write!(f, "{} {}", opcode_str(self.opcode), self.rs),
+            Opcode::Mfhi => write!(f, "{} {}", opcode_str(self.opcode), self.rd()),
+            Opcode::Mthi => write!(f, "{} {}", opcode_str(self.opcode), self.rs()),
+            Opcode::Mflo => write!(f, "{} {}", opcode_str(self.opcode), self.rd()),
+            Opcode::Mtlo => write!(f, "{} {}", opcode_str(self.opcode), self.rs()),
             Opcode::J => write!(
                 f,
                 "{} 0x{:07X} => 0x{:08X}",
                 opcode_str(self.opcode),
-                self.imm26,
-                self.pc & 0xF0000000 | self.imm26 * 4
+                self.imm26(),
+                self.pc & 0xF0000000 | self.imm26() * 4
             ),
             Opcode::Jal => write!(
                 f,
                 "{} 0x{:07X} => 0x{:08X}",
                 opcode_str(self.opcode),
-                self.imm26,
-                self.pc & 0xF0000000 | self.imm26 * 4
+                self.imm26(),
+                self.pc & 0xF0000000 | self.imm26() * 4
             ),
-            Opcode::Jr => write!(f, "{} {}", opcode_str(self.opcode), self.rs),
+            Opcode::Jr => write!(f, "{} {}", opcode_str(self.opcode), self.rs()),
             // some specs says "jalr rd,rs"
-            Opcode::Jalr => write!(f, "{} {}, {}", opcode_str(self.opcode), self.rs, self.rd),
+            Opcode::Jalr => write!(
+                f,
+                "{} {}, {}",
+                opcode_str(self.opcode),
+                self.rs(),
+                self.rd()
+            ),
             Opcode::Beq | Opcode::Bne => format_branch(f, self, true),
             Opcode::Bgtz
             | Opcode::Blez
@@ -524,7 +544,7 @@ impl fmt::Display for Instruction {
             Opcode::Nop | Opcode::Syscall | Opcode::Break | Opcode::Rfe => {
                 f.write_str(opcode_str(self.opcode))
             }
-            Opcode::Cop(_) => write!(f, "{} 0x{:07X}", opcode_str(self.opcode), self.imm25),
+            Opcode::Cop(_) => write!(f, "{} 0x{:07X}", opcode_str(self.opcode), self.imm25()),
             Opcode::Mfc(_) | Opcode::Cfc(_) | Opcode::Mtc(_) | Opcode::Ctc(_) => {
                 format_cop_ops(f, self)
             }

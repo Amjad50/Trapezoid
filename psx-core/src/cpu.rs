@@ -322,7 +322,7 @@ impl Cpu {
         } else {
             0
         };
-        let signed_imm16 = Self::sign_extend_16(instruction.imm16).wrapping_mul(4);
+        let signed_imm16 = Self::sign_extend_16(instruction.imm16()).wrapping_mul(4);
 
         let should_jump = handler(rs, rt);
         if should_jump {
@@ -336,7 +336,7 @@ impl Cpu {
         F: FnMut(&mut Self, u32) -> Option<u32>,
     {
         let rs = self.regs.read_general(instruction.rs_raw);
-        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
         if let Some(data) = handler(self, computed_addr) {
             self.regs.write_general(instruction.rt_raw, data);
@@ -350,7 +350,7 @@ impl Cpu {
     {
         let rs = self.regs.read_general(instruction.rs_raw);
         let rt = self.regs.read_general(instruction.rt_raw);
-        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
         handler(self, computed_addr, rt);
     }
@@ -388,7 +388,7 @@ impl Cpu {
             Opcode::Lwl => {
                 // TODO: test these unaligned addressing instructions
                 let rs = self.regs.read_general(instruction.rs_raw);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 // round to the nearest floor of four
                 let start = computed_addr & !3;
@@ -413,7 +413,7 @@ impl Cpu {
             }
             Opcode::Lwr => {
                 let rs = self.regs.read_general(instruction.rs_raw);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 let start = computed_addr;
                 let end = computed_addr | 3;
@@ -452,7 +452,7 @@ impl Cpu {
             Opcode::Swl => {
                 let rs = self.regs.read_general(instruction.rs_raw);
                 let mut rt = self.regs.read_general(instruction.rt_raw);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 // round to the nearest floor of four
                 let start = computed_addr & !3;
@@ -472,7 +472,7 @@ impl Cpu {
             Opcode::Swr => {
                 let rs = self.regs.read_general(instruction.rs_raw);
                 let mut rt = self.regs.read_general(instruction.rt_raw);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 let start = computed_addr;
                 let end = computed_addr | 3;
@@ -499,14 +499,14 @@ impl Cpu {
             }
             Opcode::Slti => {
                 let rs = self.regs.read_general(instruction.rs_raw) as i32;
-                let imm = instruction.imm16 as i16 as i32;
+                let imm = instruction.imm16() as i16 as i32;
 
                 self.regs
                     .write_general(instruction.rt_raw, (rs < imm) as u32);
             }
             Opcode::Sltiu => {
                 let rs = self.regs.read_general(instruction.rs_raw);
-                let imm = Self::sign_extend_16(instruction.imm16);
+                let imm = Self::sign_extend_16(instruction.imm16());
 
                 self.regs
                     .write_general(instruction.rt_raw, (rs < imm) as u32);
@@ -531,13 +531,13 @@ impl Cpu {
             }
             Opcode::Addiu => {
                 self.execute_alu_imm(instruction, |rs, instr| {
-                    rs.wrapping_add(Self::sign_extend_16(instr.imm16))
+                    rs.wrapping_add(Self::sign_extend_16(instr.imm16()))
                 });
             }
             Opcode::Addi => {
                 let rs = self.regs.read_general(instruction.rs_raw);
                 let (result, overflow) =
-                    (rs as i32).overflowing_add(Self::sign_extend_16(instruction.imm16) as i32);
+                    (rs as i32).overflowing_add(Self::sign_extend_16(instruction.imm16()) as i32);
 
                 if overflow {
                     self.execute_exception(Exception::ArithmeticOverflow);
@@ -558,13 +558,13 @@ impl Cpu {
                 self.execute_alu_reg(instruction, |rs, rt| (!(rs | rt), false));
             }
             Opcode::Andi => {
-                self.execute_alu_imm(instruction, |rs, instr| rs & (instr.imm16 as u32));
+                self.execute_alu_imm(instruction, |rs, instr| rs & (instr.imm16() as u32));
             }
             Opcode::Ori => {
-                self.execute_alu_imm(instruction, |rs, instr| rs | (instr.imm16 as u32));
+                self.execute_alu_imm(instruction, |rs, instr| rs | (instr.imm16() as u32));
             }
             Opcode::Xori => {
-                self.execute_alu_imm(instruction, |rs, instr| rs ^ (instr.imm16 as u32));
+                self.execute_alu_imm(instruction, |rs, instr| rs ^ (instr.imm16() as u32));
             }
             Opcode::Sllv => {
                 self.execute_alu_reg(instruction, |rs, rt| (rt << (rs & 0x1F), false));
@@ -579,21 +579,21 @@ impl Cpu {
             }
             Opcode::Sll => {
                 let rt = self.regs.read_general(instruction.rt_raw);
-                let result = rt << instruction.imm5;
+                let result = rt << instruction.imm5();
                 self.regs.write_general(instruction.rd_raw, result);
             }
             Opcode::Srl => {
                 let rt = self.regs.read_general(instruction.rt_raw);
-                let result = rt >> instruction.imm5;
+                let result = rt >> instruction.imm5();
                 self.regs.write_general(instruction.rd_raw, result);
             }
             Opcode::Sra => {
                 let rt = self.regs.read_general(instruction.rt_raw);
-                let result = ((rt as i32) >> instruction.imm5) as u32;
+                let result = ((rt as i32) >> instruction.imm5()) as u32;
                 self.regs.write_general(instruction.rd_raw, result);
             }
             Opcode::Lui => {
-                let result = (instruction.imm16 as u32) << 16;
+                let result = (instruction.imm16() as u32) << 16;
                 self.regs.write_general(instruction.rt_raw, result);
             }
             Opcode::Mult => {
@@ -665,13 +665,13 @@ impl Cpu {
             }
             Opcode::J => {
                 let base = self.regs.pc & 0xF0000000;
-                let offset = instruction.imm26 * 4;
+                let offset = instruction.imm26() * 4;
 
                 self.jump_dest_next = Some(base + offset);
             }
             Opcode::Jal => {
                 let base = self.regs.pc & 0xF0000000;
-                let offset = instruction.imm26 * 4;
+                let offset = instruction.imm26() * 4;
 
                 self.jump_dest_next = Some(base + offset);
 
@@ -726,7 +726,7 @@ impl Cpu {
                 // so we only handle cop2 commands
                 assert!(n == 2);
 
-                self.cop2.execute_command(instruction.imm25);
+                self.cop2.execute_command(instruction.imm25());
             }
             Opcode::Mfc(n) => {
                 let result = match n {
@@ -779,7 +779,7 @@ impl Cpu {
             }
             Opcode::Lwc(n) => {
                 let rs = self.regs.read_general(instruction.rs_raw);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 if let Some(data) = self.bus_read_u32(bus, computed_addr) {
                     match n {
