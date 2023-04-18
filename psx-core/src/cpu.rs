@@ -1,18 +1,17 @@
 #[cfg(feature = "debugger")]
 mod debugger;
 mod instruction;
-mod instruction_format;
 mod instructions_table;
 mod register;
 
 use crate::coprocessor::{Gte, SystemControlCoprocessor};
 use crate::memory::BusLine;
 
-use instruction::{Instruction, Opcode};
-use register::Registers;
+pub use instruction::{Instruction, Opcode};
+pub use register::{RegisterType, Registers, CPU_REGISTERS};
 
 #[cfg(feature = "debugger")]
-use self::debugger::Debugger;
+pub use self::debugger::Debugger;
 
 #[cfg(not(feature = "debugger"))]
 struct Debugger;
@@ -26,32 +25,43 @@ impl Debugger {
     }
 
     #[inline]
-    pub fn set_pause(&mut self, _pause: bool) {}
-
-    #[inline]
     pub fn paused(&self) -> bool {
         false
     }
 
     #[inline]
-    pub fn handle<P: CpuBusProvider>(&mut self, _regs: &Registers, _bus: &mut P) -> bool {
-        false
+    pub fn last_state(&self) -> CpuState {
+        CpuState::Normal
+    }
+
+    #[inline]
+    pub fn clear_state(&mut self) {}
+
+    #[inline]
+    pub fn handle_pending_processing<P: CpuBusProvider>(
+        &mut self,
+        _bus: &mut P,
+        _regs: &Registers,
+        _jumping: bool,
+    ) {
     }
 
     #[inline]
     pub fn trace_instruction(
         &mut self,
-        _pc: u32,
+        _regs: &Registers,
         _jumping: bool,
         _instruction: &Instruction,
     ) -> bool {
         false
     }
 
-    pub fn trace_write(&mut self, _addr: u32) {}
+    pub fn trace_write(&mut self, _addr: u32, _bits: u8) {}
+
+    pub fn trace_read(&mut self, _addr: u32, _bits: u8) {}
 }
 
-pub trait CpuBusProvider: BusLine {
+pub(crate) trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
     fn should_run_dma(&self) -> bool;
 }
@@ -70,6 +80,40 @@ enum Exception {
     ArithmeticOverflow = 0x0C,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum CpuState {
+    /// Normal execution, no breakpoints
+    Normal,
+
+    #[cfg(feature = "debugger")]
+    /// Paused on an execution breakpoint, the pause happen BEFORE execution
+    InstructionBreakpoint(u32),
+
+    #[cfg(feature = "debugger")]
+    /// Paused on a write breakpoint, together with the value that was written
+    /// the pause happen AFTER the operation
+    WriteBreakpoint { addr: u32, bits: u8 },
+
+    #[cfg(feature = "debugger")]
+    /// Paused on a read breakpoint
+    /// the pause happen AFTER the operation
+    ReadBreakpoint { addr: u32, bits: u8 },
+
+    #[cfg(feature = "debugger")]
+    /// Paused after a single instruction was executed
+    Step,
+
+    #[cfg(feature = "debugger")]
+    /// Paused after a single instruction was executed, if the instruction is `Jal` or `Jalr`
+    /// which is used for function calls, the pause will happen after the function returns,
+    /// i.e. step over the function
+    StepOver,
+
+    #[cfg(feature = "debugger")]
+    /// Continue execution until the CPU exit the current function
+    StepOut,
+}
+
 pub struct Cpu {
     regs: Registers,
     cop0: SystemControlCoprocessor,
@@ -83,7 +127,7 @@ pub struct Cpu {
 }
 
 impl Cpu {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             // reset value
             regs: Registers::new(),
@@ -97,19 +141,22 @@ impl Cpu {
         }
     }
 
-    pub fn set_pause(&mut self, paused: bool) {
-        self.debugger.set_pause(paused);
+    pub fn registers(&self) -> &Registers {
+        &self.regs
     }
 
     #[cfg(feature = "debugger")]
-    pub fn print_cpu_registers(&self) {
-        self.regs.debug_print();
+    pub fn debugger(&mut self) -> &mut Debugger {
+        &mut self.debugger
     }
 
-    pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> u32 {
-        if self.debugger.handle(&self.regs, bus) {
-            return 0;
-        }
+    pub(crate) fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> (u32, CpuState) {
+        let mut state = CpuState::Normal;
+
+        // we only need to run this only once before any instruction, as this
+        // is used to process any pending debugger commands
+        self.debugger
+            .handle_pending_processing(bus, &self.regs, self.jump_dest_next.is_some());
 
         let pending_interrupts = bus.pending_interrupts();
         self.check_and_execute_interrupt(pending_interrupts);
@@ -170,7 +217,12 @@ impl Cpu {
             }
         }
 
-        std::mem::take(&mut self.elapsed_cycles)
+        if self.debugger.paused() {
+            state = self.debugger.last_state();
+            self.debugger.clear_state();
+        }
+
+        (std::mem::take(&mut self.elapsed_cycles), state)
     }
 }
 
@@ -246,14 +298,14 @@ impl Cpu {
     where
         F: FnOnce(u32, u32) -> (u32, bool),
     {
-        let rs = self.regs.read_register(instruction.rs);
-        let rt = self.regs.read_register(instruction.rt);
+        let rs = self.regs.read_general(instruction.rs_raw);
+        let rt = self.regs.read_general(instruction.rt_raw);
 
         let (result, overflow) = handler(rs, rt);
         if overflow {
             self.execute_exception(Exception::ArithmeticOverflow);
         } else {
-            self.regs.write_register(instruction.rd, result);
+            self.regs.write_general(instruction.rd_raw, result);
         }
     }
 
@@ -262,9 +314,9 @@ impl Cpu {
     where
         F: FnOnce(u32, &Instruction) -> u32,
     {
-        let rs = self.regs.read_register(instruction.rs);
+        let rs = self.regs.read_general(instruction.rs_raw);
         let result = handler(rs, &instruction);
-        self.regs.write_register(instruction.rt, result);
+        self.regs.write_general(instruction.rt_raw, result);
     }
 
     #[inline]
@@ -272,13 +324,13 @@ impl Cpu {
     where
         F: FnOnce(i32, i32) -> bool,
     {
-        let rs = self.regs.read_register(instruction.rs) as i32;
+        let rs = self.regs.read_general(instruction.rs_raw) as i32;
         let rt = if have_rt {
-            self.regs.read_register(instruction.rt) as i32
+            self.regs.read_general(instruction.rt_raw) as i32
         } else {
             0
         };
-        let signed_imm16 = Self::sign_extend_16(instruction.imm16).wrapping_mul(4);
+        let signed_imm16 = Self::sign_extend_16(instruction.imm16()).wrapping_mul(4);
 
         let should_jump = handler(rs, rt);
         if should_jump {
@@ -291,11 +343,11 @@ impl Cpu {
     where
         F: FnMut(&mut Self, u32) -> Option<u32>,
     {
-        let rs = self.regs.read_register(instruction.rs);
-        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+        let rs = self.regs.read_general(instruction.rs_raw);
+        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
         if let Some(data) = handler(self, computed_addr) {
-            self.regs.write_register(instruction.rt, data);
+            self.regs.write_general(instruction.rt_raw, data);
         }
     }
 
@@ -304,9 +356,9 @@ impl Cpu {
     where
         F: FnMut(&mut Self, u32, u32),
     {
-        let rs = self.regs.read_register(instruction.rs);
-        let rt = self.regs.read_register(instruction.rt);
-        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+        let rs = self.regs.read_general(instruction.rs_raw);
+        let rt = self.regs.read_general(instruction.rt_raw);
+        let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
         handler(self, computed_addr, rt);
     }
@@ -343,8 +395,8 @@ impl Cpu {
             }
             Opcode::Lwl => {
                 // TODO: test these unaligned addressing instructions
-                let rs = self.regs.read_register(instruction.rs);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let rs = self.regs.read_general(instruction.rs_raw);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 // round to the nearest floor of four
                 let start = computed_addr & !3;
@@ -362,14 +414,14 @@ impl Cpu {
                 result <<= shift;
 
                 let mask = !((0xFFFFFFFF >> shift) << shift);
-                let original_rt = self.regs.read_register(instruction.rt);
+                let original_rt = self.regs.read_general(instruction.rt_raw);
                 let result = (original_rt & mask) | result;
 
-                self.regs.write_register(instruction.rt, result);
+                self.regs.write_general(instruction.rt_raw, result);
             }
             Opcode::Lwr => {
-                let rs = self.regs.read_register(instruction.rs);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let rs = self.regs.read_general(instruction.rs_raw);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 let start = computed_addr;
                 let end = computed_addr | 3;
@@ -385,10 +437,10 @@ impl Cpu {
                 let shift = offset * 8;
 
                 let mask = !(0xFFFFFFFF >> shift);
-                let original_rt = self.regs.read_register(instruction.rt);
+                let original_rt = self.regs.read_general(instruction.rt_raw);
                 let result = (original_rt & mask) | result;
 
-                self.regs.write_register(instruction.rt, result);
+                self.regs.write_general(instruction.rt_raw, result);
             }
             Opcode::Sb => {
                 self.execute_store(instruction, |s, computed_addr, data| {
@@ -406,9 +458,9 @@ impl Cpu {
                 });
             }
             Opcode::Swl => {
-                let rs = self.regs.read_register(instruction.rs);
-                let mut rt = self.regs.read_register(instruction.rt);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let rs = self.regs.read_general(instruction.rs_raw);
+                let mut rt = self.regs.read_general(instruction.rt_raw);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 // round to the nearest floor of four
                 let start = computed_addr & !3;
@@ -426,9 +478,9 @@ impl Cpu {
                 }
             }
             Opcode::Swr => {
-                let rs = self.regs.read_register(instruction.rs);
-                let mut rt = self.regs.read_register(instruction.rt);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let rs = self.regs.read_general(instruction.rs_raw);
+                let mut rt = self.regs.read_general(instruction.rt_raw);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 let start = computed_addr;
                 let end = computed_addr | 3;
@@ -440,28 +492,32 @@ impl Cpu {
                 }
             }
             Opcode::Slt => {
-                let rs = self.regs.read_register(instruction.rs) as i32;
-                let rt = self.regs.read_register(instruction.rt) as i32;
+                let rs = self.regs.read_general(instruction.rs_raw) as i32;
+                let rt = self.regs.read_general(instruction.rt_raw) as i32;
 
-                self.regs.write_register(instruction.rd, (rs < rt) as u32);
+                self.regs
+                    .write_general(instruction.rd_raw, (rs < rt) as u32);
             }
             Opcode::Sltu => {
-                let rs = self.regs.read_register(instruction.rs);
-                let rt = self.regs.read_register(instruction.rt);
+                let rs = self.regs.read_general(instruction.rs_raw);
+                let rt = self.regs.read_general(instruction.rt_raw);
 
-                self.regs.write_register(instruction.rd, (rs < rt) as u32);
+                self.regs
+                    .write_general(instruction.rd_raw, (rs < rt) as u32);
             }
             Opcode::Slti => {
-                let rs = self.regs.read_register(instruction.rs) as i32;
-                let imm = instruction.imm16 as i16 as i32;
+                let rs = self.regs.read_general(instruction.rs_raw) as i32;
+                let imm = instruction.imm16() as i16 as i32;
 
-                self.regs.write_register(instruction.rt, (rs < imm) as u32);
+                self.regs
+                    .write_general(instruction.rt_raw, (rs < imm) as u32);
             }
             Opcode::Sltiu => {
-                let rs = self.regs.read_register(instruction.rs);
-                let imm = Self::sign_extend_16(instruction.imm16);
+                let rs = self.regs.read_general(instruction.rs_raw);
+                let imm = Self::sign_extend_16(instruction.imm16());
 
-                self.regs.write_register(instruction.rt, (rs < imm) as u32);
+                self.regs
+                    .write_general(instruction.rt_raw, (rs < imm) as u32);
             }
             Opcode::Addu => {
                 self.execute_alu_reg(instruction, |rs, rt| (rs.wrapping_add(rt), false));
@@ -483,18 +539,18 @@ impl Cpu {
             }
             Opcode::Addiu => {
                 self.execute_alu_imm(instruction, |rs, instr| {
-                    rs.wrapping_add(Self::sign_extend_16(instr.imm16))
+                    rs.wrapping_add(Self::sign_extend_16(instr.imm16()))
                 });
             }
             Opcode::Addi => {
-                let rs = self.regs.read_register(instruction.rs);
+                let rs = self.regs.read_general(instruction.rs_raw);
                 let (result, overflow) =
-                    (rs as i32).overflowing_add(Self::sign_extend_16(instruction.imm16) as i32);
+                    (rs as i32).overflowing_add(Self::sign_extend_16(instruction.imm16()) as i32);
 
                 if overflow {
                     self.execute_exception(Exception::ArithmeticOverflow);
                 } else {
-                    self.regs.write_register(instruction.rt, result as u32);
+                    self.regs.write_general(instruction.rt_raw, result as u32);
                 }
             }
             Opcode::And => {
@@ -510,13 +566,13 @@ impl Cpu {
                 self.execute_alu_reg(instruction, |rs, rt| (!(rs | rt), false));
             }
             Opcode::Andi => {
-                self.execute_alu_imm(instruction, |rs, instr| rs & (instr.imm16 as u32));
+                self.execute_alu_imm(instruction, |rs, instr| rs & (instr.imm16() as u32));
             }
             Opcode::Ori => {
-                self.execute_alu_imm(instruction, |rs, instr| rs | (instr.imm16 as u32));
+                self.execute_alu_imm(instruction, |rs, instr| rs | (instr.imm16() as u32));
             }
             Opcode::Xori => {
-                self.execute_alu_imm(instruction, |rs, instr| rs ^ (instr.imm16 as u32));
+                self.execute_alu_imm(instruction, |rs, instr| rs ^ (instr.imm16() as u32));
             }
             Opcode::Sllv => {
                 self.execute_alu_reg(instruction, |rs, rt| (rt << (rs & 0x1F), false));
@@ -530,28 +586,28 @@ impl Cpu {
                 });
             }
             Opcode::Sll => {
-                let rt = self.regs.read_register(instruction.rt);
-                let result = rt << instruction.imm5;
-                self.regs.write_register(instruction.rd, result);
+                let rt = self.regs.read_general(instruction.rt_raw);
+                let result = rt << instruction.imm5();
+                self.regs.write_general(instruction.rd_raw, result);
             }
             Opcode::Srl => {
-                let rt = self.regs.read_register(instruction.rt);
-                let result = rt >> instruction.imm5;
-                self.regs.write_register(instruction.rd, result);
+                let rt = self.regs.read_general(instruction.rt_raw);
+                let result = rt >> instruction.imm5();
+                self.regs.write_general(instruction.rd_raw, result);
             }
             Opcode::Sra => {
-                let rt = self.regs.read_register(instruction.rt);
-                let result = ((rt as i32) >> instruction.imm5) as u32;
-                self.regs.write_register(instruction.rd, result);
+                let rt = self.regs.read_general(instruction.rt_raw);
+                let result = ((rt as i32) >> instruction.imm5()) as u32;
+                self.regs.write_general(instruction.rd_raw, result);
             }
             Opcode::Lui => {
-                let result = (instruction.imm16 as u32) << 16;
-                self.regs.write_register(instruction.rt, result);
+                let result = (instruction.imm16() as u32) << 16;
+                self.regs.write_general(instruction.rt_raw, result);
             }
             Opcode::Mult => {
                 self.elapsed_cycles += 5;
-                let rs = self.regs.read_register(instruction.rs) as i32 as i64;
-                let rt = self.regs.read_register(instruction.rt) as i32 as i64;
+                let rs = self.regs.read_general(instruction.rs_raw) as i32 as i64;
+                let rt = self.regs.read_general(instruction.rt_raw) as i32 as i64;
 
                 let result = (rs * rt) as u64;
 
@@ -560,8 +616,8 @@ impl Cpu {
             }
             Opcode::Multu => {
                 self.elapsed_cycles += 5;
-                let rs = self.regs.read_register(instruction.rs) as u64;
-                let rt = self.regs.read_register(instruction.rt) as u64;
+                let rs = self.regs.read_general(instruction.rs_raw) as u64;
+                let rt = self.regs.read_general(instruction.rt_raw) as u64;
 
                 let result = rs * rt;
 
@@ -570,8 +626,8 @@ impl Cpu {
             }
             Opcode::Div => {
                 self.elapsed_cycles += 10;
-                let rs = self.regs.read_register(instruction.rs) as i32 as i64;
-                let rt = self.regs.read_register(instruction.rt) as i32 as i64;
+                let rs = self.regs.read_general(instruction.rs_raw) as i32 as i64;
+                let rt = self.regs.read_general(instruction.rt_raw) as i32 as i64;
 
                 // division by zero (overflow)
                 if rt == 0 {
@@ -588,8 +644,8 @@ impl Cpu {
             }
             Opcode::Divu => {
                 self.elapsed_cycles += 10;
-                let rs = self.regs.read_register(instruction.rs) as u64;
-                let rt = self.regs.read_register(instruction.rt) as u64;
+                let rs = self.regs.read_general(instruction.rs_raw) as u64;
+                let rt = self.regs.read_general(instruction.rt_raw) as u64;
 
                 // division by zero
                 if rt == 0 {
@@ -604,38 +660,39 @@ impl Cpu {
                 }
             }
             Opcode::Mfhi => {
-                self.regs.write_register(instruction.rd, self.regs.hi);
+                self.regs.write_general(instruction.rd_raw, self.regs.hi);
             }
             Opcode::Mthi => {
-                self.regs.hi = self.regs.read_register(instruction.rs);
+                self.regs.hi = self.regs.read_general(instruction.rs_raw);
             }
             Opcode::Mflo => {
-                self.regs.write_register(instruction.rd, self.regs.lo);
+                self.regs.write_general(instruction.rd_raw, self.regs.lo);
             }
             Opcode::Mtlo => {
-                self.regs.lo = self.regs.read_register(instruction.rs);
+                self.regs.lo = self.regs.read_general(instruction.rs_raw);
             }
             Opcode::J => {
                 let base = self.regs.pc & 0xF0000000;
-                let offset = instruction.imm26 * 4;
+                let offset = instruction.imm26() * 4;
 
                 self.jump_dest_next = Some(base + offset);
             }
             Opcode::Jal => {
                 let base = self.regs.pc & 0xF0000000;
-                let offset = instruction.imm26 * 4;
+                let offset = instruction.imm26() * 4;
 
                 self.jump_dest_next = Some(base + offset);
 
                 self.regs.write_ra(self.regs.pc + 4);
             }
             Opcode::Jr => {
-                self.jump_dest_next = Some(self.regs.read_register(instruction.rs));
+                self.jump_dest_next = Some(self.regs.read_general(instruction.rs_raw));
             }
             Opcode::Jalr => {
-                self.jump_dest_next = Some(self.regs.read_register(instruction.rs));
+                self.jump_dest_next = Some(self.regs.read_general(instruction.rs_raw));
 
-                self.regs.write_register(instruction.rd, self.regs.pc + 4);
+                self.regs
+                    .write_general(instruction.rd_raw, self.regs.pc + 4);
             }
             Opcode::Beq => {
                 self.execute_branch(instruction, true, |rs, rt| rs == rt);
@@ -677,7 +734,7 @@ impl Cpu {
                 // so we only handle cop2 commands
                 assert!(n == 2);
 
-                self.cop2.execute_command(instruction.imm25);
+                self.cop2.execute_command(instruction.imm25());
             }
             Opcode::Mfc(n) => {
                 let result = match n {
@@ -686,7 +743,7 @@ impl Cpu {
                     _ => unreachable!(),
                 };
 
-                self.regs.write_register(instruction.rt, result);
+                self.regs.write_general(instruction.rt_raw, result);
             }
             Opcode::Cfc(n) => {
                 let result = match n {
@@ -695,10 +752,10 @@ impl Cpu {
                     _ => unreachable!(),
                 };
 
-                self.regs.write_register(instruction.rt, result);
+                self.regs.write_general(instruction.rt_raw, result);
             }
             Opcode::Mtc(n) => {
-                let rt = self.regs.read_register(instruction.rt);
+                let rt = self.regs.read_general(instruction.rt_raw);
 
                 match n {
                     0 => self.cop0.write_data(instruction.rd_raw, rt),
@@ -707,7 +764,7 @@ impl Cpu {
                 }
             }
             Opcode::Ctc(n) => {
-                let rt = self.regs.read_register(instruction.rt);
+                let rt = self.regs.read_general(instruction.rt_raw);
 
                 match n {
                     0 => self.cop0.write_ctrl(instruction.rd_raw, rt),
@@ -729,8 +786,8 @@ impl Cpu {
                 self.cop0.write_sr(sr);
             }
             Opcode::Lwc(n) => {
-                let rs = self.regs.read_register(instruction.rs);
-                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16));
+                let rs = self.regs.read_general(instruction.rs_raw);
+                let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
                 if let Some(data) = self.bus_read_u32(bus, computed_addr) {
                     match n {
@@ -754,7 +811,7 @@ impl Cpu {
             Opcode::Invalid => {
                 self.execute_exception(Exception::ReservedInstruction);
             }
-            Opcode::Special => unreachable!(),
+            Opcode::SecondaryOpcode => unreachable!(),
             _ => todo!("unimplemented_instruction {:?}", instruction.opcode),
         }
     }

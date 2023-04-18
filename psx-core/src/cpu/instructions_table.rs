@@ -3,7 +3,7 @@ use super::instruction::Opcode::*;
 
 pub(super) const PRIMARY_OPCODES: &[Opcode; 0x40] = &[
     // 0x00
-    Special,
+    SecondaryOpcode,
     Bcondz,
     J,
     Jal,
