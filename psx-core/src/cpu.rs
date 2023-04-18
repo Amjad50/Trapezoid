@@ -42,6 +42,7 @@ impl Debugger {
         &mut self,
         _bus: &mut P,
         _regs: &Registers,
+        _jumping: bool,
     ) {
     }
 
@@ -148,7 +149,10 @@ impl Cpu {
     pub(crate) fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> (u32, CpuState) {
         let mut state = CpuState::Normal;
 
-        self.debugger.handle_pending_processing(bus, &self.regs);
+        // we only need to run this only once before any instruction, as this
+        // is used to process any pending debugger commands
+        self.debugger
+            .handle_pending_processing(bus, &self.regs, self.jump_dest_next.is_some());
 
         let pending_interrupts = bus.pending_interrupts();
         self.check_and_execute_interrupt(pending_interrupts);

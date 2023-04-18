@@ -78,17 +78,34 @@ impl Debugger {
         &mut self,
         bus: &mut P,
         regs: &Registers,
+        jumping: bool,
     ) {
         // need to step over
         if self.step_over {
             self.step_over = false;
 
+            let offset;
+            // check that the instruction we just executed is `Jal/r` and we are in the middle
+            // of jump
+            //
+            // If so, we need to check the previous instruction (offset -4)
+            // and if its a match, we need to break in the next instruction (we are in the middle
+            // of jump) (+4)
+            //
+            // Otherwise, we will break on the instruction after the jump (+8)
+            if jumping {
+                offset = 4;
+            } else {
+                offset = 0;
+            }
+
             // PC is always word aligned
-            let instr = bus.read_u32(regs.pc);
+            let instr = bus.read_u32(regs.pc - offset);
             let instr = Instruction::from_u32(instr, regs.pc);
 
+            // check that the instruction we are about to execute is `Jal/r`
             if let Opcode::Jal | Opcode::Jalr = instr.opcode {
-                self.step_over_breakpoints.insert(regs.pc + 8);
+                self.step_over_breakpoints.insert(regs.pc + 8 - offset);
             } else {
                 self.step = true;
             }
