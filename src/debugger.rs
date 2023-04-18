@@ -272,11 +272,22 @@ impl Debugger {
                     self.set_enabled(false);
                 }
                 Some("tt") => {
-                    psx.cpu().debugger().set_instruction_trace(true);
+                    psx.cpu()
+                        .debugger()
+                        .set_instruction_trace_handler(Some(Box::new(
+                            |_regs, instruction, jumping| {
+                                println!(
+                                    "{:08X}: {}{}",
+                                    instruction.pc,
+                                    if jumping { "_" } else { "" },
+                                    instruction
+                                );
+                            },
+                        )));
                     println!("Instruction trace: {}", true);
                 }
                 Some("tf") => {
-                    psx.cpu().debugger().set_instruction_trace(false);
+                    psx.cpu().debugger().set_instruction_trace_handler(None);
                     println!("Instruction trace: {}", false);
                 }
                 Some("stack") => {

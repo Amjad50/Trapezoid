@@ -14,7 +14,6 @@ struct EnabledBreakpoints {
 }
 
 pub struct Debugger {
-    instruction_trace: bool,
     paused: bool,
     last_state: CpuState,
 
@@ -30,13 +29,14 @@ pub struct Debugger {
     step: bool,
     step_over: bool,
 
+    instruction_trace_handler: Option<Box<dyn Fn(&Registers, &Instruction, bool)>>,
+
     last_instruction: Instruction,
 }
 
 impl Debugger {
     pub(crate) fn new() -> Self {
         Self {
-            instruction_trace: false,
             paused: false,
             last_state: CpuState::Normal,
 
@@ -48,6 +48,7 @@ impl Debugger {
             in_breakpoint: false,
             step: false,
             step_over: false,
+            instruction_trace_handler: None,
 
             last_instruction: Instruction::from_u32(0, 0),
         }
@@ -192,13 +193,8 @@ impl Debugger {
             }
         }
 
-        if self.instruction_trace {
-            println!(
-                "{:08X}: {}{}",
-                instruction.pc,
-                if jumping { "_" } else { "" },
-                instruction
-            );
+        if let Some(handler) = &self.instruction_trace_handler {
+            handler(regs, instruction, jumping);
         }
 
         if self.step {
@@ -248,8 +244,15 @@ impl Debugger {
             .step_out = true;
     }
 
-    pub fn set_instruction_trace(&mut self, trace: bool) {
-        self.instruction_trace = trace;
+    /// The handler function's arguments are:
+    /// - registers
+    /// - instruction
+    /// - jumping: indicates if we are in the middle of a jump
+    pub fn set_instruction_trace_handler(
+        &mut self,
+        handler: Option<Box<dyn Fn(&Registers, &Instruction, bool)>>,
+    ) {
+        self.instruction_trace_handler = handler;
     }
 
     pub fn add_breakpoint(&mut self, address: u32) {
