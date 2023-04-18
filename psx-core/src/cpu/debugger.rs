@@ -14,6 +14,7 @@ pub struct Debugger {
     call_stack: Vec<u32>,
 
     step_over_breakpoints: HashSet<u32>,
+    step_out_breakpoints: HashSet<u32>,
     instruction_breakpoints: HashSet<u32>,
     write_breakpoints: HashSet<u32>,
     read_breakpoints: HashSet<u32>,
@@ -37,6 +38,7 @@ impl Debugger {
             call_stack: Vec::new(),
 
             step_over_breakpoints: HashSet::new(),
+            step_out_breakpoints: HashSet::new(),
             instruction_breakpoints: HashSet::new(),
             write_breakpoints: HashSet::new(),
             read_breakpoints: HashSet::new(),
@@ -122,6 +124,13 @@ impl Debugger {
             self.step_over_breakpoints.remove(&regs.pc);
             self.set_pause(true);
             self.last_state = CpuState::StepOver;
+            return true;
+        }
+
+        if !self.step_out_breakpoints.is_empty() && self.step_out_breakpoints.contains(&regs.pc) {
+            self.step_out_breakpoints.remove(&regs.pc);
+            self.set_pause(true);
+            self.last_state = CpuState::StepOut;
             return true;
         }
 
@@ -215,6 +224,14 @@ impl Debugger {
 
     pub fn step_over(&mut self) {
         self.step_over = true;
+    }
+
+    pub fn step_out(&mut self) {
+        let Some(last_frame) = self.call_stack.last() else {
+            return;
+        };
+
+        self.step_out_breakpoints.insert(*last_frame);
     }
 
     pub fn set_instruction_trace(&mut self, trace: bool) {

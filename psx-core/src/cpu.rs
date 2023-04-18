@@ -108,6 +108,10 @@ pub enum CpuState {
     /// which is used for function calls, the pause will happen after the function returns,
     /// i.e. step over the function
     StepOver,
+
+    #[cfg(feature = "debugger")]
+    /// Continue execution until the CPU exit the current function
+    StepOut,
 }
 
 pub struct Cpu {

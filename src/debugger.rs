@@ -239,6 +239,7 @@ impl Debugger {
                     println!("c - continue");
                     println!("s - step");
                     println!("so - step-over");
+                    println!("su - step-out");
                     println!("tt - enable trace");
                     println!("tf - disbale trace");
                     println!("stack [0xn] - print stack [n entries in hex]");
@@ -264,6 +265,10 @@ impl Debugger {
                 }
                 Some("so") => {
                     psx.cpu().debugger().step_over();
+                    self.set_enabled(false);
+                }
+                Some("su") => {
+                    psx.cpu().debugger().step_out();
                     self.set_enabled(false);
                 }
                 Some("tt") => {
@@ -500,6 +505,9 @@ impl Debugger {
                 self.set_enabled(true);
             }
             CpuState::StepOver => {
+                self.set_enabled(true);
+            }
+            CpuState::StepOut => {
                 self.set_enabled(true);
             }
         }
