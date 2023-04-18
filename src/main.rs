@@ -1,4 +1,5 @@
 mod audio;
+#[cfg(feature = "debugger")]
 mod debugger;
 
 use std::{path::PathBuf, sync::Arc, time::Instant};
@@ -27,6 +28,29 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowBuilder},
 };
+
+#[cfg(feature = "debugger")]
+use debugger::Debugger;
+
+#[cfg(not(feature = "debugger"))]
+struct Debugger;
+
+#[cfg(not(feature = "debugger"))]
+impl Debugger {
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn enabled(&self) -> bool {
+        false
+    }
+
+    fn run(&mut self, _psx: &mut Psx) {}
+
+    fn handle_cpu_state(&mut self, _psx: &mut Psx, _cpu_state: psx_core::cpu::CpuState) {}
+
+    fn set_enabled(&mut self, _arg: bool) {}
+}
 
 enum DisplayType {
     Windowed {
@@ -371,7 +395,7 @@ fn main() {
 
     let mut last_frame_time = Instant::now();
 
-    let mut debugger = debugger::Debugger::new();
+    let mut debugger = Debugger::new();
 
     let mut audio_player = AudioPlayer::new(44100);
     if args.audio {
@@ -418,6 +442,7 @@ fn main() {
                         psx.change_controller_key_state(k, pressed);
                     } else if pressed {
                         match input.virtual_keycode {
+                            #[cfg(feature = "debugger")]
                             // Pause CPU and enable debug
                             Some(VirtualKeyCode::Slash) => {
                                 println!("{:?}", psx.cpu().registers());
