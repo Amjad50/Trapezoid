@@ -177,14 +177,14 @@ impl Debugger {
     }
 
     pub(crate) fn trace_write(&mut self, addr: u32, bits: u8) {
-        if self.write_breakpoints.contains(&addr) {
+        if !self.write_breakpoints.is_empty() && self.write_breakpoints.contains(&addr) {
             self.set_pause(true);
             self.last_state = CpuState::WriteBreakpoint { addr, bits };
         }
     }
 
     pub(crate) fn trace_read(&mut self, addr: u32, bits: u8) {
-        if self.read_breakpoints.contains(&addr) {
+        if !self.read_breakpoints.is_empty() && self.read_breakpoints.contains(&addr) {
             self.set_pause(true);
             self.last_state = CpuState::ReadBreakpoint { addr, bits };
         }
