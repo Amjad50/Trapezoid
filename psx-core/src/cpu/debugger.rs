@@ -1,10 +1,17 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{
     instruction::{Instruction, Opcode},
     register::Registers,
     CpuBusProvider, CpuState,
 };
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+struct EnabledBreakpoints {
+    step_over: bool,
+    step_out: bool,
+    normal: bool,
+}
 
 pub struct Debugger {
     instruction_trace: bool,
@@ -13,9 +20,7 @@ pub struct Debugger {
 
     call_stack: Vec<u32>,
 
-    step_over_breakpoints: HashSet<u32>,
-    step_out_breakpoints: HashSet<u32>,
-    instruction_breakpoints: HashSet<u32>,
+    instruction_breakpoints: HashMap<u32, EnabledBreakpoints>,
     write_breakpoints: HashSet<u32>,
     read_breakpoints: HashSet<u32>,
     // currently on top of breakpoint, so ignore it and continue when unpaused
@@ -37,9 +42,7 @@ impl Debugger {
 
             call_stack: Vec::new(),
 
-            step_over_breakpoints: HashSet::new(),
-            step_out_breakpoints: HashSet::new(),
-            instruction_breakpoints: HashSet::new(),
+            instruction_breakpoints: HashMap::new(),
             write_breakpoints: HashSet::new(),
             read_breakpoints: HashSet::new(),
             in_breakpoint: false,
@@ -107,7 +110,10 @@ impl Debugger {
 
             // check that the instruction we are about to execute is `Jal/r`
             if let Opcode::Jal | Opcode::Jalr = instr.opcode {
-                self.step_over_breakpoints.insert(regs.pc + 8 - offset);
+                self.instruction_breakpoints
+                    .entry(regs.pc + 8 - offset)
+                    .or_default()
+                    .step_over = true;
             } else {
                 self.step = true;
             }
@@ -120,28 +126,33 @@ impl Debugger {
         jumping: bool,
         instruction: &Instruction,
     ) -> bool {
-        if !self.step_over_breakpoints.is_empty() && self.step_over_breakpoints.contains(&regs.pc) {
-            self.step_over_breakpoints.remove(&regs.pc);
-            self.set_pause(true);
-            self.last_state = CpuState::StepOver;
-            return true;
-        }
+        if let Some(breakpoints_data) = self.instruction_breakpoints.get_mut(&regs.pc) {
+            if breakpoints_data.step_over {
+                breakpoints_data.step_over = false;
+                if *breakpoints_data == EnabledBreakpoints::default() {
+                    self.instruction_breakpoints.remove(&regs.pc);
+                }
+                self.set_pause(true);
+                self.last_state = CpuState::StepOver;
+                return true;
+            }
 
-        if !self.step_out_breakpoints.is_empty() && self.step_out_breakpoints.contains(&regs.pc) {
-            self.step_out_breakpoints.remove(&regs.pc);
-            self.set_pause(true);
-            self.last_state = CpuState::StepOut;
-            return true;
-        }
+            if breakpoints_data.step_out {
+                breakpoints_data.step_out = false;
+                if *breakpoints_data == EnabledBreakpoints::default() {
+                    self.instruction_breakpoints.remove(&regs.pc);
+                }
+                self.set_pause(true);
+                self.last_state = CpuState::StepOut;
+                return true;
+            }
 
-        if !self.in_breakpoint
-            && !self.instruction_breakpoints.is_empty()
-            && self.instruction_breakpoints.contains(&regs.pc)
-        {
-            self.in_breakpoint = true;
-            self.set_pause(true);
-            self.last_state = CpuState::InstructionBreakpoint(regs.pc);
-            return true;
+            if !self.in_breakpoint && breakpoints_data.normal {
+                self.in_breakpoint = true;
+                self.set_pause(true);
+                self.last_state = CpuState::InstructionBreakpoint(regs.pc);
+                return true;
+            }
         }
 
         // -- the instruction will execute after this point
@@ -231,7 +242,10 @@ impl Debugger {
             return;
         };
 
-        self.step_out_breakpoints.insert(*last_frame);
+        self.instruction_breakpoints
+            .entry(*last_frame)
+            .or_default()
+            .step_out = true;
     }
 
     pub fn set_instruction_trace(&mut self, trace: bool) {
@@ -239,11 +253,23 @@ impl Debugger {
     }
 
     pub fn add_breakpoint(&mut self, address: u32) {
-        self.instruction_breakpoints.insert(address);
+        self.instruction_breakpoints
+            .entry(address)
+            .or_default()
+            .normal = true;
     }
 
     pub fn remove_breakpoint(&mut self, address: u32) -> bool {
-        self.instruction_breakpoints.remove(&address)
+        if let Some(v) = self.instruction_breakpoints.get_mut(&address) {
+            v.normal = false;
+            // empty
+            if *v == EnabledBreakpoints::default() {
+                self.instruction_breakpoints.remove(&address);
+            }
+            true
+        } else {
+            false
+        }
     }
 
     pub fn add_write_breakpoint(&mut self, address: u32) {
@@ -262,8 +288,11 @@ impl Debugger {
         self.read_breakpoints.remove(&address)
     }
 
-    pub fn instruction_breakpoints(&self) -> &HashSet<u32> {
-        &self.instruction_breakpoints
+    pub fn instruction_breakpoints(&self) -> HashSet<u32> {
+        self.instruction_breakpoints
+            .iter()
+            .filter_map(|(k, v)| if v.normal { Some(*k) } else { None })
+            .collect::<HashSet<_>>()
     }
 
     pub fn write_breakpoints(&self) -> &HashSet<u32> {
