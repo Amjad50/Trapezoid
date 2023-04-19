@@ -1,4 +1,4 @@
-use std::{io::Write, process, sync::mpsc, thread, time::Duration};
+use std::{io::Write, process, sync::mpsc, thread};
 
 use psx_core::{
     cpu::{CpuState, Instruction, RegisterType, CPU_REGISTERS},
@@ -219,7 +219,7 @@ impl Debugger {
             return;
         }
 
-        if let Ok(cmd) = self.stdin_rx.recv_timeout(Duration::from_millis(200)) {
+        if let Ok(cmd) = self.stdin_rx.try_recv() {
             self.handle_command(psx, &cmd);
 
             // make sure we send to the editor thread after we printed everything
