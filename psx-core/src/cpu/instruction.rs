@@ -203,12 +203,12 @@ impl Instruction {
 
     #[inline]
     pub fn rt(&self) -> RegisterType {
-        RegisterType::from(self.rd_raw)
+        RegisterType::from(self.rt_raw)
     }
 
     #[inline]
     pub fn rs(&self) -> RegisterType {
-        RegisterType::from(self.rd_raw)
+        RegisterType::from(self.rs_raw)
     }
 
     #[inline]
