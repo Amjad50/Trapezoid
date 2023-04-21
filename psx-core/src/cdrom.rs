@@ -254,6 +254,11 @@ fn from_bcd(arg: u8) -> u8 {
     ((arg & 0xF0) >> 4) * 10 + (arg & 0x0F)
 }
 
+/// Utility function to convert value from from normal format to bcd
+fn to_bcd(arg: u8) -> u8 {
+    ((arg / 10) << 4) | (arg % 10)
+}
+
 pub struct Cdrom {
     index: u8,
     fifo_status: FifosStatus,
@@ -286,6 +291,9 @@ pub struct Cdrom {
     data_fifo_buffer: Vec<u8>,
     read_data_buffer: Vec<u8>,
     data_fifo_buffer_index: usize,
+
+    filter_file: u8,
+    filter_channel: u8,
 
     adpcm_decoder_left_mono: AdpcmDecoder,
     adpcm_decoder_right: AdpcmDecoder,
@@ -333,6 +341,9 @@ impl Default for Cdrom {
             data_fifo_buffer: Vec::new(),
             read_data_buffer: Vec::new(),
             data_fifo_buffer_index: 0,
+
+            filter_file: 0,
+            filter_channel: 0,
 
             adpcm_decoder_left_mono: AdpcmDecoder::default(),
             adpcm_decoder_right: AdpcmDecoder::default(),
@@ -427,6 +438,8 @@ impl Cdrom {
             // reset the timer here, so that if a command needs to change the value
             // it can do so
             self.command_delay_timer = CDROM_COMMAND_DEFAULT_DELAY;
+            // every command starts the motor (if its not already on)
+            self.status.insert(CdromStatus::MOTOR_ON);
             match cmd {
                 0x01 => {
                     // GetStat
@@ -491,8 +504,8 @@ impl Cdrom {
 
                         // TODO: add filtering and coding info handling
                         let mode = whole_sector[3];
-                        let _file_number = whole_sector[4];
-                        let _channel_number = whole_sector[5];
+                        let file = whole_sector[4];
+                        let channel = whole_sector[5] & 0x1F;
                         let submode = whole_sector[6];
                         let coding_info = whole_sector[7];
                         let submode_audio = submode & 0x4 != 0;
@@ -501,25 +514,22 @@ impl Cdrom {
                         // was the current sector read, and should we move to the next?
                         let mut sector_read = false;
 
+                        let filter_match =
+                            self.filter_file == file && self.filter_channel == channel;
+
                         // delivery options:
-                        //  try_deliver_as_adpcm_sector:
+                        //   try_deliver_as_adpcm_sector:
                         //    TODO: reject if CD-DA AUDIO format
                         //    reject if sector isn't MODE2 format
                         //    reject if adpcm_disabled(setmode.6)
-                        //    TODO: reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
+                        //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
                         //    reject if submode isn't audio+realtime (bit2 and bit6 must be both set)
                         //    deliver: send sector to xa-adpcm decoder when passing above cases
-                        //  try_deliver_as_data_sector:
-                        //    reject data-delivery if "try_deliver_as_adpcm_sector" did do adpcm-delivery
-                        //    TODO: reject if filter_enabled(setmode.3) AND submode is audio+realtime (bit2+bit6)
-                        //    1st delivery attempt: send INT1+data, unless there's another INT pending
-                        //    delay, and retry at later time... but this time with file/channel checking!
-                        //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
-                        //    2nd delivery attempt: send INT1+data, unless there's another INT pending
-                        //  else:
-                        //    ignore sector silently
+
+                        // mode 2 is CD-XA mode, which is the mode of the sector
                         if mode == 2
                             && self.mode.intersects(CdromMode::XA_ADPCM)
+                            && (!self.mode.intersects(CdromMode::XA_FILTER) || filter_match)
                             && submode_audio
                             && submode_realtime
                         {
@@ -528,9 +538,20 @@ impl Cdrom {
                                 CodingInfo::from_bits_retain(coding_info),
                                 spu,
                             );
-
                             sector_read = true;
-                        } else {
+
+                        //  try_deliver_as_data_sector:
+                        //    reject data-delivery if "try_deliver_as_adpcm_sector" did do adpcm-delivery
+                        //    reject if filter_enabled(setmode.3) AND submode is audio+realtime (bit2+bit6)
+                        //    1st delivery attempt: send INT1+data, unless there's another INT pending
+                        //    TODO: delay, and retry at later time... but this time with file/channel checking!
+                        //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
+                        //    2nd delivery attempt: send INT1+data, unless there's another INT pending
+                        } else if !(self.mode.intersects(CdromMode::XA_FILTER)
+                            && submode_audio
+                            && submode_realtime)
+                            && (!self.mode.intersects(CdromMode::XA_FILTER) || filter_match)
+                        {
                             // only refill the data if the buffer is taken, else
                             // just interrupt
                             if self.read_data_buffer.is_empty() {
@@ -564,6 +585,11 @@ impl Cdrom {
 
                             self.write_to_response_fifo(self.status.bits());
                             self.request_interrupt_0_7(1);
+                        //  else:
+                        //    ignore sector silently
+                        } else {
+                            // skip sector
+                            sector_read = true;
                         }
 
                         // if we haven't read, just wait the default delay and re-interrupt.
@@ -576,6 +602,25 @@ impl Cdrom {
                                     CDROM_READ_COMMAND_DELAY
                                 };
                         }
+                    }
+                }
+                0x08 => {
+                    // Stop
+
+                    if self.command_state.is_none() {
+                        // FIRST
+                        log::info!("cdrom cmd: Stop");
+                        self.status.remove(CdromStatus::MOTOR_ON);
+
+                        self.write_to_response_fifo(self.status.bits());
+                        self.request_interrupt_0_7(3);
+                        // any data for now, just to proceed to SECOND
+                        self.command_state = Some(0);
+                    } else {
+                        // SECOND
+                        self.write_to_response_fifo(self.status.bits());
+                        self.request_interrupt_0_7(2);
+                        self.reset_command();
                     }
                 }
                 0x09 => {
@@ -647,6 +692,22 @@ impl Cdrom {
 
                     self.reset_command();
                 }
+                0x0D => {
+                    // Setfilter
+                    self.filter_file = self.read_next_parameter().unwrap();
+                    self.filter_channel = self.read_next_parameter().unwrap();
+
+                    log::info!(
+                        "cdrom cmd: Setfilter: file: {}, channel: {}",
+                        self.filter_file,
+                        self.filter_channel
+                    );
+
+                    self.write_to_response_fifo(self.status.bits());
+                    self.request_interrupt_0_7(3);
+
+                    self.reset_command();
+                }
                 0x0E => {
                     // Setmode
 
@@ -654,6 +715,36 @@ impl Cdrom {
                     log::info!("cdrom cmd: Setmode({:?})", self.mode);
 
                     self.write_to_response_fifo(self.status.bits());
+                    self.request_interrupt_0_7(3);
+
+                    self.reset_command();
+                }
+                0x11 => {
+                    // GetLocP
+
+                    // TODO: fix when supporting multiple tracks
+                    //       also, min, second, sectors below as well
+                    let track = 1;
+                    let index = 1;
+
+                    let sector = self.cursor_sector_position % 75;
+                    let total_seconds = (self.cursor_sector_position / 75) + 2;
+                    let minutes = total_seconds / 60;
+                    let seconds = total_seconds % 60;
+
+                    self.write_slice_to_response_fifo(&[
+                        track,
+                        index,
+                        // track
+                        to_bcd(minutes as u8),
+                        to_bcd(seconds as u8),
+                        to_bcd(sector as u8),
+                        // whole disk
+                        to_bcd(minutes as u8),
+                        to_bcd(seconds as u8),
+                        to_bcd(sector as u8),
+                    ]);
+
                     self.request_interrupt_0_7(3);
 
                     self.reset_command();
