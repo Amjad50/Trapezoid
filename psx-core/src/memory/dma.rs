@@ -474,13 +474,12 @@ impl Dma {
         (block_size * 30, true)
     }
 
-    // TODO: implement this, now its just an empty handler that trigger interrupt
     fn perform_spu_channel4_dma(
         channel: &mut DmaChannel,
         dma_bus: &mut super::DmaBus,
     ) -> (u32, bool) {
-        // must be sync mode 1
-        assert!(channel.channel_control.sync_mode() == 1);
+        // must be sync mode 0 or 1
+        assert!(channel.channel_control.sync_mode() != 2);
         // chopping is only for sync mode 0
         assert!(!channel
             .channel_control
@@ -490,35 +489,57 @@ impl Dma {
             .channel_control
             .intersects(ChannelControl::DIRECTION_FROM_RAM);
 
+        // check first that the SPU is ready for DMA transfer
+        if !dma_bus.spu.is_ready_for_dma(direction_from_main_ram) {
+            return (0, false);
+        }
+
         let address_step = channel.channel_control.address_step();
 
         // TODO: check if the max is 16 or not
         let block_size = channel.block_control & 0xFFFF;
-        let blocks = channel.block_control >> 16;
+        let mut blocks = channel.block_control >> 16;
 
         let mut address = channel.base_address & 0xFFFFFC;
 
         if direction_from_main_ram {
+            let mut block = Vec::with_capacity(block_size as usize);
             for _ in 0..block_size {
                 let data = dma_bus.main_ram.read_u32(address);
-                let low = data as u16;
-                let high = (data >> 16) as u16;
-                dma_bus.spu.write_u16(0x1A8, low);
-                dma_bus.spu.write_u16(0x1A8, high);
+                block.push(data);
                 // step
                 address = (address as i32 + address_step as i32) as u32;
             }
+
+            dma_bus.spu.dma_write_buf(&block);
         } else {
-            todo!("support DMA from SPU to main ram");
+            let block = dma_bus.spu.dma_read_buf(block_size as usize);
+
+            for data in block {
+                dma_bus.main_ram.write_u32(address, data);
+                // step
+                address = (address as i32 + address_step as i32) as u32;
+            }
         }
 
-        let blocks = blocks - 1;
+        // sync mode 0, does everything in one go, and doesn't update the register
+        // TODO: fix if we are in chopping
+        if channel.channel_control.sync_mode() == 1 {
+            blocks = blocks - 1;
 
-        channel.block_control &= 0xFFFF;
-        channel.block_control |= blocks << 16;
-        channel.base_address = address;
+            channel.block_control &= 0xFFFF;
+            channel.block_control |= blocks << 16;
+            channel.base_address = address;
+        }
 
-        (block_size, blocks == 0)
+        // we don't care about the block value in sync mode 0
+        let finished = blocks == 0 || channel.channel_control.sync_mode() == 0;
+
+        if finished {
+            dma_bus.spu.finish_dma();
+        }
+
+        (block_size, finished)
     }
 
     // Some control flags are ignored here like:

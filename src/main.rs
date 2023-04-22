@@ -101,7 +101,7 @@ impl VkDisplay {
                     .enumerate()
                     .position(|(i, q)| {
                         q.queue_flags
-                            .intersects(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
+                            .contains(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
                             && p.surface_support(i as u32, &surface).unwrap_or(false)
                     })
                     .map(|i| (p, i as u32))
@@ -204,7 +204,7 @@ impl VkDisplay {
                     .iter()
                     .position(|q| {
                         q.queue_flags
-                            .intersects(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
+                            .contains(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
                     })
                     .map(|i| (p, i as u32))
             })

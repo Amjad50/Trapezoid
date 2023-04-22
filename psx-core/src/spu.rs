@@ -405,7 +405,7 @@ impl Voice {
     /// - `mono_output` can be used for capture
     /// - `left_output`
     /// - `right_output`
-    fn clock_voice(&mut self, ram: &SpuRam) -> (bool, i32, i32, i32) {
+    fn clock_voice(&mut self, ram: &SpuRam) -> (bool, i16, i32, i32) {
         self.clock_adsr();
 
         let mut endx_set = false;
@@ -452,9 +452,12 @@ impl Voice {
         let right_output =
             (mono_output * self.current_vol_right as i32 / 0x8000).clamp(-0x8000, 0x7FFF);
 
-        (endx_set, mono_output, left_output, right_output)
+        (endx_set, mono_output as i16, left_output, right_output)
     }
 }
+
+// 1KB of RAM (16bit)
+const CAPTURE_MEMORY_REGION_SIZE: usize = 0x200;
 
 struct SpuRam {
     data: Box<[u16; 0x40000]>,
@@ -464,11 +467,57 @@ struct SpuRam {
     /// Handling and signaling interrupt to the other hardware is done by the `Spu` itself.
     /// must be cleared by the handler before the next IRQ can be triggered
     irq_flag: Cell<bool>,
+
+    /// The saved location of the pointer to store the next sample for the cd left audio
+    /// in the ram (this goes from 0 to 0x1FF)
+    cd_left_capture_index: usize,
+
+    /// The saved location of the pointer to store the next sample for the cd right audio
+    /// in the ram (this goes from 0 to 0x1FF)
+    cd_right_capture_index: usize,
+
+    /// The saved location of the pointer to store the next sample for the voice 1 mono audio
+    /// in the ram (this goes from 0 to 0x1FF)
+    voice_1_mono_capture_index: usize,
+
+    /// The saved location of the pointer to store the next sample for the voice 3 mono audio
+    /// in the ram (this goes from 0 to 0x1FF)
+    voice_3_mono_capture_index: usize,
 }
 
 impl SpuRam {
     pub fn reset_irq(&self) {
         self.irq_flag.set(false);
+    }
+
+    pub fn push_cd_capture_samples(&mut self, left: i16, right: i16) {
+        {
+            let i = self.cd_left_capture_index;
+            self[i] = left as u16;
+        }
+        {
+            let i = 0x200 + self.cd_right_capture_index;
+            // offset by 1KB
+            self[i] = right as u16;
+        }
+
+        self.cd_left_capture_index = (self.cd_left_capture_index + 1) % CAPTURE_MEMORY_REGION_SIZE;
+        self.cd_right_capture_index =
+            (self.cd_right_capture_index + 1) % CAPTURE_MEMORY_REGION_SIZE;
+    }
+
+    pub fn push_voice_1_sample(&mut self, sample: i16) {
+        let i = 0x400 + self.voice_1_mono_capture_index;
+        self[i] = sample as u16;
+        self.voice_1_mono_capture_index =
+            (self.voice_1_mono_capture_index + 1) % CAPTURE_MEMORY_REGION_SIZE;
+    }
+
+    pub fn push_voice_3_sample(&mut self, sample: i16) {
+        let i = 0x600 + self.voice_3_mono_capture_index;
+        self[i] = sample as u16;
+        self.voice_3_mono_capture_index =
+            (self.voice_3_mono_capture_index + 1) % CAPTURE_MEMORY_REGION_SIZE;
     }
 }
 
@@ -509,6 +558,10 @@ impl Default for SpuRam {
             data: Box::new([0; 0x40000]),
             irq_address: 0x0,
             irq_flag: Cell::new(false),
+            cd_left_capture_index: 0,
+            cd_right_capture_index: 0,
+            voice_1_mono_capture_index: 0,
+            voice_3_mono_capture_index: 0,
         }
     }
 }
@@ -535,7 +588,7 @@ pub struct Spu {
     ram_transfer_address: u16,
     i_ram_transfer_address: usize,
 
-    data_fifo: VecDeque<u16>,
+    write_data_fifo: VecDeque<u16>,
 
     control: SpuControl,
     stat: SpuStat,
@@ -569,6 +622,8 @@ pub struct Spu {
 
     /// Output audio stereo in 44100Hz 16PCM
     out_audio_buffer: Vec<i16>,
+
+    in_dma_transfer: bool,
 }
 
 impl Spu {
@@ -603,17 +658,20 @@ impl Spu {
             // handle memory transfers
             match self.control.ram_transfer_mode() {
                 RamTransferMode::Stop => {
-                    self.stat.remove(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                    self.stat.remove(
+                        SpuStat::DATA_TRANSFER_BUSY_FLAG
+                            | SpuStat::DATA_TRANSFER_USING_DMA
+                            | SpuStat::DATA_TRANSFER_DMA_WRITE_REQ
+                            | SpuStat::DATA_TRANSFER_DMA_READ_REQ,
+                    );
                 }
-                // For now use the same buffer
-                // TODO: add DMA special fast write
-                RamTransferMode::ManualWrite | RamTransferMode::DmaWrite => {
-                    if self.data_fifo.is_empty() {
+                RamTransferMode::ManualWrite => {
+                    if self.write_data_fifo.is_empty() {
                         self.stat.remove(SpuStat::DATA_TRANSFER_BUSY_FLAG);
                     } else {
                         self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
 
-                        for d in self.data_fifo.drain(..) {
+                        for d in self.write_data_fifo.drain(..) {
                             self.spu_ram[self.i_ram_transfer_address] = d;
                             self.i_ram_transfer_address += 1;
                             self.i_ram_transfer_address &= 0x3FFFF
@@ -621,7 +679,21 @@ impl Spu {
                         // reset the busy flag on the next round
                     }
                 }
-                RamTransferMode::DmaRead => todo!(),
+                RamTransferMode::DmaWrite => {
+                    self.stat
+                        .set(SpuStat::DATA_TRANSFER_BUSY_FLAG, self.in_dma_transfer);
+
+                    self.stat.insert(
+                        SpuStat::DATA_TRANSFER_USING_DMA | SpuStat::DATA_TRANSFER_DMA_WRITE_REQ,
+                    );
+                }
+                RamTransferMode::DmaRead => {
+                    self.stat
+                        .set(SpuStat::DATA_TRANSFER_BUSY_FLAG, self.in_dma_transfer);
+                    self.stat.insert(
+                        SpuStat::DATA_TRANSFER_USING_DMA | SpuStat::DATA_TRANSFER_DMA_READ_REQ,
+                    );
+                }
             }
 
             let mut mixed_audio_left = 0;
@@ -629,6 +701,8 @@ impl Spu {
 
             let cd_left = self.cdrom_audio_buffer_left.pop_front().unwrap_or(0);
             let cd_right = self.cdrom_audio_buffer_right.pop_front().unwrap_or(0);
+            self.spu_ram.push_cd_capture_samples(cd_left, cd_right);
+
             mixed_audio_left +=
                 ((cd_left as i32 * self.cd_vol_left as i32) / 0x8000).clamp(-0x8000, 0x7FFF);
             mixed_audio_right +=
@@ -645,8 +719,15 @@ impl Spu {
                 //assert!(!_reverb_mode);
 
                 // handle voices
-                let (reached_endx, _mono_output, left_output, right_output) =
+                let (reached_endx, mono_output, left_output, right_output) =
                     self.voices[i].clock_voice(&self.spu_ram);
+
+                // push the voice output to the capture buffer
+                match i {
+                    1 => self.spu_ram.push_voice_1_sample(mono_output),
+                    3 => self.spu_ram.push_voice_3_sample(mono_output),
+                    _ => {}
+                }
 
                 let final_left_output = (left_output * self.current_main_vol_left as i32 / 0x8000)
                     .clamp(-0x8000, 0x7FFF);
@@ -675,7 +756,7 @@ impl Spu {
 
             if self
                 .control
-                .intersects(SpuControl::SPU_ENABLE | SpuControl::IRQ9_ENABLE)
+                .contains(SpuControl::SPU_ENABLE | SpuControl::IRQ9_ENABLE)
                 && self.spu_ram.irq_flag.get()
             {
                 self.stat.insert(SpuStat::IRQ_FLAG);
@@ -696,6 +777,80 @@ impl Spu {
         out.extend_from_slice(&self.out_audio_buffer);
         self.out_audio_buffer.clear();
         out
+    }
+}
+
+// DMA transfer
+impl Spu {
+    pub fn is_ready_for_dma(&mut self, write: bool) -> bool {
+        self.in_dma_transfer = true;
+        self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+
+        if self.stat.intersects(SpuStat::DATA_TRANSFER_USING_DMA) {
+            if write {
+                self.stat.intersects(SpuStat::DATA_TRANSFER_DMA_WRITE_REQ)
+            } else {
+                self.stat.intersects(SpuStat::DATA_TRANSFER_DMA_READ_REQ)
+            }
+        } else {
+            false
+        }
+    }
+
+    pub fn dma_write_buf(&mut self, buf: &[u32]) {
+        self.in_dma_transfer = true;
+        self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+
+        // finish this first
+        if !self.write_data_fifo.is_empty() {
+            for d in self.write_data_fifo.drain(..) {
+                self.spu_ram[self.i_ram_transfer_address] = d;
+                self.i_ram_transfer_address += 1;
+                self.i_ram_transfer_address &= 0x3FFFF;
+            }
+        }
+
+        for d in buf {
+            let low = *d as u16;
+            let high = (*d >> 16) as u16;
+            self.spu_ram[self.i_ram_transfer_address] = low;
+            self.i_ram_transfer_address += 1;
+            self.i_ram_transfer_address &= 0x3FFFF;
+
+            self.spu_ram[self.i_ram_transfer_address] = high;
+            self.i_ram_transfer_address += 1;
+            self.i_ram_transfer_address &= 0x3FFFF;
+        }
+
+        self.stat
+            .remove(SpuStat::DATA_TRANSFER_DMA_WRITE_REQ | SpuStat::DATA_TRANSFER_USING_DMA);
+    }
+
+    pub fn dma_read_buf(&mut self, size: usize) -> Vec<u32> {
+        self.in_dma_transfer = true;
+        self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+
+        let mut buf = Vec::with_capacity(size);
+
+        for _ in 0..size {
+            let low = self.spu_ram[self.i_ram_transfer_address];
+            self.i_ram_transfer_address += 1;
+            self.i_ram_transfer_address &= 0x3FFFF;
+
+            let high = self.spu_ram[self.i_ram_transfer_address];
+            self.i_ram_transfer_address += 1;
+            self.i_ram_transfer_address &= 0x3FFFF;
+
+            buf.push((high as u32) << 16 | low as u32);
+        }
+
+        self.stat
+            .remove(SpuStat::DATA_TRANSFER_DMA_WRITE_REQ | SpuStat::DATA_TRANSFER_USING_DMA);
+        buf
+    }
+
+    pub fn finish_dma(&mut self) {
+        self.in_dma_transfer = false;
     }
 }
 
@@ -768,7 +923,7 @@ impl BusLine for Spu {
             0x1A4 => (self.spu_ram.irq_address / 4) as u16,
             0x1A6 => self.ram_transfer_address,
             0x1AA => self.control.bits(),
-            0x1AC => self.ram_transfer_control << 1,
+            0x1AC => self.ram_transfer_control,
             0x1AE => self.stat.bits(),
             0x1B0 => self.cd_vol_left,
             0x1B2 => self.cd_vol_right,
@@ -991,7 +1146,7 @@ impl BusLine for Spu {
                 //if self.data_fifo.len() == 32 {
                 //    panic!("sound ram data transfer fifo overflow");
                 //}
-                self.data_fifo.push_back(data);
+                self.write_data_fifo.push_back(data);
             }
             0x1AA => {
                 self.control = SpuControl::from_bits_retain(data);
@@ -1004,8 +1159,10 @@ impl BusLine for Spu {
                 log::info!("spu control {:04X}", data);
             }
             0x1AC => {
-                self.ram_transfer_control = (data >> 1) & 7;
-                assert!(self.ram_transfer_control == 2);
+                self.ram_transfer_control = data;
+                // TODO: support more control modes
+                //let control_mode = (data >> 1) & 7;
+                //assert!(control_mode == 2);
             }
             0x1AE => unreachable!("u16 write SpuStat is not supported"),
             0x1B0 => {
