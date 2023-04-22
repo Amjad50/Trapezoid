@@ -462,7 +462,7 @@ fn main() {
 
                 // if the debugger is enabled, we don't run the emulation
                 if !debugger.enabled() {
-                    let cpu_state = psx.clock_full_audio_frame();
+                    let cpu_state = psx.clock_full_video_frame();
                     debugger.handle_cpu_state(&mut psx, cpu_state);
 
                     let audio_buffer = psx.take_audio_buffer();
