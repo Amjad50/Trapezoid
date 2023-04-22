@@ -482,7 +482,12 @@ impl Cdrom {
 
                         self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(3);
-                        // any data for now, just to proceed to SECOND
+                        // This stores the value 0 if this is the first attemp
+                        // to read a data sector, otherwise store any other value.
+                        //
+                        // Check later on the reading logic to know what this mean.
+                        //
+                        // 0 is the start value
                         self.command_state = Some(0);
 
                         self.command_delay_timer += if self.mode.intersects(CdromMode::DOUBLE_SPEED)
@@ -495,6 +500,8 @@ impl Cdrom {
                         // reset data buffer
                         self.read_data_buffer.clear();
                     } else {
+                        let command_state = self.command_state.as_mut().unwrap();
+
                         // SECOND
 
                         let sector_start = self.cursor_sector_position * 2352;
@@ -533,6 +540,8 @@ impl Cdrom {
                             && submode_audio
                             && submode_realtime
                         {
+                            *command_state = 0; // reset data delivery attempts
+
                             self.deliver_adpcm_to_spu(
                                 self.cursor_sector_position,
                                 CodingInfo::from_bits_retain(coding_info),
@@ -540,17 +549,25 @@ impl Cdrom {
                             );
                             sector_read = true;
 
+                        // TODO: for some reason, this doesn't work on CTR,
+                        //       it expects to get data interrupts on other channels
+                        //       when reading from XA interleaved sectors,
+                        //       the current implementation doesn't do the below check to the
+                        //       letter, it only does it in the second attempt, so the first
+                        //       attempt will always send something.
+                        //       Try to find what is the best approach to this
+                        //
                         //  try_deliver_as_data_sector:
                         //    reject data-delivery if "try_deliver_as_adpcm_sector" did do adpcm-delivery
                         //    reject if filter_enabled(setmode.3) AND submode is audio+realtime (bit2+bit6)
                         //    1st delivery attempt: send INT1+data, unless there's another INT pending
-                        //    TODO: delay, and retry at later time... but this time with file/channel checking!
+                        //    delay, and retry at later time... but this time with file/channel checking!
                         //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
                         //    2nd delivery attempt: send INT1+data, unless there's another INT pending
-                        } else if !(self.mode.intersects(CdromMode::XA_FILTER)
-                            && submode_audio
-                            && submode_realtime)
-                            && (!self.mode.intersects(CdromMode::XA_FILTER) || filter_match)
+                        } else if *command_state == 0
+                            || !self.mode.intersects(CdromMode::XA_FILTER)
+                            || !(submode_audio && submode_realtime)
+                                && (!self.mode.intersects(CdromMode::XA_FILTER) || filter_match)
                         {
                             // only refill the data if the buffer is taken, else
                             // just interrupt
@@ -583,11 +600,17 @@ impl Cdrom {
                                 sector_read = true;
                             }
 
+                            // switch between 1st and 2nd delivery attempt
+                            // 0 and 1
+                            *command_state ^= 1;
+
                             self.write_to_response_fifo(self.status.bits());
                             self.request_interrupt_0_7(1);
                         //  else:
                         //    ignore sector silently
                         } else {
+                            *command_state = 0; // reset data delivery attempts
+
                             // skip sector
                             sector_read = true;
                         }
