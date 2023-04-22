@@ -532,11 +532,14 @@ impl Dma {
             channel.base_address = address;
         }
 
-        (
-            block_size,
-            // we don't care about the block value in sync mode 0
-            blocks == 0 || channel.channel_control.sync_mode() == 0,
-        )
+        // we don't care about the block value in sync mode 0
+        let finished = blocks == 0 || channel.channel_control.sync_mode() == 0;
+
+        if finished {
+            dma_bus.spu.finish_dma();
+        }
+
+        (block_size, finished)
     }
 
     // Some control flags are ignored here like:

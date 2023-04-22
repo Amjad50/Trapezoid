@@ -622,6 +622,8 @@ pub struct Spu {
 
     /// Output audio stereo in 44100Hz 16PCM
     out_audio_buffer: Vec<i16>,
+
+    in_dma_transfer: bool,
 }
 
 impl Spu {
@@ -678,15 +680,16 @@ impl Spu {
                     }
                 }
                 RamTransferMode::DmaWrite => {
-                    // our transfer is instant, so we don't need to be busy at all
-                    //self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                    self.stat
+                        .set(SpuStat::DATA_TRANSFER_BUSY_FLAG, self.in_dma_transfer);
+
                     self.stat.insert(
                         SpuStat::DATA_TRANSFER_USING_DMA | SpuStat::DATA_TRANSFER_DMA_WRITE_REQ,
                     );
                 }
                 RamTransferMode::DmaRead => {
-                    // our transfer is instant, so we don't need to be busy at all
-                    //self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                    self.stat
+                        .set(SpuStat::DATA_TRANSFER_BUSY_FLAG, self.in_dma_transfer);
                     self.stat.insert(
                         SpuStat::DATA_TRANSFER_USING_DMA | SpuStat::DATA_TRANSFER_DMA_READ_REQ,
                     );
@@ -780,6 +783,9 @@ impl Spu {
 // DMA transfer
 impl Spu {
     pub fn is_ready_for_dma(&mut self, write: bool) -> bool {
+        self.in_dma_transfer = true;
+        self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+
         if self.stat.intersects(SpuStat::DATA_TRANSFER_USING_DMA) {
             if write {
                 self.stat.intersects(SpuStat::DATA_TRANSFER_DMA_WRITE_REQ)
@@ -792,6 +798,9 @@ impl Spu {
     }
 
     pub fn dma_write_buf(&mut self, buf: &[u32]) {
+        self.in_dma_transfer = true;
+        self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+
         // finish this first
         if !self.write_data_fifo.is_empty() {
             for d in self.write_data_fifo.drain(..) {
@@ -818,6 +827,9 @@ impl Spu {
     }
 
     pub fn dma_read_buf(&mut self, size: usize) -> Vec<u32> {
+        self.in_dma_transfer = true;
+        self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+
         let mut buf = Vec::with_capacity(size);
 
         for _ in 0..size {
@@ -835,6 +847,10 @@ impl Spu {
         self.stat
             .remove(SpuStat::DATA_TRANSFER_DMA_WRITE_REQ | SpuStat::DATA_TRANSFER_USING_DMA);
         buf
+    }
+
+    pub fn finish_dma(&mut self) {
+        self.in_dma_transfer = false;
     }
 }
 
