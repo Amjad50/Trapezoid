@@ -1171,18 +1171,36 @@ impl GpuContext {
     pub(super) fn blit_to_front(&mut self, full_vram: bool, state_snapshot: GpuStateSnapshot) {
         let gpu_stat = state_snapshot.gpu_stat;
         let vram_display_area_start = state_snapshot.vram_display_area_start;
+
         self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 
         let (topleft, size) = if full_vram {
             ([0; 2], [1024, 512])
         } else {
+            // (((X2-X1)/cycles_per_pix)+2) AND NOT 3
+            let mut horizontal_size = (((state_snapshot.display_horizontal_range.1
+                - state_snapshot.display_horizontal_range.0)
+                / gpu_stat.horizontal_dots_divider())
+                + 2)
+                & !3;
+
+            if horizontal_size == 0 {
+                horizontal_size = gpu_stat.horizontal_resolution();
+            }
+
+            // Y2-Y1, double if we are interlacing
+            let mut vertical_size = (state_snapshot.display_vertical_range.1
+                - state_snapshot.display_vertical_range.0)
+                << gpu_stat.is_vertical_interlace() as u32;
+
+            if vertical_size == 0 {
+                vertical_size = gpu_stat.vertical_resolution();
+            }
+
             (
                 [vram_display_area_start.0, vram_display_area_start.1],
-                [
-                    gpu_stat.horizontal_resolution(),
-                    gpu_stat.vertical_resolution(),
-                ],
+                [horizontal_size, vertical_size],
             )
         };
 

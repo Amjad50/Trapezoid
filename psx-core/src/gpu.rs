@@ -91,24 +91,28 @@ impl GpuStat {
             7
         } else {
             // we want the result to be:
-            // 0: 8
-            // 1: 10
-            // 2: 4
-            // 3: 5
+            // 0: 10
+            // 1: 8
+            // 2: 5
+            // 3: 4
             //
             // The second two numbers are half the first two, so we can use the
             // second bit to divide by 2.
             let resolution_bits = (self.bits() & Self::HORIZONTAL_RESOLUTION1.bits()) >> 17;
 
-            // add 2 if the first bit is set
-            let base = 8 + ((resolution_bits & 1) * 2);
-            // divide by 2 if the second bit is set
-            base >> (resolution_bits >> 1)
+            // 4 is the base, we add 1 if the first bit is cleared, to get 5 and 10
+            let base = 4 | ((resolution_bits & 1) ^ 1);
+            // multiply by 2 if the second bit is cleared
+            base << ((resolution_bits >> 1) ^ 1)
         }
     }
 
     fn vertical_resolution(&self) -> u32 {
         240 << self.intersects(Self::VERTICAL_RESOLUTION) as u32
+    }
+
+    fn is_vertical_interlace(&self) -> bool {
+        self.intersects(Self::VERTICAL_INTERLACE)
     }
 
     fn is_24bit_color_depth(&self) -> bool {
