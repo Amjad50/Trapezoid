@@ -678,13 +678,15 @@ impl Spu {
                     }
                 }
                 RamTransferMode::DmaWrite => {
-                    self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                    // our transfer is instant, so we don't need to be busy at all
+                    //self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
                     self.stat.insert(
                         SpuStat::DATA_TRANSFER_USING_DMA | SpuStat::DATA_TRANSFER_DMA_WRITE_REQ,
                     );
                 }
                 RamTransferMode::DmaRead => {
-                    self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                    // our transfer is instant, so we don't need to be busy at all
+                    //self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
                     self.stat.insert(
                         SpuStat::DATA_TRANSFER_USING_DMA | SpuStat::DATA_TRANSFER_DMA_READ_REQ,
                     );
@@ -905,7 +907,7 @@ impl BusLine for Spu {
             0x1A4 => (self.spu_ram.irq_address / 4) as u16,
             0x1A6 => self.ram_transfer_address,
             0x1AA => self.control.bits(),
-            0x1AC => self.ram_transfer_control << 1,
+            0x1AC => self.ram_transfer_control,
             0x1AE => self.stat.bits(),
             0x1B0 => self.cd_vol_left,
             0x1B2 => self.cd_vol_right,
@@ -1141,8 +1143,10 @@ impl BusLine for Spu {
                 log::info!("spu control {:04X}", data);
             }
             0x1AC => {
-                self.ram_transfer_control = (data >> 1) & 7;
-                assert!(self.ram_transfer_control == 2);
+                self.ram_transfer_control = data;
+                // TODO: support more control modes
+                //let control_mode = (data >> 1) & 7;
+                //assert!(control_mode == 2);
             }
             0x1AE => unreachable!("u16 write SpuStat is not supported"),
             0x1B0 => {
