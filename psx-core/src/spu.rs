@@ -405,7 +405,7 @@ impl Voice {
     /// - `mono_output` can be used for capture
     /// - `left_output`
     /// - `right_output`
-    fn clock_voice(&mut self, ram: &SpuRam) -> (bool, i32, i32, i32) {
+    fn clock_voice(&mut self, ram: &SpuRam) -> (bool, i16, i32, i32) {
         self.clock_adsr();
 
         let mut endx_set = false;
@@ -452,9 +452,12 @@ impl Voice {
         let right_output =
             (mono_output * self.current_vol_right as i32 / 0x8000).clamp(-0x8000, 0x7FFF);
 
-        (endx_set, mono_output, left_output, right_output)
+        (endx_set, mono_output as i16, left_output, right_output)
     }
 }
+
+// 1KB of RAM (16bit)
+const CAPTURE_MEMORY_REGION_SIZE: usize = 0x200;
 
 struct SpuRam {
     data: Box<[u16; 0x40000]>,
@@ -464,11 +467,57 @@ struct SpuRam {
     /// Handling and signaling interrupt to the other hardware is done by the `Spu` itself.
     /// must be cleared by the handler before the next IRQ can be triggered
     irq_flag: Cell<bool>,
+
+    /// The saved location of the pointer to store the next sample for the cd left audio
+    /// in the ram (this goes from 0 to 0x1FF)
+    cd_left_capture_index: usize,
+
+    /// The saved location of the pointer to store the next sample for the cd right audio
+    /// in the ram (this goes from 0 to 0x1FF)
+    cd_right_capture_index: usize,
+
+    /// The saved location of the pointer to store the next sample for the voice 1 mono audio
+    /// in the ram (this goes from 0 to 0x1FF)
+    voice_1_mono_capture_index: usize,
+
+    /// The saved location of the pointer to store the next sample for the voice 3 mono audio
+    /// in the ram (this goes from 0 to 0x1FF)
+    voice_3_mono_capture_index: usize,
 }
 
 impl SpuRam {
     pub fn reset_irq(&self) {
         self.irq_flag.set(false);
+    }
+
+    pub fn push_cd_capture_samples(&mut self, left: i16, right: i16) {
+        {
+            let i = self.cd_left_capture_index;
+            self[i] = left as u16;
+        }
+        {
+            let i = 0x200 + self.cd_right_capture_index;
+            // offset by 1KB
+            self[i] = right as u16;
+        }
+
+        self.cd_left_capture_index = (self.cd_left_capture_index + 1) % CAPTURE_MEMORY_REGION_SIZE;
+        self.cd_right_capture_index =
+            (self.cd_right_capture_index + 1) % CAPTURE_MEMORY_REGION_SIZE;
+    }
+
+    pub fn push_voice_1_sample(&mut self, sample: i16) {
+        let i = 0x400 + self.voice_1_mono_capture_index;
+        self[i] = sample as u16;
+        self.voice_1_mono_capture_index =
+            (self.voice_1_mono_capture_index + 1) % CAPTURE_MEMORY_REGION_SIZE;
+    }
+
+    pub fn push_voice_3_sample(&mut self, sample: i16) {
+        let i = 0x600 + self.voice_3_mono_capture_index;
+        self[i] = sample as u16;
+        self.voice_3_mono_capture_index =
+            (self.voice_3_mono_capture_index + 1) % CAPTURE_MEMORY_REGION_SIZE;
     }
 }
 
@@ -509,6 +558,10 @@ impl Default for SpuRam {
             data: Box::new([0; 0x40000]),
             irq_address: 0x0,
             irq_flag: Cell::new(false),
+            cd_left_capture_index: 0,
+            cd_right_capture_index: 0,
+            voice_1_mono_capture_index: 0,
+            voice_3_mono_capture_index: 0,
         }
     }
 }
@@ -629,6 +682,8 @@ impl Spu {
 
             let cd_left = self.cdrom_audio_buffer_left.pop_front().unwrap_or(0);
             let cd_right = self.cdrom_audio_buffer_right.pop_front().unwrap_or(0);
+            self.spu_ram.push_cd_capture_samples(cd_left, cd_right);
+
             mixed_audio_left +=
                 ((cd_left as i32 * self.cd_vol_left as i32) / 0x8000).clamp(-0x8000, 0x7FFF);
             mixed_audio_right +=
@@ -645,8 +700,15 @@ impl Spu {
                 //assert!(!_reverb_mode);
 
                 // handle voices
-                let (reached_endx, _mono_output, left_output, right_output) =
+                let (reached_endx, mono_output, left_output, right_output) =
                     self.voices[i].clock_voice(&self.spu_ram);
+
+                // push the voice output to the capture buffer
+                match i {
+                    1 => self.spu_ram.push_voice_1_sample(mono_output),
+                    3 => self.spu_ram.push_voice_3_sample(mono_output),
+                    _ => {}
+                }
 
                 let final_left_output = (left_output * self.current_main_vol_left as i32 / 0x8000)
                     .clamp(-0x8000, 0x7FFF);
@@ -675,7 +737,7 @@ impl Spu {
 
             if self
                 .control
-                .intersects(SpuControl::SPU_ENABLE | SpuControl::IRQ9_ENABLE)
+                .contains(SpuControl::SPU_ENABLE | SpuControl::IRQ9_ENABLE)
                 && self.spu_ram.irq_flag.get()
             {
                 self.stat.insert(SpuStat::IRQ_FLAG);
