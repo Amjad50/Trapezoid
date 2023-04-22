@@ -490,6 +490,11 @@ impl Dma {
             .channel_control
             .intersects(ChannelControl::DIRECTION_FROM_RAM);
 
+        // check first that the SPU is ready for DMA transfer
+        if !dma_bus.spu.is_ready_for_dma(direction_from_main_ram) {
+            return (0, false);
+        }
+
         let address_step = channel.channel_control.address_step();
 
         // TODO: check if the max is 16 or not
@@ -499,17 +504,23 @@ impl Dma {
         let mut address = channel.base_address & 0xFFFFFC;
 
         if direction_from_main_ram {
+            let mut block = Vec::with_capacity(block_size as usize);
             for _ in 0..block_size {
                 let data = dma_bus.main_ram.read_u32(address);
-                let low = data as u16;
-                let high = (data >> 16) as u16;
-                dma_bus.spu.write_u16(0x1A8, low);
-                dma_bus.spu.write_u16(0x1A8, high);
+                block.push(data);
                 // step
                 address = (address as i32 + address_step as i32) as u32;
             }
+
+            dma_bus.spu.dma_write_buf(&block);
         } else {
-            todo!("support DMA from SPU to main ram");
+            let block = dma_bus.spu.dma_read_buf(block_size as usize);
+
+            for data in block {
+                dma_bus.main_ram.write_u32(address, data);
+                // step
+                address = (address as i32 + address_step as i32) as u32;
+            }
         }
 
         let blocks = blocks - 1;

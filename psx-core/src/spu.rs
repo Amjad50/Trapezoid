@@ -588,7 +588,7 @@ pub struct Spu {
     ram_transfer_address: u16,
     i_ram_transfer_address: usize,
 
-    data_fifo: VecDeque<u16>,
+    write_data_fifo: VecDeque<u16>,
 
     control: SpuControl,
     stat: SpuStat,
@@ -656,17 +656,20 @@ impl Spu {
             // handle memory transfers
             match self.control.ram_transfer_mode() {
                 RamTransferMode::Stop => {
-                    self.stat.remove(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                    self.stat.remove(
+                        SpuStat::DATA_TRANSFER_BUSY_FLAG
+                            | SpuStat::DATA_TRANSFER_USING_DMA
+                            | SpuStat::DATA_TRANSFER_DMA_WRITE_REQ
+                            | SpuStat::DATA_TRANSFER_DMA_READ_REQ,
+                    );
                 }
-                // For now use the same buffer
-                // TODO: add DMA special fast write
-                RamTransferMode::ManualWrite | RamTransferMode::DmaWrite => {
-                    if self.data_fifo.is_empty() {
+                RamTransferMode::ManualWrite => {
+                    if self.write_data_fifo.is_empty() {
                         self.stat.remove(SpuStat::DATA_TRANSFER_BUSY_FLAG);
                     } else {
                         self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
 
-                        for d in self.data_fifo.drain(..) {
+                        for d in self.write_data_fifo.drain(..) {
                             self.spu_ram[self.i_ram_transfer_address] = d;
                             self.i_ram_transfer_address += 1;
                             self.i_ram_transfer_address &= 0x3FFFF
@@ -674,7 +677,18 @@ impl Spu {
                         // reset the busy flag on the next round
                     }
                 }
-                RamTransferMode::DmaRead => todo!(),
+                RamTransferMode::DmaWrite => {
+                    self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                    self.stat.insert(
+                        SpuStat::DATA_TRANSFER_USING_DMA | SpuStat::DATA_TRANSFER_DMA_WRITE_REQ,
+                    );
+                }
+                RamTransferMode::DmaRead => {
+                    self.stat.insert(SpuStat::DATA_TRANSFER_BUSY_FLAG);
+                    self.stat.insert(
+                        SpuStat::DATA_TRANSFER_USING_DMA | SpuStat::DATA_TRANSFER_DMA_READ_REQ,
+                    );
+                }
             }
 
             let mut mixed_audio_left = 0;
@@ -758,6 +772,67 @@ impl Spu {
         out.extend_from_slice(&self.out_audio_buffer);
         self.out_audio_buffer.clear();
         out
+    }
+}
+
+// DMA transfer
+impl Spu {
+    pub fn is_ready_for_dma(&mut self, write: bool) -> bool {
+        if self.stat.intersects(SpuStat::DATA_TRANSFER_USING_DMA) {
+            if write {
+                self.stat.intersects(SpuStat::DATA_TRANSFER_DMA_WRITE_REQ)
+            } else {
+                self.stat.intersects(SpuStat::DATA_TRANSFER_DMA_READ_REQ)
+            }
+        } else {
+            false
+        }
+    }
+
+    pub fn dma_write_buf(&mut self, buf: &[u32]) {
+        // finish this first
+        if !self.write_data_fifo.is_empty() {
+            for d in self.write_data_fifo.drain(..) {
+                self.spu_ram[self.i_ram_transfer_address] = d;
+                self.i_ram_transfer_address += 1;
+                self.i_ram_transfer_address &= 0x3FFFF;
+            }
+        }
+
+        for d in buf {
+            let low = *d as u16;
+            let high = (*d >> 16) as u16;
+            self.spu_ram[self.i_ram_transfer_address] = low;
+            self.i_ram_transfer_address += 1;
+            self.i_ram_transfer_address &= 0x3FFFF;
+
+            self.spu_ram[self.i_ram_transfer_address] = high;
+            self.i_ram_transfer_address += 1;
+            self.i_ram_transfer_address &= 0x3FFFF;
+        }
+
+        self.stat
+            .remove(SpuStat::DATA_TRANSFER_DMA_WRITE_REQ | SpuStat::DATA_TRANSFER_USING_DMA);
+    }
+
+    pub fn dma_read_buf(&mut self, size: usize) -> Vec<u32> {
+        let mut buf = Vec::with_capacity(size);
+
+        for _ in 0..size {
+            let low = self.spu_ram[self.i_ram_transfer_address];
+            self.i_ram_transfer_address += 1;
+            self.i_ram_transfer_address &= 0x3FFFF;
+
+            let high = self.spu_ram[self.i_ram_transfer_address];
+            self.i_ram_transfer_address += 1;
+            self.i_ram_transfer_address &= 0x3FFFF;
+
+            buf.push((high as u32) << 16 | low as u32);
+        }
+
+        self.stat
+            .remove(SpuStat::DATA_TRANSFER_DMA_WRITE_REQ | SpuStat::DATA_TRANSFER_USING_DMA);
+        buf
     }
 }
 
@@ -1053,7 +1128,7 @@ impl BusLine for Spu {
                 //if self.data_fifo.len() == 32 {
                 //    panic!("sound ram data transfer fifo overflow");
                 //}
-                self.data_fifo.push_back(data);
+                self.write_data_fifo.push_back(data);
             }
             0x1AA => {
                 self.control = SpuControl::from_bits_retain(data);
