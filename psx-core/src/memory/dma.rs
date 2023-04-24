@@ -364,7 +364,10 @@ impl Dma {
                     linked_list_data,
                     linked_entry_addr
                 );
-                assert!(n_entries < 16);
+                // The GPU only support 16 enteries, but noticed some games
+                // use value higher than that. for us it doesn't really matter
+                // as we can manage any number
+                // assert!(n_entries < 16);
 
                 while n_entries == 0 && linked_list_data & 0xFFFFFF != 0xFFFFFF {
                     linked_entry_addr = linked_list_data & 0xFFFFFC;
@@ -378,7 +381,7 @@ impl Dma {
                         return (0, false);
                     }
 
-                    log::info!(
+                    log::trace!(
                         "skipping: got {} entries, from data {:08X} located at address {:08X}",
                         n_entries,
                         linked_list_data,
