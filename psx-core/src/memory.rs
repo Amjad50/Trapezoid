@@ -214,9 +214,8 @@ impl CpuBus {
                 .to_ascii_lowercase()
                 .as_str()
             {
-                "exe" => s.load_exe_file(disk_file),
                 "cue" => s.dma_bus.cdrom.set_cue_file(disk_file),
-                _ => todo!("Only exe is supported now"),
+                _ => todo!("Only cue is supported now"),
             }
         }
 
@@ -242,7 +241,9 @@ impl CpuBus {
 
 impl CpuBus {
     // TODO: handle errors
-    fn load_exe_file<P: AsRef<Path>>(&mut self, exe_file_path: P) {
+    //
+    /// Returns the metadata of the loaded exe
+    pub fn load_exe_in_memory<P: AsRef<Path>>(&mut self, exe_file_path: P) -> (u32, u32, u32) {
         let mut file = File::open(exe_file_path).unwrap();
         let mut magic = [0; 8];
         let initial_pc;
@@ -283,27 +284,7 @@ impl CpuBus {
             .main_ram
             .put_at_address(&data, destination & 0x1FFFFF);
 
-        let sp_fp_mask = (initial_sp_fp != 0) as u32 * 0xFFFFFFFF;
-        let data = [
-            0x3C080000 | initial_pc >> 16,
-            0x35080000 | initial_pc & 0xFFFF,
-            0x3C1C0000 | initial_gp >> 16,
-            0x379C0000 | initial_gp & 0xFFFF,
-            // if sp_fp is zero, these will be NOP instructions
-            sp_fp_mask & (0x3C1D0000 | initial_sp_fp >> 16),
-            sp_fp_mask & (0x37BD0000 | initial_sp_fp & 0xFFFF),
-            sp_fp_mask & (0x3C1E0000 | initial_sp_fp >> 16),
-            sp_fp_mask & (0x37DE0000 | initial_sp_fp & 0xFFFF),
-            0x01000008,
-            0x00000000,
-        ];
-
-        // patch the bios's `LoadRunShell` to run the exe instead
-        // This patch method was taken from https://github.com/BluestormDNA/ProjectPSX
-        for (i, &d) in data.iter().enumerate() {
-            let offset = i * 4;
-            LittleEndian::write_u32(&mut self.bios.data[0x6FF0 + offset..0x6FF0 + offset + 4], d);
-        }
+        (initial_pc, initial_gp, initial_sp_fp)
     }
 
     /// Since DMA is running using the CPU resources, we should run it and

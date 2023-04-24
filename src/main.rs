@@ -351,7 +351,7 @@ impl VkDisplay {
 struct PsxEmuArgs {
     /// The bios file to run
     bios: PathBuf,
-    /// The disk file to run, without this, it will run the bios only
+    /// The disk/exe file to run, without this, it will run the bios only
     disk_file: Option<PathBuf>,
     /// Turn on window display (without this, it will only print the
     /// logs to the console, which can be useful for testing)
@@ -366,6 +366,9 @@ struct PsxEmuArgs {
     /// Print tty debug output to the console
     #[arg(short, long)]
     debug: bool,
+    /// Skips the shell
+    #[arg(short, long)]
+    fast_boot: bool,
 }
 
 fn main() {
@@ -385,6 +388,7 @@ fn main() {
         args.disk_file,
         PsxConfig {
             stdout_debug: args.debug,
+            fast_boot: args.fast_boot,
         },
         display.device.clone(),
         display.queue.clone(),

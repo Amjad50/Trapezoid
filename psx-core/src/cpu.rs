@@ -61,6 +61,8 @@ impl Debugger {
     pub fn trace_read(&mut self, _addr: u32, _bits: u8) {}
 }
 
+const SHELL_LOCATION: u32 = 0x80030000;
+
 pub(crate) trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
     fn should_run_dma(&self) -> bool;
@@ -123,6 +125,8 @@ pub struct Cpu {
 
     elapsed_cycles: u32,
 
+    shell_reached: bool,
+
     debugger: Debugger,
 }
 
@@ -136,6 +140,7 @@ impl Cpu {
             jump_dest_next: None,
 
             elapsed_cycles: 0,
+            shell_reached: false,
 
             debugger: Debugger::new(),
         }
@@ -145,12 +150,21 @@ impl Cpu {
         &self.regs
     }
 
+    pub(crate) fn registers_mut(&mut self) -> &mut Registers {
+        &mut self.regs
+    }
+
     #[cfg(feature = "debugger")]
     pub fn debugger(&mut self) -> &mut Debugger {
         &mut self.debugger
     }
 
-    pub(crate) fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, clocks: u32) -> (u32, CpuState) {
+    pub(crate) fn clock<P: CpuBusProvider>(
+        &mut self,
+        bus: &mut P,
+        clocks: u32,
+    ) -> (bool, u32, CpuState) {
+        let mut shell_reached_return = false;
         let mut state = CpuState::Normal;
 
         // we only need to run this only once before any instruction, as this
@@ -162,6 +176,14 @@ impl Cpu {
         self.check_and_execute_interrupt(pending_interrupts);
 
         for _ in 0..clocks {
+            // notify the UI when the shell location is reached
+            if !self.shell_reached && self.regs.pc == SHELL_LOCATION {
+                self.shell_reached = true;
+                shell_reached_return = true;
+                log::info!("shell location reached");
+                break;
+            }
+
             if let Some(instruction) = self.bus_read_u32(bus, self.regs.pc) {
                 let instruction = Instruction::from_u32(instruction, self.regs.pc);
 
@@ -222,7 +244,11 @@ impl Cpu {
             self.debugger.clear_state();
         }
 
-        (std::mem::take(&mut self.elapsed_cycles), state)
+        (
+            shell_reached_return,
+            std::mem::take(&mut self.elapsed_cycles),
+            state,
+        )
     }
 }
 

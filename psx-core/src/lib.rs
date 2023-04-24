@@ -11,8 +11,12 @@ mod timers;
 #[cfg(test)]
 mod tests;
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
+use cpu::RegisterType;
 pub use memory::hw_registers::HW_REGISTERS;
 use memory::{Bios, BusLine, CpuBus};
 
@@ -28,10 +32,15 @@ const MAX_CPU_CYCLES_TO_CLOCK: u32 = 2000;
 #[derive(Debug, Clone, Copy)]
 pub struct PsxConfig {
     pub stdout_debug: bool,
+    pub fast_boot: bool,
 }
 
 pub struct Psx {
     bus: CpuBus,
+    exe_file: Option<PathBuf>,
+    // used to control when to execute fastboot
+    disk_available: bool,
+    config: PsxConfig,
     cpu: cpu::Cpu,
     /// Stores the excess CPU cycles for later execution.
     ///
@@ -53,9 +62,34 @@ impl Psx {
     ) -> Result<Self, ()> {
         let bios = Bios::from_file(bios_file_path)?;
 
+        // save the exe file if there is any
+        // The PSX itself is only responsible for loading normal cue files
+        let (exe_file, disk_file) = if let Some(disk_file) = disk_file {
+            let path = disk_file.as_ref().to_owned();
+            // if this is an exe file
+            match path
+                .extension()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "exe" => (Some(path), None),
+                "cue" => (None, Some(path)),
+                _ => todo!("Only cue and exe is supported now"),
+            }
+        } else {
+            // only fast_boot if there is anything to run
+            (None, None)
+        };
+
         Ok(Self {
             cpu: cpu::Cpu::new(),
+            disk_available: disk_file.is_some(),
             bus: CpuBus::new(bios, disk_file, config, device, queue),
+            exe_file,
+            config,
             excess_cpu_cycles: 0,
             cpu_frame_cycles: 0,
         })
@@ -69,8 +103,41 @@ impl Psx {
             // this number doesn't mean anything
             // TODO: research on when to stop the CPU (maybe fixed number? block of code? other?)
             let cpu_cycles;
+            let shell_reached;
 
-            (cpu_cycles, cpu_state) = self.cpu.clock(&mut self.bus, 56);
+            (shell_reached, cpu_cycles, cpu_state) = self.cpu.clock(&mut self.bus, 56);
+
+            // handle fast booting and hijacking the bios to load exe
+            if shell_reached && (self.config.fast_boot || self.exe_file.is_some()) {
+                if let Some(exe_file) = &self.exe_file {
+                    let (pc, gp, sp_fp) = self.bus.load_exe_in_memory(exe_file);
+
+                    let regs = self.cpu.registers_mut();
+                    println!(
+                        "Loaded EXE {} into pc: {:08x}. gp: {:08x}, sp_fp: {:08x}",
+                        exe_file.display(),
+                        pc,
+                        gp,
+                        sp_fp
+                    );
+
+                    assert_ne!(pc, 0, "PC value cannot be zero");
+                    regs.write(RegisterType::Pc, pc);
+
+                    if gp != 0 {
+                        regs.write(RegisterType::Gp, gp);
+                    }
+                    if sp_fp != 0 {
+                        regs.write(RegisterType::Sp, sp_fp);
+                        regs.write(RegisterType::Fp, sp_fp);
+                    }
+                } else if self.disk_available {
+                    // we are either in a cd game or not, either way, skip the shell
+                    let regs = self.cpu.registers_mut();
+                    // return from the function
+                    regs.write(RegisterType::Pc, regs.read(RegisterType::Ra));
+                }
+            }
 
             if cpu_cycles == 0 {
                 return (0, cpu_state);
