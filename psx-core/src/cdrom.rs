@@ -786,8 +786,8 @@ impl Cdrom {
                     let seconds = total_seconds % 60;
 
                     self.write_slice_to_response_fifo(&[
-                        track,
-                        index,
+                        to_bcd(track),
+                        to_bcd(index),
                         // track
                         to_bcd(minutes as u8),
                         to_bcd(seconds as u8),
@@ -796,6 +796,58 @@ impl Cdrom {
                         to_bcd(minutes as u8),
                         to_bcd(seconds as u8),
                         to_bcd(sector as u8),
+                    ]);
+
+                    self.request_interrupt_0_7(3);
+
+                    self.reset_command();
+                }
+                0x13 => {
+                    // GetTN
+                    // TODO: fix when supporting multiple tracks
+
+                    log::info!("cdrom cmd: GetTN");
+                    let first_track = 1;
+                    let last_track = 1;
+
+                    self.write_slice_to_response_fifo(&[
+                        self.status.bits(),
+                        to_bcd(first_track),
+                        to_bcd(last_track),
+                    ]);
+
+                    self.request_interrupt_0_7(3);
+
+                    self.reset_command();
+                }
+                0x14 => {
+                    // GetTD
+                    // TODO: fix when supporting multiple tracks
+
+                    let track = from_bcd(self.read_next_parameter().unwrap());
+
+                    log::info!("cdrom cmd: GetTD: track = {}", track);
+
+                    let res_minutes;
+                    let res_seconds;
+                    // return the end of the last track
+                    if track == 0 {
+                        let total_disk_size = self.disk_data.len();
+                        let total_sectors = total_disk_size / 2352;
+                        let total_seconds = total_sectors / 75;
+                        res_minutes = (total_seconds / 60) as u8;
+                        res_seconds = (total_seconds % 60) as u8;
+                    } else if track == 1 {
+                        res_minutes = 0;
+                        res_seconds = 2;
+                    } else {
+                        todo!("Doesn't support more than 1 track");
+                    }
+
+                    self.write_slice_to_response_fifo(&[
+                        self.status.bits(),
+                        to_bcd(res_minutes),
+                        to_bcd(res_seconds),
                     ]);
 
                     self.request_interrupt_0_7(3);
