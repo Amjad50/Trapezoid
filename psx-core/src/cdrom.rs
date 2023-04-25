@@ -317,6 +317,7 @@ pub struct Cdrom {
     vol_cd_right_to_spu_right: u8,
 
     adpcm_mute: bool,
+    cd_mute: bool,
 }
 
 impl Default for Cdrom {
@@ -365,6 +366,7 @@ impl Default for Cdrom {
             vol_cd_right_to_spu_right: 0,
 
             adpcm_mute: false,
+            cd_mute: true,
         }
     }
 }
@@ -717,10 +719,25 @@ impl Cdrom {
                         self.reset_command();
                     }
                 }
+                0x0B => {
+                    // Mute
+
+                    log::info!("cdrom cmd: Mute");
+
+                    self.cd_mute = true;
+
+                    self.write_to_response_fifo(self.status.bits());
+                    self.request_interrupt_0_7(3);
+
+                    self.reset_command();
+                }
                 0x0C => {
                     // Demute
 
                     log::info!("cdrom cmd: Demute");
+
+                    self.cd_mute = false;
+
                     self.write_to_response_fifo(self.status.bits());
                     self.request_interrupt_0_7(3);
 
@@ -758,6 +775,8 @@ impl Cdrom {
 
                     // TODO: fix when supporting multiple tracks
                     //       also, min, second, sectors below as well
+
+                    log::info!("cdrom cmd: GetLocP");
                     let track = 1;
                     let index = 1;
 
@@ -937,7 +956,7 @@ impl Cdrom {
             (&cd_audio_left, &cd_audio_left)
         };
 
-        if !self.adpcm_mute {
+        if !self.cd_mute && !self.adpcm_mute {
             for (i, (&left, &right)) in audio_left.iter().zip(audio_right.iter()).enumerate() {
                 let l = (left as i32 * self.vol_cd_left_to_spu_left as i32 / 0x80)
                     + (right as i32 * self.vol_cd_right_to_spu_left as i32 / 0x80);
