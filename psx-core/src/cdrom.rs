@@ -446,6 +446,10 @@ impl Cdrom {
             self.command_delay_timer = CDROM_COMMAND_DEFAULT_DELAY;
             // every command starts the motor (if its not already on)
             self.status.insert(CdromStatus::MOTOR_ON);
+            // only max 1 of these status is set at a time, we clear them here
+            // and the command, if its running will set it
+            self.status
+                .remove(CdromStatus::SEEKING | CdromStatus::READING_DATA | CdromStatus::PLAYING);
             match cmd {
                 0x01 => {
                     // GetStat
@@ -480,11 +484,13 @@ impl Cdrom {
                 0x06 | 0x1B => {
                     // ReadN/ReadS
 
+                    self.status.insert(CdromStatus::READING_DATA);
                     if self.command_state.is_none() {
                         // FIRST
 
                         log::info!("cdrom cmd: ReadN");
                         self.do_seek();
+                        self.status.remove(CdromStatus::SEEKING);
 
                         self.write_to_response_fifo(self.status.bits());
                         self.request_interrupt_0_7(3);
@@ -857,9 +863,33 @@ impl Cdrom {
                 0x15 => {
                     // SeekL
 
+                    // TODO: the two seek commands are different, from the doc
+                    //       it seems that this reads the sector headers to know
+                    //       where it should go?
+                    //       Not really sure, check and fix
                     if self.command_state.is_none() {
                         // FIRST
                         log::info!("cdrom cmd: SeekL");
+
+                        self.do_seek();
+
+                        self.write_to_response_fifo(self.status.bits());
+                        self.request_interrupt_0_7(3);
+                        // any data for now, just to proceed to SECOND
+                        self.command_state = Some(0);
+                    } else {
+                        // SECOND
+                        self.write_to_response_fifo(self.status.bits());
+                        self.request_interrupt_0_7(2);
+                        self.reset_command();
+                    }
+                }
+                0x16 => {
+                    // SeekP
+
+                    if self.command_state.is_none() {
+                        // FIRST
+                        log::info!("cdrom cmd: SeekP");
 
                         self.do_seek();
 
@@ -1036,6 +1066,8 @@ impl Cdrom {
     #[inline]
     fn do_seek(&mut self) {
         if let Some(params) = self.set_loc_params {
+            self.status.insert(CdromStatus::SEEKING);
+
             // setting the position from the setLoc data
             let minutes = params[0] as usize;
             let seconds = params[1] as usize;
