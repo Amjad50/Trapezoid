@@ -12,7 +12,11 @@ use std::{
 };
 
 const CDROM_COMMAND_DEFAULT_DELAY: u32 = 0x1100;
-const CDROM_READ_COMMAND_DELAY: u32 = 0x6AA00;
+// This is to achive 75 sectors per second
+// Which is calculated as 33868800 (CPU CYCLES) / 75
+// because the default delay is always used, we subtract it from the delay needed
+// to get the final delay
+const CDROM_READ_COMMAND_DELAY: u32 = 0x6e400 - CDROM_COMMAND_DEFAULT_DELAY;
 
 bitflags! {
     #[derive(Default)]
@@ -571,7 +575,10 @@ impl Cdrom {
                         {
                             // only refill the data if the buffer is taken, else
                             // just interrupt
-                            if self.read_data_buffer.is_empty() {
+                            //
+                            // if we're on the second attempt, and the buffer is still not empty
+                            // perform buffer overrun, i.e. replace the data of the current buffer
+                            if self.read_data_buffer.is_empty() || *command_state == 1 {
                                 // convert from cursor pos to sector,seconds,minutes
                                 // for debugging
                                 let sector = self.cursor_sector_position % 75;
@@ -595,14 +602,17 @@ impl Cdrom {
                                     &whole_sector[12..12 + 0x800]
                                 };
 
+                                // if there is something, override it
+                                self.read_data_buffer.clear();
                                 self.read_data_buffer.extend_from_slice(&data);
 
+                                *command_state = 0;
                                 sector_read = true;
+                            } else {
+                                // switch between 1st and 2nd delivery attempt
+                                // 0 and 1
+                                *command_state += 1;
                             }
-
-                            // switch between 1st and 2nd delivery attempt
-                            // 0 and 1
-                            *command_state ^= 1;
 
                             self.write_to_response_fifo(self.status.bits());
                             self.request_interrupt_0_7(1);
@@ -618,13 +628,14 @@ impl Cdrom {
                         // if we haven't read, just wait the default delay and re-interrupt.
                         if sector_read {
                             self.cursor_sector_position += 1;
-                            self.command_delay_timer +=
-                                if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
-                                    CDROM_READ_COMMAND_DELAY / 2
-                                } else {
-                                    CDROM_READ_COMMAND_DELAY
-                                };
                         }
+                        // perform full delay even if nothing was read
+                        self.command_delay_timer += if self.mode.intersects(CdromMode::DOUBLE_SPEED)
+                        {
+                            CDROM_READ_COMMAND_DELAY / 2
+                        } else {
+                            CDROM_READ_COMMAND_DELAY
+                        };
                     }
                 }
                 0x08 => {
