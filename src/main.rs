@@ -304,6 +304,7 @@ impl VkDisplay {
     }
 
     fn render_frame(&mut self, psx: &mut Psx) {
+        let mut recreate_swapchain = false;
         match &mut self.display_type {
             DisplayType::Windowed {
                 swapchain,
@@ -332,8 +333,7 @@ impl VkDisplay {
                     };
 
                 if suboptimal {
-                    panic!("recreate swapchain");
-                    //recreate_swapchain = true;
+                    recreate_swapchain = true;
                 }
 
                 let current_image = images[image_num as usize].clone();
@@ -359,6 +359,11 @@ impl VkDisplay {
                 );
             }
             DisplayType::Headless => {}
+        }
+
+        if recreate_swapchain {
+            // handles swapchain recreation
+            self.window_resize();
         }
     }
 
