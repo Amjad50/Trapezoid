@@ -1057,8 +1057,12 @@ impl GpuContext {
 
         let left = drawing_left;
         let top = drawing_top;
-        let height = drawing_bottom + 1 - drawing_top;
-        let width = drawing_right + 1 - drawing_left;
+        let height = (drawing_bottom + 1).saturating_sub(drawing_top);
+        let width = (drawing_right + 1).saturating_sub(drawing_left);
+
+        if height == 0 || width == 0 {
+            return;
+        }
 
         drop(state_snapshot);
 
