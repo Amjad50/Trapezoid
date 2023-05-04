@@ -790,9 +790,11 @@ impl GpuContext {
                 [ClearAttachment::Color {
                     color_attachment: 0,
                     clear_value: ClearColorValue::Float([
-                        color.0 as f32 / 255.0,
-                        color.1 as f32 / 255.0,
+                        // switch the order of Red and Green, because our memory color ordering
+                        // is swapped, and we swap it back on front_blit
                         color.2 as f32 / 255.0,
+                        color.1 as f32 / 255.0,
+                        color.0 as f32 / 255.0,
                         0.0,
                     ]),
                 }],
