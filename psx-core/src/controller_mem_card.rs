@@ -198,7 +198,7 @@ impl Controller {
                 self.current_mode = match inp {
                     0x42 => ControllerMode::ReadButtons,
                     0x43 => ControllerMode::Config,
-                    _ => unreachable!(),
+                    _ => todo!("Controller first input {:02X} is not supported", inp),
                 };
 
                 self.state = 2;
@@ -801,7 +801,11 @@ impl CommunicationHandler {
                     }
                     out
                 }
-                _ => unreachable!("invalid inp {}", inp),
+                _ => {
+                    log::warn!("Invalid first received: 0x{:02X}", inp);
+                    self.state = 0;
+                    0
+                }
             },
             1 => {
                 let (result, done) = self.controller.exchange_bytes(inp);

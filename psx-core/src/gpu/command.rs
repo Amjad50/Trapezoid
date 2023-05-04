@@ -446,7 +446,7 @@ impl Gp0Command for MiscCommand {
         let data = self.0;
         let cmd = data >> 24;
         match cmd {
-            0x00 => {
+            0x00 | 0x03..=0x1E => {
                 // Nop
             }
             0x01 => {

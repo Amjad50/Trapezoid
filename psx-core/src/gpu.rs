@@ -108,11 +108,8 @@ impl GpuStat {
     }
 
     fn vertical_resolution(&self) -> u32 {
-        240 << self.intersects(Self::VERTICAL_RESOLUTION) as u32
-    }
-
-    fn is_vertical_interlace(&self) -> bool {
-        self.intersects(Self::VERTICAL_INTERLACE)
+        240 << (self.intersects(Self::VERTICAL_RESOLUTION)
+            && self.intersects(Self::VERTICAL_INTERLACE)) as u32
     }
 
     fn is_24bit_color_depth(&self) -> bool {

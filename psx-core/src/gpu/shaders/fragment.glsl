@@ -109,7 +109,7 @@ void main() {
         // texture flip and texture repeat support
         // flipped textures, will have decrement in number
         // and might flip to negative as well, we can handle that by mod
-        vec2 norm_coord = mod(v_tex_coord, 255);
+        vec2 norm_coord = mod(v_tex_coord, 256);
 
         float x = norm_coord.x / divider;
         float y = norm_coord.y;

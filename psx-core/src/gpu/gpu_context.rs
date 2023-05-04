@@ -790,9 +790,11 @@ impl GpuContext {
                 [ClearAttachment::Color {
                     color_attachment: 0,
                     clear_value: ClearColorValue::Float([
-                        color.0 as f32 / 255.0,
-                        color.1 as f32 / 255.0,
+                        // switch the order of Red and Green, because our memory color ordering
+                        // is swapped, and we swap it back on front_blit
                         color.2 as f32 / 255.0,
+                        color.1 as f32 / 255.0,
+                        color.0 as f32 / 255.0,
                         0.0,
                     ]),
                 }],
@@ -1057,8 +1059,12 @@ impl GpuContext {
 
         let left = drawing_left;
         let top = drawing_top;
-        let height = drawing_bottom + 1 - drawing_top;
-        let width = drawing_right + 1 - drawing_left;
+        let height = (drawing_bottom + 1).saturating_sub(drawing_top);
+        let width = (drawing_right + 1).saturating_sub(drawing_left);
+
+        if height == 0 || width == 0 {
+            return;
+        }
 
         drop(state_snapshot);
 
@@ -1189,10 +1195,12 @@ impl GpuContext {
                 horizontal_size = gpu_stat.horizontal_resolution();
             }
 
+            let should_double = gpu_stat.vertical_resolution() == 480;
+
             // Y2-Y1, double if we are interlacing
             let mut vertical_size = (state_snapshot.display_vertical_range.1
                 - state_snapshot.display_vertical_range.0)
-                << gpu_stat.is_vertical_interlace() as u32;
+                << should_double as u32;
 
             if vertical_size == 0 {
                 vertical_size = gpu_stat.vertical_resolution();

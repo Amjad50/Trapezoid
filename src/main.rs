@@ -50,6 +50,38 @@ impl Debugger {
     fn handle_cpu_state(&mut self, _psx: &mut Psx, _cpu_state: psx_core::cpu::CpuState) {}
 }
 
+/// Moving average fps counter
+struct FPS {
+    frames: [f64; 100],
+    current_index: usize,
+    sum: f64,
+    last_frame: Instant,
+}
+
+impl FPS {
+    fn new() -> Self {
+        Self {
+            frames: [0.0; 100],
+            current_index: 0,
+            sum: 0.0,
+            last_frame: Instant::now(),
+        }
+    }
+
+    fn tick(&mut self) -> f64 {
+        let now = Instant::now();
+        let delta = now.duration_since(self.last_frame).as_secs_f64();
+        self.last_frame = now;
+
+        self.sum -= self.frames[self.current_index];
+        self.sum += delta;
+        self.frames[self.current_index] = delta;
+        self.current_index = (self.current_index + 1) % self.frames.len();
+
+        self.frames.len() as f64 / self.sum
+    }
+}
+
 enum DisplayType {
     Windowed {
         surface: Arc<Surface>,
@@ -57,7 +89,7 @@ enum DisplayType {
         images: Vec<Arc<SwapchainImage>>,
         future: Option<Box<dyn GpuFuture>>,
         full_vram_display: bool,
-        last_frame_time: Instant,
+        fps: FPS,
     },
     Headless,
 }
@@ -179,7 +211,7 @@ impl VkDisplay {
                 images,
                 full_vram_display,
                 future: Some(sync::now(device).boxed()),
-                last_frame_time: Instant::now(),
+                fps: FPS::new(),
             },
         }
     }
@@ -272,6 +304,7 @@ impl VkDisplay {
     }
 
     fn render_frame(&mut self, psx: &mut Psx) {
+        let mut recreate_swapchain = false;
         match &mut self.display_type {
             DisplayType::Windowed {
                 swapchain,
@@ -279,19 +312,16 @@ impl VkDisplay {
                 full_vram_display,
                 surface,
                 future,
-                last_frame_time,
+                fps,
             } => {
                 let mut current_future = future.take().unwrap();
                 current_future.cleanup_finished();
 
                 let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
                 window.set_title(&format!(
-                    "PSX - FPS: {}",
-                    (1. / last_frame_time.elapsed().as_secs_f32()).round()
+                    "PSX - FPS: {:.1}",
+                    (fps.tick() * 10.).round() / 10.
                 ));
-
-                // reset timer
-                *last_frame_time = Instant::now();
 
                 let (image_num, suboptimal, acquire_future) =
                     match swapchain::acquire_next_image(swapchain.clone(), None) {
@@ -303,8 +333,7 @@ impl VkDisplay {
                     };
 
                 if suboptimal {
-                    panic!("recreate swapchain");
-                    //recreate_swapchain = true;
+                    recreate_swapchain = true;
                 }
 
                 let current_image = images[image_num as usize].clone();
@@ -330,6 +359,11 @@ impl VkDisplay {
                 );
             }
             DisplayType::Headless => {}
+        }
+
+        if recreate_swapchain {
+            // handles swapchain recreation
+            self.window_resize();
         }
     }
 

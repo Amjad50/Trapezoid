@@ -79,7 +79,8 @@ impl AdpcmDecoder {
         let shift_filter = in_block[0] & 0xFF;
 
         // adpcm decoding...
-        let shift_factor = 12 - (shift_filter & 0xf);
+        // 13, 14, 15 are reserved and behave similar to 9
+        let shift_factor = 12u16.checked_sub(shift_filter & 0xf).unwrap_or(12 - 9);
         let filter = shift_filter >> 4;
 
         // only 5 filters supported in SPU ADPCM
