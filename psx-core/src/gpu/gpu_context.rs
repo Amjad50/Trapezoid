@@ -1189,10 +1189,12 @@ impl GpuContext {
                 horizontal_size = gpu_stat.horizontal_resolution();
             }
 
+            let should_double = gpu_stat.vertical_resolution() == 480;
+
             // Y2-Y1, double if we are interlacing
             let mut vertical_size = (state_snapshot.display_vertical_range.1
                 - state_snapshot.display_vertical_range.0)
-                << gpu_stat.is_vertical_interlace() as u32;
+                << should_double as u32;
 
             if vertical_size == 0 {
                 vertical_size = gpu_stat.vertical_resolution();
