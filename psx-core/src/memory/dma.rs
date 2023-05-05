@@ -610,6 +610,27 @@ impl Dma {
         })
     }
 
+    /// Gets the channel to run based on priority
+    fn get_channel_to_run(&mut self) -> Option<(usize, &mut DmaChannel)> {
+        let mut highest_priority = -1;
+
+        let mut result = None;
+
+        for (i, channel) in self.channels.iter_mut().enumerate().rev() {
+            let channel_enabled = (self.control >> (i * 4)) & 0b1000 != 0;
+            let priority = ((self.control >> (i * 4)) & 0b111) as i32;
+
+            if channel_enabled && channel.channel_control.in_progress() {
+                if priority > highest_priority {
+                    result = Some((i, channel));
+                    highest_priority = priority;
+                }
+            }
+        }
+
+        result
+    }
+
     pub(super) fn clock_dma(
         &mut self,
         dma_bus: &mut super::DmaBus,
@@ -618,37 +639,31 @@ impl Dma {
         // record the number of cycles that are spent of the cpu
         let mut cpu_cycles = 0;
 
-        // TODO: handle priority appropriately
-        for (i, channel) in self.channels.iter_mut().enumerate() {
-            let channel_enabled = (self.control >> (i * 4)) & 0b1000 != 0;
+        if let Some((i, channel)) = self.get_channel_to_run() {
+            log::trace!("channel {} doing DMA", i);
 
-            if channel_enabled && channel.channel_control.in_progress() {
-                log::info!("channel {} doing DMA", i);
+            let (cycles_to_delay, finished) = match i {
+                0 => Self::perform_mdec_in_channel0_dma(channel, dma_bus),
+                1 => Self::perform_mdec_out_channel1_dma(channel, dma_bus),
+                2 => Self::perform_gpu_channel2_dma(channel, dma_bus),
+                3 => Self::perform_cdrom_channel3_dma(channel, dma_bus),
+                4 => Self::perform_spu_channel4_dma(channel, dma_bus),
+                5 => todo!("DMA channel PIO 5"),
+                6 => Self::perform_otc_channel6_dma(channel, dma_bus),
+                _ => unreachable!(),
+            };
 
-                let (cycles_to_delay, finished) = match i {
-                    0 => Self::perform_mdec_in_channel0_dma(channel, dma_bus),
-                    1 => Self::perform_mdec_out_channel1_dma(channel, dma_bus),
-                    2 => Self::perform_gpu_channel2_dma(channel, dma_bus),
-                    3 => Self::perform_cdrom_channel3_dma(channel, dma_bus),
-                    4 => Self::perform_spu_channel4_dma(channel, dma_bus),
-                    6 => Self::perform_otc_channel6_dma(channel, dma_bus),
-                    _ => todo!("DMA channel {}", i),
-                };
+            cpu_cycles = cycles_to_delay;
 
-                cpu_cycles += cycles_to_delay;
-                if finished {
-                    channel.channel_control.finish_transfer();
-                    self.interrupt.request_interrupt(i as u32);
-                }
+            // remove trigger afterwards, since some handlers might check
+            //  for manual trigger
+            channel
+                .channel_control
+                .remove(ChannelControl::START_TRIGGER);
 
-                // remove trigger afterwards, since some handlers might check
-                //  for manual trigger
-                channel
-                    .channel_control
-                    .remove(ChannelControl::START_TRIGGER);
-
-                // handle only one DMA at a time
-                break;
+            if finished {
+                channel.channel_control.finish_transfer();
+                self.interrupt.request_interrupt(i as u32);
             }
         }
 
