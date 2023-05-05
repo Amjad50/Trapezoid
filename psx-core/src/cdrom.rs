@@ -16,7 +16,9 @@ const CDROM_COMMAND_DEFAULT_DELAY: u32 = 0x1100;
 // Which is calculated as 33868800 (CPU CYCLES) / 75
 // because the default delay is always used, we subtract it from the delay needed
 // to get the final delay
-const CDROM_READ_PLAY_DELAY: u32 = 0x6e400;
+//
+// Reduced a bit with 0x2000, audio felt a bit jagged with the original delay
+const CDROM_READ_PLAY_DELAY: u32 = 0x6e400 - 0x2000;
 
 bitflags! {
     #[derive(Default)]
