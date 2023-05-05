@@ -4,7 +4,8 @@ layout(location = 0) in vec3 v_color;
 layout(location = 1) in vec2 v_tex_coord;
 
 layout(location = 2)  flat in uvec4 v_tex_info;
-layout(location = 3)  flat in uvec3 v_extra_draw_state;
+layout(location = 3)  flat in uvec4 v_tex_window;
+layout(location = 4)  flat in uvec3 v_extra_draw_state;
 
 layout(location = 0) out vec4 f_color;
 
@@ -103,6 +104,9 @@ void main() {
 
         uint tex_page_color_mode = v_extra_draw_state.y;
 
+        uvec2 tex_window_mask = v_tex_window.xy & 0x1Fu;
+        uvec2 tex_window_offset = v_tex_window.zw & 0x1Fu;
+
         // how many pixels in 16 bit
         // 0 => 4
         // 1 => 2
@@ -116,7 +120,11 @@ void main() {
         // texture flip and texture repeat support
         // flipped textures, will have decrement in number
         // and might flip to negative as well, we can handle that by mod
-        vec2 norm_coord = mod(v_tex_coord, 256);
+        uvec2 norm_coord = uvec2(mod(v_tex_coord, 256));
+
+        // apply texture window
+        // Texcoord = (Texcoord AND (NOT (Mask*8))) OR ((Offset AND Mask)*8)
+        norm_coord = (norm_coord & (~(tex_window_mask * 8))) | ((tex_window_offset & tex_window_mask) * 8);
 
         float x = norm_coord.x / divider;
         float y = norm_coord.y;
