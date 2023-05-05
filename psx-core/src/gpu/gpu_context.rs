@@ -152,14 +152,39 @@ struct DrawingVertexFull {
     #[format(R32_UINT)]
     tex_page_color_mode: u32, // u8
 
+    /// bit 0: semi_transparent
+    /// bit 1: dither_enabled
+    /// bit 2: is_textured
+    /// bit 3: is_texture_blended
     #[format(R32_UINT)]
-    semi_transparent: u32, // bool
-    #[format(R32_UINT)]
-    dither_enabled: u32, // bool
-    #[format(R32_UINT)]
-    is_textured: u32, // bool
-    #[format(R32_UINT)]
-    is_texture_blended: u32, // bool
+    bool_flags: u32,
+}
+
+impl DrawingVertexFull {
+    fn new(
+        v: &DrawingVertex,
+        texture_params: &DrawingTextureParams,
+        semi_transparency_mode: u8,
+        semi_transparent: bool,
+        dither_enabled: bool,
+        textured: bool,
+        texture_blending: bool,
+    ) -> Self {
+        let bool_flags = semi_transparent as u32
+            | (dither_enabled as u32) << 1
+            | (textured as u32) << 2
+            | (texture_blending as u32) << 3;
+        Self {
+            position: v.position,
+            color: v.color,
+            tex_coord: v.tex_coord,
+            clut_base: texture_params.clut_base,
+            tex_page_base: texture_params.tex_page_base,
+            semi_transparency_mode: semi_transparency_mode as u32,
+            tex_page_color_mode: texture_params.tex_page_color_mode as u32,
+            bool_flags,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -1115,19 +1140,18 @@ impl GpuContext {
             height,
         }));
 
-        let converted_vertices_iter = vertices.iter().map(|v| DrawingVertexFull {
-            position: v.position,
-            color: v.color,
-            tex_coord: v.tex_coord,
-            clut_base: texture_params.clut_base,
-            tex_page_base: texture_params.tex_page_base,
-            semi_transparency_mode: semi_transparency_mode as u32,
-            tex_page_color_mode: texture_params.tex_page_color_mode as u32,
-            semi_transparent: semi_transparent as u32,
-            dither_enabled: gpu_stat.dither_enabled() as u32,
-            is_textured: textured as u32,
-            is_texture_blended: texture_blending as u32,
+        let converted_vertices_iter = vertices.iter().map(|v| {
+            DrawingVertexFull::new(
+                v,
+                &texture_params,
+                semi_transparency_mode,
+                semi_transparent,
+                gpu_stat.dither_enabled(),
+                textured,
+                texture_blending,
+            )
         });
+
         self.buffered_draw_vertices.extend(converted_vertices_iter);
 
         if semi_transparent_mode_3 {

@@ -7,10 +7,7 @@ layout(location = 2)  flat in uvec2 v_clut_base;
 layout(location = 3)  flat in uvec2 v_tex_page_base;
 layout(location = 4)  flat in uint  v_semi_transparency_mode;
 layout(location = 5)  flat in uint  v_tex_page_color_mode;
-layout(location = 6)  flat in uint  v_semi_transparent;
-layout(location = 7)  flat in uint  v_dither_enabled;
-layout(location = 8)  flat in uint  v_is_textured;
-layout(location = 9) flat in uint  v_is_texture_blended;
+layout(location = 6)  flat in uint  v_bool_flags;
 
 layout(location = 0) out vec4 f_color;
 
@@ -85,7 +82,12 @@ void main() {
     vec3 t_color;
     vec4 out_color;
 
-    if (v_dither_enabled == 1) {
+    bool semi_transparent = (v_bool_flags & 0x1u) != 0;
+    bool dither_enabled = (v_bool_flags & 0x2u) != 0;
+    bool is_textured = (v_bool_flags & 0x4u) != 0;
+    bool is_texture_blended = (v_bool_flags & 0x8u) != 0;
+
+    if (dither_enabled) {
         uint x = uint(gl_FragCoord.x) % 4;
         uint y = uint(gl_FragCoord.y) % 4;
 
@@ -95,7 +97,7 @@ void main() {
         t_color = v_color;
     }
 
-    if (v_is_textured == 1) {
+    if (is_textured) {
         // how many pixels in 16 bit
         // 0 => 4
         // 1 => 2
@@ -134,12 +136,12 @@ void main() {
 
         vec3 color = color_value.rgb;
 
-        if (v_is_texture_blended == 1) {
+        if (is_texture_blended) {
             color *= t_color * 2;
         }
-        out_color = get_color_with_semi_transparency(color, v_semi_transparent == 1 && color_value.a == 1.0);
+        out_color = get_color_with_semi_transparency(color, semi_transparent && color_value.a == 1.0);
     } else {
-        out_color = get_color_with_semi_transparency(t_color, v_semi_transparent == 1);
+        out_color = get_color_with_semi_transparency(t_color, semi_transparent);
     }
     // swizzle the colors
     f_color = out_color.bgra;
