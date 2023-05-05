@@ -143,23 +143,70 @@ struct DrawingVertexFull {
     #[format(R32G32_SINT)]
     tex_coord: [i32; 2],
 
-    #[format(R32G32_UINT)]
-    clut_base: [u32; 2],
-    #[format(R32G32_UINT)]
-    tex_page_base: [u32; 2],
-    #[format(R32_UINT)]
-    semi_transparency_mode: u32, // u8
-    #[format(R32_UINT)]
-    tex_page_color_mode: u32, // u8
+    /// group multiple data into one array
+    /// clut_base: [u32; 2],
+    /// tex_page_base: [u32; 2],
+    #[format(R32G32B32A32_UINT)]
+    tex_info: [u32; 4],
 
-    #[format(R32_UINT)]
-    semi_transparent: u32, // bool
-    #[format(R32_UINT)]
-    dither_enabled: u32, // bool
-    #[format(R32_UINT)]
-    is_textured: u32, // bool
-    #[format(R32_UINT)]
-    is_texture_blended: u32, // bool
+    /// group multiple data into one array
+    /// tex_window_mask: [u32; 2],
+    /// tex_window_offset: [u32; 2],
+    #[format(R32G32B32A32_UINT)]
+    tex_window: [u32; 4],
+
+    /// group multiple data into one array
+    ///
+    /// semi_transparency_mode: u32,
+    /// tex_page_color_mode: u32,
+    /// bool_flags: u32,
+    ///  bit 0: semi_transparent
+    ///  bit 1: dither_enabled
+    ///  bit 2: is_textured
+    ///  bit 3: is_texture_blended
+    #[format(R32G32B32_UINT)]
+    extra_draw_state: [u32; 3],
+}
+
+impl DrawingVertexFull {
+    fn new(
+        v: &DrawingVertex,
+        texture_params: &DrawingTextureParams,
+        texture_window_mask: (u32, u32),
+        texture_window_offset: (u32, u32),
+        semi_transparency_mode: u8,
+        semi_transparent: bool,
+        dither_enabled: bool,
+        textured: bool,
+        texture_blending: bool,
+    ) -> Self {
+        let bool_flags = semi_transparent as u32
+            | (dither_enabled as u32) << 1
+            | (textured as u32) << 2
+            | (texture_blending as u32) << 3;
+        Self {
+            position: v.position,
+            color: v.color,
+            tex_coord: v.tex_coord,
+            tex_info: [
+                texture_params.clut_base[0],
+                texture_params.clut_base[1],
+                texture_params.tex_page_base[0],
+                texture_params.tex_page_base[1],
+            ],
+            tex_window: [
+                texture_window_mask.0,
+                texture_window_mask.1,
+                texture_window_offset.0,
+                texture_window_offset.1,
+            ],
+            extra_draw_state: [
+                semi_transparency_mode as u32,
+                texture_params.tex_page_color_mode as u32,
+                bool_flags,
+            ],
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -1066,6 +1113,9 @@ impl GpuContext {
             return;
         }
 
+        let texture_window_mask = state_snapshot.texture_window_mask;
+        let texture_window_offset = state_snapshot.texture_window_offset;
+
         drop(state_snapshot);
 
         let mut semi_transparency_mode = if textured {
@@ -1115,19 +1165,20 @@ impl GpuContext {
             height,
         }));
 
-        let converted_vertices_iter = vertices.iter().map(|v| DrawingVertexFull {
-            position: v.position,
-            color: v.color,
-            tex_coord: v.tex_coord,
-            clut_base: texture_params.clut_base,
-            tex_page_base: texture_params.tex_page_base,
-            semi_transparency_mode: semi_transparency_mode as u32,
-            tex_page_color_mode: texture_params.tex_page_color_mode as u32,
-            semi_transparent: semi_transparent as u32,
-            dither_enabled: gpu_stat.dither_enabled() as u32,
-            is_textured: textured as u32,
-            is_texture_blended: texture_blending as u32,
+        let converted_vertices_iter = vertices.iter().map(|v| {
+            DrawingVertexFull::new(
+                v,
+                &texture_params,
+                texture_window_mask,
+                texture_window_offset,
+                semi_transparency_mode,
+                semi_transparent,
+                gpu_stat.dither_enabled(),
+                textured,
+                texture_blending,
+            )
         });
+
         self.buffered_draw_vertices.extend(converted_vertices_iter);
 
         if semi_transparent_mode_3 {
