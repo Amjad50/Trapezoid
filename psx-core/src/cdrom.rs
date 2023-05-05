@@ -894,6 +894,13 @@ impl Cdrom {
             return;
         };
 
+        // refresh the delay timer
+        self.read_play_delay_timer += if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
+            CDROM_READ_PLAY_DELAY / 2
+        } else {
+            CDROM_READ_PLAY_DELAY
+        };
+
         let sector_start = self.cursor_sector_position * 2352;
 
         // skip the sync bytes
@@ -1000,14 +1007,19 @@ impl Cdrom {
 
                 *second_delivery_attempt = false;
                 sector_read = true;
+
+                self.write_to_response_fifo(self.status.bits());
+                self.request_interrupt_0_7(1);
             } else {
-                // switch between 1st and 2nd delivery attempt
-                // 0 and 1
+                // set the second delivery attempt flag, so that next time we perform the
+                // file/channel checks
                 *second_delivery_attempt = true;
+
+                // when retrying for the second time, do not wait for a full delay
+                // as this results in audio stuttering
+                self.read_play_delay_timer = 0;
             }
 
-            self.write_to_response_fifo(self.status.bits());
-            self.request_interrupt_0_7(1);
         //  else:
         //    ignore sector silently
         } else {
@@ -1028,12 +1040,6 @@ impl Cdrom {
         if sector_read {
             self.cursor_sector_position += 1;
         }
-        // perform full delay even if nothing was read
-        self.read_play_delay_timer += if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
-            CDROM_READ_PLAY_DELAY / 2
-        } else {
-            CDROM_READ_PLAY_DELAY
-        };
     }
 
     // because of `&self` and `&mut self` conflict, we can't pass the
