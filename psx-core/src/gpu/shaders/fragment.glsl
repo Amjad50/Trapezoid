@@ -3,11 +3,8 @@
 layout(location = 0) in vec3 v_color;
 layout(location = 1) in vec2 v_tex_coord;
 
-layout(location = 2)  flat in uvec2 v_clut_base;
-layout(location = 3)  flat in uvec2 v_tex_page_base;
-layout(location = 4)  flat in uint  v_semi_transparency_mode;
-layout(location = 5)  flat in uint  v_tex_page_color_mode;
-layout(location = 6)  flat in uint  v_bool_flags;
+layout(location = 2)  flat in uvec4 v_tex_info;
+layout(location = 3)  flat in uvec3 v_extra_draw_state;
 
 layout(location = 0) out vec4 f_color;
 
@@ -38,20 +35,22 @@ vec3 get_color_with_semi_transparency_for_mode_3(vec3 color, bool semi_transpare
 vec4 get_color_with_semi_transparency(vec3 color, bool semi_transparency_param) {
     float alpha = 0.0;
 
+    uint semi_transparency_mode = v_extra_draw_state.x;
+
     // since this is mostly the most common case, we'll do it first
-    if (v_semi_transparency_mode == 3u) {
+    if (semi_transparency_mode == 3u) {
         // alpha here doesn't matter since it won't be written to the framebuffer anyway (disabled by the blend)
         return vec4(get_color_with_semi_transparency_for_mode_3(color, semi_transparency_param), 0.0);
     }
-    if (v_semi_transparency_mode == 0u) {
+    if (semi_transparency_mode == 0u) {
         if (semi_transparency_param) {
             alpha = 0.5;
         } else {
             alpha = 1.0;
         }
-    } else if (v_semi_transparency_mode == 1u) {
+    } else if (semi_transparency_mode == 1u) {
         alpha = float(semi_transparency_param);
-    } else { // v_semi_transparency_mode == 2u
+    } else { // semi_transparency_mode == 2u
         alpha = float(semi_transparency_param);
     }
 
@@ -82,10 +81,11 @@ void main() {
     vec3 t_color;
     vec4 out_color;
 
-    bool semi_transparent = (v_bool_flags & 0x1u) != 0;
-    bool dither_enabled = (v_bool_flags & 0x2u) != 0;
-    bool is_textured = (v_bool_flags & 0x4u) != 0;
-    bool is_texture_blended = (v_bool_flags & 0x8u) != 0;
+    uint bool_flags = v_extra_draw_state.z;
+    bool semi_transparent = (bool_flags & 0x1u) != 0;
+    bool dither_enabled = (bool_flags & 0x2u) != 0;
+    bool is_textured = (bool_flags & 0x4u) != 0;
+    bool is_texture_blended = (bool_flags & 0x8u) != 0;
 
     if (dither_enabled) {
         uint x = uint(gl_FragCoord.x) % 4;
@@ -98,13 +98,18 @@ void main() {
     }
 
     if (is_textured) {
+        uvec2 clut_base = v_tex_info.xy;
+        uvec2 tex_page_base = v_tex_info.zw;
+
+        uint tex_page_color_mode = v_extra_draw_state.y;
+
         // how many pixels in 16 bit
         // 0 => 4
         // 1 => 2
         // 2 => 1
         // 3 => 1
-        uint divider = 1 << (2 - v_tex_page_color_mode);
-        if (v_tex_page_color_mode == 3) {
+        uint divider = 1 << (2 - tex_page_color_mode);
+        if (tex_page_color_mode == 3) {
             divider = 1;
         }
 
@@ -116,17 +121,17 @@ void main() {
         float x = norm_coord.x / divider;
         float y = norm_coord.y;
 
-        vec4 color_value = fetch_color_from_texture_float(vec2(v_tex_page_base) + vec2(x, y));
+        vec4 color_value = fetch_color_from_texture_float(vec2(tex_page_base) + vec2(x, y));
 
         // if we need clut, then compute it
-        if (v_tex_page_color_mode == 0u || v_tex_page_color_mode == 1u) {
+        if (tex_page_color_mode == 0u || tex_page_color_mode == 1u) {
             uint color_u16 = u16_from_color_with_alpha(color_value);
 
             uint mask = 0xFFFFu >> (16u - (16u / divider));
             uint clut_index_shift = (uint(norm_coord.x) % divider) * (16u / divider);
             uint clut_index = (color_u16 >> clut_index_shift) & mask;
 
-            color_value = fetch_color_from_texture(v_clut_base + uvec2(clut_index, 0));
+            color_value = fetch_color_from_texture(clut_base + uvec2(clut_index, 0));
         }
 
         // if its all 0, then its transparent

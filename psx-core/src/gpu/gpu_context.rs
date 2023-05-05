@@ -143,21 +143,23 @@ struct DrawingVertexFull {
     #[format(R32G32_SINT)]
     tex_coord: [i32; 2],
 
-    #[format(R32G32_UINT)]
-    clut_base: [u32; 2],
-    #[format(R32G32_UINT)]
-    tex_page_base: [u32; 2],
-    #[format(R32_UINT)]
-    semi_transparency_mode: u32, // u8
-    #[format(R32_UINT)]
-    tex_page_color_mode: u32, // u8
+    /// group multiple data into one array
+    /// clut_base: [u32; 2],
+    /// tex_page_base: [u32; 2],
+    #[format(R32G32B32A32_UINT)]
+    tex_info: [u32; 4],
 
-    /// bit 0: semi_transparent
-    /// bit 1: dither_enabled
-    /// bit 2: is_textured
-    /// bit 3: is_texture_blended
-    #[format(R32_UINT)]
-    bool_flags: u32,
+    /// group multiple data into one array
+    ///
+    /// semi_transparency_mode: u32,
+    /// tex_page_color_mode: u32,
+    /// bool_flags: u32,
+    ///  bit 0: semi_transparent
+    ///  bit 1: dither_enabled
+    ///  bit 2: is_textured
+    ///  bit 3: is_texture_blended
+    #[format(R32G32B32_UINT)]
+    extra_draw_state: [u32; 3],
 }
 
 impl DrawingVertexFull {
@@ -178,11 +180,17 @@ impl DrawingVertexFull {
             position: v.position,
             color: v.color,
             tex_coord: v.tex_coord,
-            clut_base: texture_params.clut_base,
-            tex_page_base: texture_params.tex_page_base,
-            semi_transparency_mode: semi_transparency_mode as u32,
-            tex_page_color_mode: texture_params.tex_page_color_mode as u32,
-            bool_flags,
+            tex_info: [
+                texture_params.clut_base[0],
+                texture_params.clut_base[1],
+                texture_params.tex_page_base[0],
+                texture_params.tex_page_base[1],
+            ],
+            extra_draw_state: [
+                semi_transparency_mode as u32,
+                texture_params.tex_page_color_mode as u32,
+                bool_flags,
+            ],
         }
     }
 }
