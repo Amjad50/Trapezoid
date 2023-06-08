@@ -121,6 +121,7 @@ impl FPS {
 
 enum DisplayType {
     Windowed {
+        event_loop: Option<EventLoop<()>>,
         surface: Arc<Surface>,
         swapchain: Arc<Swapchain>,
         images: Vec<Arc<SwapchainImage>>,
@@ -138,7 +139,9 @@ struct VkDisplay {
 }
 
 impl VkDisplay {
-    fn windowed(event_loop: &EventLoop<()>, full_vram_display: bool) -> Self {
+    fn windowed(full_vram_display: bool) -> Self {
+        let event_loop = EventLoop::new();
+
         let vulkan_library = VulkanLibrary::new().unwrap();
         let required_extensions = vulkano_win::required_extensions(&vulkan_library);
 
@@ -152,7 +155,7 @@ impl VkDisplay {
         .unwrap();
 
         let surface = WindowBuilder::new()
-            .build_vk_surface(event_loop, instance.clone())
+            .build_vk_surface(&event_loop, instance.clone())
             .unwrap();
 
         let device_extensions = DeviceExtensions {
@@ -244,6 +247,7 @@ impl VkDisplay {
             queue,
             fps: FPS::new(),
             display_type: DisplayType::Windowed {
+                event_loop: Some(event_loop),
                 surface,
                 swapchain,
                 images,
@@ -350,6 +354,7 @@ impl VkDisplay {
                 full_vram_display,
                 surface,
                 future,
+                ..
             } => {
                 let mut current_future = future.take().unwrap();
                 current_future.cleanup_finished();
@@ -415,6 +420,28 @@ impl VkDisplay {
             DisplayType::Headless => {}
         }
     }
+
+    fn run<F>(mut self, mut f: F)
+    where
+        F: 'static + FnMut(&mut VkDisplay, Event<'_, ()>) -> ControlFlow,
+    {
+        match self.display_type {
+            DisplayType::Windowed {
+                ref mut event_loop, ..
+            } => {
+                let event_loop = event_loop.take().unwrap();
+                event_loop.run(move |event, _target, control_flow| {
+                    *control_flow = f(&mut self, event);
+                });
+            }
+            DisplayType::Headless => loop {
+                // TODO: support keyboard input and such
+                // NOTE: MainEventCleared is used here to run the emulator
+                let _ = f(&mut self, Event::MainEventsCleared);
+                std::thread::sleep(Duration::from_millis(1));
+            },
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -447,9 +474,8 @@ fn main() {
 
     let args = PsxEmuArgs::parse();
 
-    let event_loop = EventLoop::new();
-    let mut display = if args.windowed {
-        VkDisplay::windowed(&event_loop, args.vram)
+    let display = if args.windowed {
+        VkDisplay::windowed(args.vram)
     } else {
         VkDisplay::headless()
     };
@@ -473,12 +499,11 @@ fn main() {
         audio_player.play();
     }
 
-    event_loop.run(move |event, _target, control_flow| {
+    display.run(move |display, event| {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
-                    *control_flow = ControlFlow::Exit;
-                    return;
+                    return ControlFlow::Exit;
                 }
                 WindowEvent::Resized(_) => {
                     display.window_resize();
@@ -529,7 +554,7 @@ fn main() {
             Event::MainEventsCleared => {
                 // limit the frame rate to 60 fps if the display support more than that
                 if !display.fps.did_reach_target(60) {
-                    return;
+                    return ControlFlow::Poll;
                 }
                 display.fps.tick();
 
@@ -556,6 +581,6 @@ fn main() {
             debugger.run(&mut psx);
         }
 
-        *control_flow = ControlFlow::Poll;
+        ControlFlow::Poll
     });
 }
