@@ -612,16 +612,17 @@ impl Dma {
 
     /// Gets the channel to run based on priority
     fn get_channel_to_run(&mut self) -> Option<(usize, &mut DmaChannel)> {
-        let mut highest_priority = -1;
+        let mut highest_priority = 0b111 + 1;   // lowest priority is 0b111=7
 
         let mut result = None;
 
         for (i, channel) in self.channels.iter_mut().enumerate().rev() {
             let channel_enabled = (self.control >> (i * 4)) & 0b1000 != 0;
-            let priority = ((self.control >> (i * 4)) & 0b111) as i32;
+            let priority = (self.control >> (i * 4)) & 0b111;
 
             if channel_enabled && channel.channel_control.in_progress() {
-                if priority > highest_priority {
+                // lower number is higher priority
+                if priority <= highest_priority {
                     result = Some((i, channel));
                     highest_priority = priority;
                 }
