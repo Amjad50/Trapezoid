@@ -2,7 +2,11 @@ mod audio;
 #[cfg(feature = "debugger")]
 mod debugger;
 
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use audio::AudioPlayer;
 use psx_core::{DigitalControllerKey, Psx, PsxConfig};
@@ -56,6 +60,8 @@ struct FPS {
     current_index: usize,
     sum: f64,
     last_frame: Instant,
+    last_instance_check: Instant,
+    check_offset: Duration,
 }
 
 impl FPS {
@@ -65,6 +71,8 @@ impl FPS {
             current_index: 0,
             sum: 0.0,
             last_frame: Instant::now(),
+            last_instance_check: Instant::now(),
+            check_offset: Duration::from_millis(0),
         }
     }
 
@@ -80,16 +88,45 @@ impl FPS {
 
         self.frames.len() as f64 / self.sum
     }
+
+    fn fps(&self) -> f64 {
+        self.frames.len() as f64 / self.sum
+    }
+
+    fn did_reach_target(&mut self, target_fps: u64) -> bool {
+        let duration_per_frame = Duration::from_micros(1_000_000 / target_fps);
+
+        let elapsed = self.last_frame.elapsed().saturating_sub(self.check_offset);
+
+        // this gives us the approx time since the last check
+        // for high refresh rates, this will be smaller than the expected 60 FPS
+        let elapsed_since_last_check = self.last_instance_check.elapsed();
+        self.last_instance_check = Instant::now();
+
+        if elapsed >= duration_per_frame {
+            true
+        } else {
+            let remaining = duration_per_frame - elapsed;
+            // if we will reach in the middle, then allow this time, but add an offset for next frame
+            if elapsed_since_last_check >= remaining {
+                // we have offsetted the check, so it affects the next frame
+                self.check_offset = elapsed_since_last_check - remaining;
+                true
+            } else {
+                false
+            }
+        }
+    }
 }
 
 enum DisplayType {
     Windowed {
+        event_loop: Option<EventLoop<()>>,
         surface: Arc<Surface>,
         swapchain: Arc<Swapchain>,
         images: Vec<Arc<SwapchainImage>>,
         future: Option<Box<dyn GpuFuture>>,
         full_vram_display: bool,
-        fps: FPS,
     },
     Headless,
 }
@@ -98,10 +135,13 @@ struct VkDisplay {
     device: Arc<Device>,
     queue: Arc<Queue>,
     display_type: DisplayType,
+    fps: FPS,
 }
 
 impl VkDisplay {
-    fn windowed(event_loop: &EventLoop<()>, full_vram_display: bool) -> Self {
+    fn windowed(full_vram_display: bool) -> Self {
+        let event_loop = EventLoop::new();
+
         let vulkan_library = VulkanLibrary::new().unwrap();
         let required_extensions = vulkano_win::required_extensions(&vulkan_library);
 
@@ -115,7 +155,7 @@ impl VkDisplay {
         .unwrap();
 
         let surface = WindowBuilder::new()
-            .build_vk_surface(event_loop, instance.clone())
+            .build_vk_surface(&event_loop, instance.clone())
             .unwrap();
 
         let device_extensions = DeviceExtensions {
@@ -205,13 +245,14 @@ impl VkDisplay {
         Self {
             device: device.clone(),
             queue,
+            fps: FPS::new(),
             display_type: DisplayType::Windowed {
+                event_loop: Some(event_loop),
                 surface,
                 swapchain,
                 images,
                 full_vram_display,
                 future: Some(sync::now(device).boxed()),
-                fps: FPS::new(),
             },
         }
     }
@@ -273,6 +314,7 @@ impl VkDisplay {
         Self {
             device,
             queue,
+            fps: FPS::new(),
             display_type: DisplayType::Headless,
         }
     }
@@ -312,7 +354,7 @@ impl VkDisplay {
                 full_vram_display,
                 surface,
                 future,
-                fps,
+                ..
             } => {
                 let mut current_future = future.take().unwrap();
                 current_future.cleanup_finished();
@@ -320,7 +362,7 @@ impl VkDisplay {
                 let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
                 window.set_title(&format!(
                     "PSX - FPS: {:.1}",
-                    (fps.tick() * 10.).round() / 10.
+                    (self.fps.fps() * 10.).round() / 10.
                 ));
 
                 let (image_num, suboptimal, acquire_future) =
@@ -378,6 +420,28 @@ impl VkDisplay {
             DisplayType::Headless => {}
         }
     }
+
+    fn run<F>(mut self, mut f: F)
+    where
+        F: 'static + FnMut(&mut VkDisplay, Event<'_, ()>) -> ControlFlow,
+    {
+        match self.display_type {
+            DisplayType::Windowed {
+                ref mut event_loop, ..
+            } => {
+                let event_loop = event_loop.take().unwrap();
+                event_loop.run(move |event, _target, control_flow| {
+                    *control_flow = f(&mut self, event);
+                });
+            }
+            DisplayType::Headless => loop {
+                // TODO: support keyboard input and such
+                // NOTE: MainEventCleared is used here to run the emulator
+                let _ = f(&mut self, Event::MainEventsCleared);
+                std::thread::sleep(Duration::from_millis(1));
+            },
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -387,10 +451,9 @@ struct PsxEmuArgs {
     bios: PathBuf,
     /// The disk/exe file to run, without this, it will run the bios only
     disk_file: Option<PathBuf>,
-    /// Turn on window display (without this, it will only print the
-    /// logs to the console, which can be useful for testing)
-    #[arg(short, long)]
-    windowed: bool,
+    /// Turn off window display and run in headless mode
+    #[arg(short = 'e', long)]
+    headless: bool,
     /// Initial value for `display full vram`, can be changed later with [V] key
     #[arg(short, long)]
     vram: bool,
@@ -410,11 +473,10 @@ fn main() {
 
     let args = PsxEmuArgs::parse();
 
-    let event_loop = EventLoop::new();
-    let mut display = if args.windowed {
-        VkDisplay::windowed(&event_loop, args.vram)
-    } else {
+    let display = if args.headless {
         VkDisplay::headless()
+    } else {
+        VkDisplay::windowed(args.vram)
     };
 
     let mut psx = Psx::new(
@@ -429,8 +491,6 @@ fn main() {
     )
     .unwrap();
 
-    let mut last_frame_time = Instant::now();
-
     let mut debugger = Debugger::new();
 
     let mut audio_player = AudioPlayer::new(44100);
@@ -438,12 +498,11 @@ fn main() {
         audio_player.play();
     }
 
-    event_loop.run(move |event, _target, control_flow| {
+    display.run(move |display, event| {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
-                    *control_flow = ControlFlow::Exit;
-                    return;
+                    return ControlFlow::Exit;
                 }
                 WindowEvent::Resized(_) => {
                     display.window_resize();
@@ -493,10 +552,10 @@ fn main() {
             },
             Event::MainEventsCleared => {
                 // limit the frame rate to 60 fps if the display support more than that
-                if last_frame_time.elapsed().as_micros() < 16667 {
-                    return;
+                if !display.fps.did_reach_target(60) {
+                    return ControlFlow::Poll;
                 }
-                last_frame_time = Instant::now();
+                display.fps.tick();
 
                 // if the debugger is enabled, we don't run the emulation
                 if !debugger.enabled() {
@@ -521,6 +580,6 @@ fn main() {
             debugger.run(&mut psx);
         }
 
-        *control_flow = ControlFlow::Poll;
+        ControlFlow::Poll
     });
 }
