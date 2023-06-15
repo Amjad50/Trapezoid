@@ -272,21 +272,18 @@ impl Dma {
             // 8 pixels in height
             let block_size = row_size * 8;
 
-            let offset;
-            match fifo_state.block_type {
+            let offset = match fifo_state.block_type {
                 mdec::BlockType::Y1 | mdec::BlockType::Y3 => {
                     let base_index = fifo_state.index as i32 / row_size;
-                    offset = base_index * row_size;
+                    base_index * row_size
                 }
                 mdec::BlockType::Y2 | mdec::BlockType::Y4 => {
                     let base_index = fifo_state.index as i32 / row_size;
-                    offset = base_index * row_size + row_size - block_size;
+                    base_index * row_size + row_size - block_size
                 }
-                mdec::BlockType::YCr => {
-                    offset = 0;
-                }
+                mdec::BlockType::YCr => 0,
                 _ => unreachable!(),
-            }
+            };
 
             // The location of the write, this is result of the re-ordering
             // of the MDEC blocks.
@@ -331,14 +328,14 @@ impl Dma {
                         let data = dma_bus.main_ram.read_u32(address);
                         dma_bus.gpu.write_u32(0, data);
                         // step
-                        address = (address as i32 + address_step as i32) as u32;
+                        address = (address as i32 + address_step) as u32;
                     }
                 } else {
                     for _ in 0..block_size {
                         let data = dma_bus.gpu.read_u32(0);
                         dma_bus.main_ram.write_u32(address, data);
                         // step
-                        address = (address as i32 + address_step as i32) as u32;
+                        address = (address as i32 + address_step) as u32;
                     }
                 }
 
@@ -511,7 +508,7 @@ impl Dma {
                 let data = dma_bus.main_ram.read_u32(address);
                 block.push(data);
                 // step
-                address = (address as i32 + address_step as i32) as u32;
+                address = (address as i32 + address_step) as u32;
             }
 
             dma_bus.spu.dma_write_buf(&block);
@@ -521,14 +518,14 @@ impl Dma {
             for data in block {
                 dma_bus.main_ram.write_u32(address, data);
                 // step
-                address = (address as i32 + address_step as i32) as u32;
+                address = (address as i32 + address_step) as u32;
             }
         }
 
         // sync mode 0, does everything in one go, and doesn't update the register
         // TODO: fix if we are in chopping
         if channel.channel_control.sync_mode() == 1 {
-            blocks = blocks - 1;
+            blocks -= 1;
 
             channel.block_control &= 0xFFFF;
             channel.block_control |= blocks << 16;
@@ -610,26 +607,35 @@ impl Dma {
         })
     }
 
-    /// Gets the channel to run based on priority
-    fn get_channel_to_run(&mut self) -> Option<(usize, &mut DmaChannel)> {
-        let mut highest_priority = 0b111 + 1;   // lowest priority is 0b111=7
+    /// Gets the channels to run based on priority, we are getting an array, so that if we couldn't
+    /// run the most important channel (because its not ready yet), we can run the next one.
+    fn get_channels_order_to_run(&self) -> Vec<usize> {
+        let mut enabled_channels: Vec<_> = self
+            .channels
+            .iter()
+            .enumerate()
+            .filter_map(|(i, channel)| {
+                let channel_enabled = (self.control >> (i * 4)) & 0b1000 != 0;
+                let priority = (self.control >> (i * 4)) & 0b111;
 
-        let mut result = None;
-
-        for (i, channel) in self.channels.iter_mut().enumerate().rev() {
-            let channel_enabled = (self.control >> (i * 4)) & 0b1000 != 0;
-            let priority = (self.control >> (i * 4)) & 0b111;
-
-            if channel_enabled && channel.channel_control.in_progress() {
-                // lower number is higher priority
-                if priority <= highest_priority {
-                    result = Some((i, channel));
-                    highest_priority = priority;
+                if channel_enabled && channel.channel_control.in_progress() {
+                    Some((i, priority))
+                } else {
+                    None
                 }
-            }
+            })
+            .collect();
+
+        if enabled_channels.is_empty() {
+            return Vec::new();
         }
 
-        result
+        // sort by priority
+        // high priority is 0, low priority is 7
+        // if the priority is the same, the channel with the highest index is run first
+        enabled_channels.sort_unstable_by_key(|(i, priority)| *priority as i32 * 100 - *i as i32);
+
+        enabled_channels.into_iter().map(|(i, _)| i).collect()
     }
 
     pub(super) fn clock_dma(
@@ -640,7 +646,9 @@ impl Dma {
         // record the number of cycles that are spent of the cpu
         let mut cpu_cycles = 0;
 
-        if let Some((i, channel)) = self.get_channel_to_run() {
+        let channels_to_run = self.get_channels_order_to_run();
+        for i in channels_to_run {
+            let channel = &mut self.channels[i];
             log::trace!("channel {} doing DMA", i);
 
             let (cycles_to_delay, finished) = match i {
@@ -654,6 +662,10 @@ impl Dma {
                 _ => unreachable!(),
             };
 
+            if cycles_to_delay == 0 {
+                continue;
+            }
+
             cpu_cycles = cycles_to_delay;
 
             // remove trigger afterwards, since some handlers might check
@@ -666,6 +678,7 @@ impl Dma {
                 channel.channel_control.finish_transfer();
                 self.interrupt.request_interrupt(i as u32);
             }
+            break;
         }
 
         let new_master_flag = self.interrupt.compute_irq_master_flag();
@@ -784,5 +797,68 @@ impl BusLine for Dma {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_channels_order_no_channels_enabled() {
+        let dma = Dma::default();
+        let channels_order = dma.get_channels_order_to_run();
+        assert_eq!(channels_order, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn get_channels_order_one_channel_enabled() {
+        let mut dma = Dma {
+            control: 0b0000_0000_0000_0000_0000_0000_0000_1000, // enable channel 0 with priority 0
+            ..Dma::default()
+        };
+        dma.channels[0].channel_control = ChannelControl::START_BUSY;
+        let channels_order = dma.get_channels_order_to_run();
+        assert_eq!(channels_order, vec![0]);
+    }
+
+    #[test]
+    fn get_channels_order_multiple_channels_enabled_same_priority() {
+        let mut dma = Dma {
+            control: 0b0000_0000_0000_0000_1000_1000_1000_1000, // enable channels 0, 1, 2, 3 with priority 0
+            ..Dma::default()
+        };
+        dma.channels[0].channel_control = ChannelControl::START_BUSY;
+        dma.channels[1].channel_control = ChannelControl::START_BUSY;
+        dma.channels[2].channel_control = ChannelControl::START_BUSY;
+        dma.channels[3].channel_control = ChannelControl::START_BUSY;
+        let channels_order = dma.get_channels_order_to_run();
+        assert_eq!(channels_order, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn get_channels_order_multiple_channels_enabled_different_priority() {
+        let mut dma = Dma {
+            control: 0b0000_0000_0000_0000_1010_1001_0000_0000, // enable channels 2 and 3 with priority 1 and 2
+            ..Dma::default()
+        };
+        dma.channels[2].channel_control = ChannelControl::START_BUSY;
+        dma.channels[3].channel_control = ChannelControl::START_BUSY;
+        let channels_order = dma.get_channels_order_to_run();
+        assert_eq!(channels_order, vec![2, 3]);
+    }
+
+    #[test]
+    fn get_channels_order_all_channels_enabled_different_priority() {
+        let mut dma = Dma {
+            control: 0b1111_1110_1101_1100_1011_1010_1001_1000, // enable all channels with reverse ordering
+            ..Dma::default()
+        };
+        for i in 0..7 {
+            dma.channels[i].channel_control = ChannelControl::START_BUSY;
+        }
+        let channels_order = dma.get_channels_order_to_run();
+
+        assert_eq!(channels_order, vec![0, 1, 2, 3, 4, 5, 6]);
     }
 }
