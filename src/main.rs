@@ -451,10 +451,9 @@ struct PsxEmuArgs {
     bios: PathBuf,
     /// The disk/exe file to run, without this, it will run the bios only
     disk_file: Option<PathBuf>,
-    /// Turn on window display (without this, it will only print the
-    /// logs to the console, which can be useful for testing)
-    #[arg(short, long)]
-    windowed: bool,
+    /// Turn off window display and run in headless mode
+    #[arg(short = 'e', long)]
+    headless: bool,
     /// Initial value for `display full vram`, can be changed later with [V] key
     #[arg(short, long)]
     vram: bool,
@@ -474,10 +473,10 @@ fn main() {
 
     let args = PsxEmuArgs::parse();
 
-    let display = if args.windowed {
-        VkDisplay::windowed(args.vram)
-    } else {
+    let display = if args.headless {
         VkDisplay::headless()
+    } else {
+        VkDisplay::windowed(args.vram)
     };
 
     let mut psx = Psx::new(
