@@ -917,9 +917,6 @@ impl BusLine for Spu {
             0x19A => (self.reverb_channel_mode_flag.get_all() >> 16) as u16,
             0x19C => self.endx_flag.get_all() as u16,
             0x19E => (self.endx_flag.get_all() >> 16) as u16,
-            0x180..=0x187 => todo!("u16 read spu control {:03X}", addr),
-            0x188..=0x19F => todo!("u16 read voice flags {:03X}", addr),
-            0x1A0 => unreachable!("u16 read unknown {:03X}", addr),
             0x1A2 => self.reverb_work_base,
             0x1A4 => (self.spu_ram.irq_address / 4) as u16,
             0x1A6 => self.ram_transfer_address,
@@ -932,9 +929,7 @@ impl BusLine for Spu {
             0x1B6 => self.external_vol_right,
             0x1B8 => self.current_main_vol_left as u16,
             0x1BA => self.current_main_vol_right as u16,
-            0x1A2..=0x1BF => todo!("u16 read spu  control {:03X}", addr),
             0x1C0..=0x1FE => self.reverb_config[(addr - 0x1C0) as usize / 2],
-            //0x1C0..=0x1FF => todo!("u16 read reverb configuration {:03X}", addr),
             0x200..=0x25E => {
                 let voice_idx = ((addr >> 2) & 23) as usize;
                 if addr & 0x2 == 0 {
@@ -943,7 +938,10 @@ impl BusLine for Spu {
                     self.voices[voice_idx].current_vol_right as u16
                 }
             }
-            0x260..=0x2FF => unreachable!("u16 read unknown {:03X}", addr),
+            0x1A0 | 0x1BC..=0x1BF | 0x260..=0x2FF => {
+                log::warn!("Reading from unknown register {:03X}, returning 0...", addr);
+                0
+            }
             _ => unreachable!(),
         }
     }
@@ -1126,7 +1124,6 @@ impl BusLine for Spu {
                 self.endx_flag
                     .bus_set_all((f & 0x0000FFFF) | ((data as u32) << 16));
             }
-            0x1A0 => unreachable!("u16 write unknown {:03X}", addr),
             0x1A2 => {
                 log::info!("reverb work area start = {:04X}", data);
                 self.reverb_work_base = data;
@@ -1165,7 +1162,7 @@ impl BusLine for Spu {
                 //let control_mode = (data >> 1) & 7;
                 //assert!(control_mode == 2);
             }
-            0x1AE => unreachable!("u16 write SpuStat is not supported"),
+            0x1AE => log::warn!("u16 write SpuStat is not supported, ignoring..."),
             0x1B0 => {
                 log::info!("cd volume left {:04X}", data);
                 self.cd_vol_left = data;
@@ -1176,13 +1173,18 @@ impl BusLine for Spu {
             }
             0x1B4 => self.external_vol_left = data,
             0x1B6 => self.external_vol_right = data,
-            0x1B8 | 0x1BA => unreachable!("u16 write current volume is not supported {:03X}", addr),
-            0x1A2..=0x1BF => todo!("u16 write spu  control {:03X}", addr),
+            0x1B8 => self.current_main_vol_left = data as i16,
+            0x1BA => self.current_main_vol_right = data as i16,
             0x1C0..=0x1FE => self.reverb_config[(addr - 0x1C0) as usize / 2] = data,
-            //0x1C0..=0x1FF => todo!("u16 write reverb configuration {:03X}", addr),
             // TODO: not sure if this is writable, since its internal current vol
             0x200..=0x25F => todo!("u16 write voice internal reg {:03X}", addr),
-            0x260..=0x2FF => unreachable!("u16 write unknown {:03X}", addr),
+            0x1A0 | 0x1BC..=0x1BF | 0x260..=0x2FF => {
+                log::warn!(
+                    "Writing value {:04X} to unknown register {:03X}, ignoring...",
+                    data,
+                    addr
+                )
+            }
             _ => unreachable!(),
         }
     }
