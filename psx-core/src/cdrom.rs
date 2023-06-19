@@ -1357,16 +1357,33 @@ impl Cdrom {
             // want data
             // this buffer should be set by Read commands
             if !self.read_data_buffer.is_empty() {
+                log::info!(
+                    "setting data fifo buffer, read buffer len={}",
+                    self.read_data_buffer.len()
+                );
                 self.data_fifo_buffer
                     .extend_from_slice(&self.read_data_buffer);
                 self.read_data_buffer.clear();
                 self.fifo_status.insert(FifosStatus::DATA_FIFO_NOT_EMPTY);
             }
-        } else {
-            log::info!("clearing data fifo buffer");
+            // This is a hack, as some games would clear and request the buffer 2 times for some reason,
+            // this would result in the buffer being empty, as it was cleared after being filled
+            // so, in that case, we will only clear the buffer if its going to be filled soon.
+            //
+            // FIXME: find a better solution, or find out why the game was doing that
+        } else if !self.read_data_buffer.is_empty() {
+            log::info!(
+                "clearing data fifo buffer, current data fifo len={}",
+                self.data_fifo_buffer.len()
+            );
             self.data_fifo_buffer_index = 0;
             self.data_fifo_buffer.clear();
             self.fifo_status.remove(FifosStatus::DATA_FIFO_NOT_EMPTY);
+        } else {
+            log::info!(
+                "data fifo buffer was not cleared, current data fifo len={}",
+                self.data_fifo_buffer.len()
+            );
         }
     }
 
