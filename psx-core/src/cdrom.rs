@@ -67,10 +67,17 @@ enum ActionStatus {
 struct CdromStatus {
     bit_status: BitCdromStatus,
     action_status: ActionStatus,
+    error: bool,
+    shell_open: bool,
 }
 
 impl CdromStatus {
     fn bits(&self) -> u8 {
+        if self.error {
+            // show errors only
+            return self.bit_status.bits() & 0b00011101;
+        }
+
         let action_bits = match self.action_status {
             ActionStatus::None => 0,
             ActionStatus::Read { .. } => 0b00100000,
@@ -78,6 +85,16 @@ impl CdromStatus {
             ActionStatus::Play => 0b10000000,
         };
         self.bit_status.bits() | action_bits
+    }
+
+    fn reset_errors_bits(&mut self) {
+        // did all errors cleared?
+        // TODO: support other errors
+        if !self.shell_open {
+            self.error = false;
+            self.bit_status
+                .remove(BitCdromStatus::SHELL_OPEN | BitCdromStatus::ERROR);
+        }
     }
 
     fn start_motor(&mut self) {
@@ -90,6 +107,26 @@ impl CdromStatus {
 
     fn reset_action_status(&mut self) {
         self.action_status = ActionStatus::None;
+    }
+
+    fn set_shell_open_state(&mut self, open: bool) {
+        self.shell_open = open;
+
+        // if its false, it will be reset by the next `GetStatus` command
+        if open {
+            self.bit_status.insert(BitCdromStatus::SHELL_OPEN);
+        }
+
+        self.set_error(open);
+    }
+
+    fn set_error(&mut self, error: bool) {
+        // if its false, it will be reset by the next `GetStatus` command
+        if error {
+            self.error = error;
+
+            self.bit_status.insert(BitCdromStatus::ERROR);
+        }
     }
 }
 
@@ -465,6 +502,11 @@ impl Cdrom {
         self.cue_file_content = cue_content;
         self.disk_data = bin_file_content;
     }
+
+    pub fn change_cdrom_shell_open_state(&mut self, open: bool) {
+        log::info!("CDROM shell open state: {}", open);
+        self.status.set_shell_open_state(open);
+    }
 }
 
 // clocking and commands
@@ -475,6 +517,14 @@ impl Cdrom {
         spu: &mut Spu,
         cycles: u32,
     ) {
+        if self.interrupt_flag & 7 == 0 && self.status.shell_open {
+            // shell is open, no commands can be executed
+            log::warn!("CDROM command ignored, shell is open");
+            self.set_response(self.status.bits());
+            self.request_interrupt_0_7(5);
+            return;
+        }
+
         if let Some(cmd) = self.command {
             self.handle_command(cycles, cmd);
         }
@@ -509,11 +559,12 @@ impl Cdrom {
             0x01 => {
                 // GetStat
                 log::info!("cdrom cmd: GetStat");
-                // TODO: handle errors
-                assert!(self.status.bits() & 0b101 == 0);
 
                 self.set_response(self.status.bits());
-                self.request_interrupt_0_7(3);
+                let interrupt_code = if self.status.error { 5 } else { 3 };
+                // must be done after accessing `error` field
+                self.status.reset_errors_bits();
+                self.request_interrupt_0_7(interrupt_code);
 
                 self.reset_command();
             }

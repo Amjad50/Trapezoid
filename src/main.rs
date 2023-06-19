@@ -491,6 +491,8 @@ fn main() {
     )
     .unwrap();
 
+    let mut shell_state_open = false;
+
     let mut debugger = Debugger::new();
 
     let mut audio_player = AudioPlayer::new(44100);
@@ -544,6 +546,10 @@ fn main() {
                                 debugger.set_enabled(true);
                             }
                             Some(VirtualKeyCode::V) => display.toggle_full_vram_display(),
+                            Some(VirtualKeyCode::RBracket) => {
+                                shell_state_open = !shell_state_open;
+                                psx.change_cdrom_shell_open_state(shell_state_open);
+                            }
                             _ => {}
                         }
                     }
