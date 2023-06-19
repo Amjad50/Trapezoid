@@ -1283,7 +1283,7 @@ impl GpuContext {
                 front_image.clone(),
                 topleft,
                 size,
-                gpu_stat.is_24bit_color_depth(),
+                !full_vram && gpu_stat.is_24bit_color_depth(),
                 self.gpu_future.take().unwrap(),
             )
             .then_signal_fence_and_flush()
