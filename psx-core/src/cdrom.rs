@@ -512,7 +512,7 @@ impl Cdrom {
                 // TODO: handle errors
                 assert!(self.status.bits() & 0b101 == 0);
 
-                self.write_to_response_fifo(self.status.bits());
+                self.set_response(self.status.bits());
                 self.request_interrupt_0_7(3);
 
                 self.reset_command();
@@ -531,7 +531,7 @@ impl Cdrom {
                 self.set_loc_params = Some(params);
 
                 log::info!("cdrom cmd: SetLoc({:?})", params);
-                self.write_to_response_fifo(self.status.bits());
+                self.set_response(self.status.bits());
                 self.request_interrupt_0_7(3);
 
                 self.reset_command();
@@ -547,7 +547,7 @@ impl Cdrom {
                     second_delivery_attempt: false,
                 };
 
-                self.write_to_response_fifo(self.status.bits());
+                self.set_response(self.status.bits());
                 self.request_interrupt_0_7(3);
 
                 self.read_play_delay_timer = if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
@@ -570,13 +570,13 @@ impl Cdrom {
                     self.status.stop_motor();
                     self.status.reset_action_status();
 
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(3);
                     // any data for now, just to proceed to SECOND
                     self.command_state = Some(0);
                 } else {
                     // SECOND
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(2);
                     self.reset_command();
                 }
@@ -591,13 +591,13 @@ impl Cdrom {
                     log::info!("cdrom cmd: Pause");
                     self.status.reset_action_status();
 
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(3);
                     // any data for now, just to proceed to SECOND
                     self.command_state = Some(0);
                 } else {
                     // SECOND
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(2);
                     self.reset_command();
                 }
@@ -631,14 +631,14 @@ impl Cdrom {
                     self.set_loc_params = None;
                     self.cursor_sector_position = 0;
 
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(3);
                     // any data for now, just to proceed to SECOND
                     self.command_state = Some(0);
                 } else {
                     // SECOND
 
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(2);
                     self.reset_command();
                 }
@@ -650,7 +650,7 @@ impl Cdrom {
 
                 self.cd_mute = true;
 
-                self.write_to_response_fifo(self.status.bits());
+                self.set_response(self.status.bits());
                 self.request_interrupt_0_7(3);
 
                 self.reset_command();
@@ -662,7 +662,7 @@ impl Cdrom {
 
                 self.cd_mute = false;
 
-                self.write_to_response_fifo(self.status.bits());
+                self.set_response(self.status.bits());
                 self.request_interrupt_0_7(3);
 
                 self.reset_command();
@@ -678,7 +678,7 @@ impl Cdrom {
                     self.filter_channel
                 );
 
-                self.write_to_response_fifo(self.status.bits());
+                self.set_response(self.status.bits());
                 self.request_interrupt_0_7(3);
 
                 self.reset_command();
@@ -689,7 +689,7 @@ impl Cdrom {
                 self.mode = CdromMode::from_bits_retain(self.read_next_parameter().unwrap());
                 log::info!("cdrom cmd: Setmode({:?})", self.mode);
 
-                self.write_to_response_fifo(self.status.bits());
+                self.set_response(self.status.bits());
                 self.request_interrupt_0_7(3);
 
                 self.reset_command();
@@ -709,7 +709,7 @@ impl Cdrom {
                 let minutes = total_seconds / 60;
                 let seconds = total_seconds % 60;
 
-                self.write_slice_to_response_fifo(&[
+                self.set_response_slice(&[
                     to_bcd(track),
                     to_bcd(index),
                     // track
@@ -734,7 +734,7 @@ impl Cdrom {
                 let first_track = 1;
                 let last_track = 1;
 
-                self.write_slice_to_response_fifo(&[
+                self.set_response_slice(&[
                     self.status.bits(),
                     to_bcd(first_track),
                     to_bcd(last_track),
@@ -768,7 +768,7 @@ impl Cdrom {
                     todo!("Doesn't support more than 1 track");
                 }
 
-                self.write_slice_to_response_fifo(&[
+                self.set_response_slice(&[
                     self.status.bits(),
                     to_bcd(res_minutes),
                     to_bcd(res_seconds),
@@ -791,13 +791,13 @@ impl Cdrom {
 
                     self.do_seek();
 
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(3);
                     // any data for now, just to proceed to SECOND
                     self.command_state = Some(0);
                 } else {
                     // SECOND
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(2);
                     self.reset_command();
                 }
@@ -811,13 +811,13 @@ impl Cdrom {
 
                     self.do_seek();
 
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(3);
                     // any data for now, just to proceed to SECOND
                     self.command_state = Some(0);
                 } else {
                     // SECOND
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(2);
                     self.reset_command();
                 }
@@ -836,7 +836,7 @@ impl Cdrom {
                 if self.command_state.is_none() {
                     // FIRST
                     log::info!("cdrom cmd: GetID");
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(3);
                     // any data for now, just to proceed to SECOND
                     self.command_state = Some(0);
@@ -855,7 +855,7 @@ impl Cdrom {
                         (&[0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 5)
                     };
 
-                    self.write_slice_to_response_fifo(response);
+                    self.set_response_slice(response);
                     self.request_interrupt_0_7(interrupt);
                     self.reset_command();
                 }
@@ -866,13 +866,13 @@ impl Cdrom {
                 if self.command_state.is_none() {
                     // FIRST
                     log::info!("cdrom cmd: GetToc");
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(3);
                     // any data for now, just to proceed to SECOND
                     self.command_state = Some(0);
                 } else {
                     // SECOND
-                    self.write_to_response_fifo(self.status.bits());
+                    self.set_response(self.status.bits());
                     self.request_interrupt_0_7(2);
                     self.reset_command();
                 }
@@ -1010,7 +1010,7 @@ impl Cdrom {
                 *second_delivery_attempt = false;
                 sector_read = true;
 
-                self.write_to_response_fifo(self.status.bits());
+                self.set_response(self.status.bits());
                 self.request_interrupt_0_7(1);
             } else {
                 // set the second delivery attempt flag, so that next time we perform the
@@ -1131,7 +1131,7 @@ impl Cdrom {
     fn execute_test(&mut self, test_code: u8) {
         match test_code {
             0x20 => {
-                self.write_slice_to_response_fifo(&[0x99u8, 0x02, 0x01, 0xC3]);
+                self.set_response_slice(&[0x99u8, 0x02, 0x01, 0xC3]);
                 self.request_interrupt_0_7(3);
             }
             _ => todo!(),
@@ -1176,6 +1176,7 @@ impl Cdrom {
         self.command = None;
         self.command_delay_timer = 0;
         self.command_state = None;
+        self.parameter_fifo.clear();
         self.fifo_status.remove(FifosStatus::BUSY);
     }
 }
@@ -1247,36 +1248,37 @@ impl Cdrom {
         out
     }
 
-    fn write_to_response_fifo(&mut self, data: u8) {
-        if self.response_fifo.is_empty() {
-            self.fifo_status
-                .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
-        }
+    fn set_response(&mut self, data: u8) {
         log::info!("writing to response fifo={:02X}", data);
-
+        // override the current response if any
+        self.response_fifo.clear();
         self.response_fifo.push_back(data);
+        self.fifo_status
+            .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
     }
 
-    fn write_slice_to_response_fifo(&mut self, data: &[u8]) {
-        if self.response_fifo.is_empty() {
-            self.fifo_status
-                .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
-        }
+    fn set_response_slice(&mut self, data: &[u8]) {
         log::info!("writing to response fifo={:02X?}", data);
-
+        // override the current response if any
+        self.response_fifo.clear();
         self.response_fifo.extend(data);
+        self.fifo_status
+            .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
     }
 
     fn read_next_response(&mut self) -> u8 {
         let out = self.response_fifo.pop_front();
+
+        log::info!("reading from response fifo={:02X?}", out);
 
         if self.response_fifo.is_empty() {
             self.fifo_status
                 .remove(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
         }
 
-        // TODO: handle reading while being empty
-        out.unwrap()
+        // Pad with 0x00, until the size of 16 bytes
+        // TODO: currently, the fifo buffer is kinda infinite, so need to be limited to 16 bytes
+        out.unwrap_or(0)
     }
 
     fn request_interrupt_0_7(&mut self, int_value: u8) {
