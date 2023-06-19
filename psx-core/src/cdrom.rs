@@ -1131,10 +1131,22 @@ impl Cdrom {
     fn execute_test(&mut self, test_code: u8) {
         match test_code {
             0x20 => {
+                // Get the CD-ROM hardware version
                 self.set_response_slice(&[0x99u8, 0x02, 0x01, 0xC3]);
                 self.request_interrupt_0_7(3);
             }
-            _ => todo!(),
+            0x04 | 0x05 => {
+                // Read SCEx strings
+                // Get SCEx counters
+                //
+                // This is how the hardware worked, normally, the `Get counters` command
+                // will return the (total, success) counters for the SCEx strings found in the
+                // Lead-In area of the CD-ROM.
+                // But not sure how, returning just the `Status` register works.
+                self.set_response(self.status.bits());
+                self.request_interrupt_0_7(3);
+            }
+            _ => todo!("Test code {:02X}", test_code),
         }
     }
 
