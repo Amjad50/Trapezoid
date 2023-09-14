@@ -18,7 +18,7 @@ use std::{
 
 use cpu::RegisterType;
 pub use memory::hw_registers::HW_REGISTERS;
-use memory::{Bios, BusLine, CpuBus};
+use memory::{Bios, BusLine, CpuBus, Result};
 
 pub use controller_mem_card::DigitalControllerKey;
 use vulkano::{
@@ -267,25 +267,24 @@ impl Psx {
         &mut self.cpu
     }
 
-    pub fn bus_read_u32(&mut self, addr: u32) -> Option<u32> {
+    pub fn bus_read_u32(&mut self, addr: u32) -> Result<u32> {
         // make sure its aligned
         if addr % 4 != 0 {
-            return None;
+            return Err("Unaligned memory access".to_string());
         }
-        // TODO: make `read_u32` return Option
-        Some(self.bus.read_u32(addr))
+        self.bus.read_u32(addr)
     }
 
-    pub fn bus_read_u16(&mut self, addr: u32) -> Option<u16> {
+    pub fn bus_read_u16(&mut self, addr: u32) -> Result<u16> {
         // make sure its aligned
         if addr % 2 != 0 {
-            return None;
+            return Err("Unaligned memory access".to_string());
         }
 
-        Some(self.bus.read_u16(addr))
+        self.bus.read_u16(addr)
     }
 
-    pub fn bus_read_u8(&mut self, addr: u32) -> Option<u8> {
-        Some(self.bus.read_u8(addr))
+    pub fn bus_read_u8(&mut self, addr: u32) -> Result<u8> {
+        self.bus.read_u8(addr)
     }
 }

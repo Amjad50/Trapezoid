@@ -28,15 +28,17 @@ use interrupts::Interrupts;
 use memory_control::{CacheControl, MemoryControl1, MemoryControl2};
 use ram::{MainRam, Scratchpad};
 
+pub type Result<T, E = String> = std::result::Result<T, E>;
+
 pub trait BusLine {
-    fn read_u32(&mut self, addr: u32) -> u32;
-    fn write_u32(&mut self, addr: u32, data: u32);
+    fn read_u32(&mut self, addr: u32) -> Result<u32>;
+    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()>;
 
-    fn read_u16(&mut self, addr: u32) -> u16;
-    fn write_u16(&mut self, addr: u32, data: u16);
+    fn read_u16(&mut self, addr: u32) -> Result<u16>;
+    fn write_u16(&mut self, addr: u32, data: u16) -> Result<()>;
 
-    fn read_u8(&mut self, addr: u32) -> u8;
-    fn write_u8(&mut self, addr: u32, data: u8);
+    fn read_u8(&mut self, addr: u32) -> Result<u8>;
+    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()>;
 }
 
 pub struct Bios {
@@ -54,7 +56,9 @@ impl Bios {
         // patch to support TTY
         // the BIOS by default hardcode disable the TTY driver, here we change it
         // from writing 0 to 1 in order to enable the driver load
-        if self.read_u32(0x6f0c) == 0x3C01A001 && self.read_u32(0x6f14) == 0xAC20B9B0 {
+        if self.read_u32(0x6f0c).unwrap() == 0x3C01A001
+            && self.read_u32(0x6f14).unwrap() == 0xAC20B9B0
+        {
             self.write_u32(0x6f0c, 0x34010001);
             self.write_u32(0x6f14, 0xAF81A9C0);
         }
@@ -82,9 +86,9 @@ impl Bios {
         // to the `save_input_and_continue` address. It was also tested, switches
         // in the controller works without any problems and the BIOS can read
         // the keys, only the blinking is fixed.
-        if self.read_u32(0x14330) == 0x92200000
-            && self.read_u32(0x14334) == 0x10000047
-            && self.read_u32(0x14338) == 0x8fae0040
+        if self.read_u32(0x14330).unwrap() == 0x92200000
+            && self.read_u32(0x14334).unwrap() == 0x10000047
+            && self.read_u32(0x14338).unwrap() == 0x8fae0040
         {
             self.write_u32(0x14330, 0x00000000);
             self.write_u32(0x14334, 0x10000006);
@@ -109,22 +113,22 @@ impl Bios {
         Ok(s)
     }
 
-    pub fn read_u32(&self, addr: u32) -> u32 {
+    pub fn read_u32(&self, addr: u32) -> Result<u32> {
         let index = (addr & 0xFFFFF) as usize;
 
-        LittleEndian::read_u32(&self.data[index..index + 4])
+        Ok(LittleEndian::read_u32(&self.data[index..index + 4]))
     }
 
-    pub fn read_u16(&self, addr: u32) -> u16 {
+    pub fn read_u16(&self, addr: u32) -> Result<u16> {
         let index = (addr & 0xFFFFF) as usize;
 
-        LittleEndian::read_u16(&self.data[index..index + 4])
+        Ok(LittleEndian::read_u16(&self.data[index..index + 4]))
     }
 
-    pub fn read_u8(&self, addr: u32) -> u8 {
+    pub fn read_u8(&self, addr: u32) -> Result<u8> {
         let index = (addr & 0xFFFFF) as usize;
 
-        self.data[index]
+        Ok(self.data[index])
     }
 }
 
@@ -323,7 +327,7 @@ impl CpuBus {
 }
 
 impl BusLine for CpuBus {
-    fn read_u32(&mut self, addr: u32) -> u32 {
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
         assert!(addr % 4 == 0, "unalligned u32 read");
         match addr {
             // TODO: implement I-cache isolation properly
@@ -349,7 +353,7 @@ impl BusLine for CpuBus {
         }
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
+    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()> {
         assert!(addr % 4 == 0, "unalligned u32 write");
 
         match addr {
@@ -372,7 +376,7 @@ impl BusLine for CpuBus {
         }
     }
 
-    fn read_u16(&mut self, addr: u32) -> u16 {
+    fn read_u16(&mut self, addr: u32) -> Result<u16> {
         assert!(addr % 2 == 0, "unalligned u16 read");
 
         match addr {
@@ -392,7 +396,7 @@ impl BusLine for CpuBus {
         }
     }
 
-    fn write_u16(&mut self, addr: u32, data: u16) {
+    fn write_u16(&mut self, addr: u32, data: u16) -> Result<()> {
         assert!(addr % 2 == 0, "unalligned u16 write");
 
         match addr {
@@ -410,7 +414,7 @@ impl BusLine for CpuBus {
             }
         }
     }
-    fn read_u8(&mut self, addr: u32) -> u8 {
+    fn read_u8(&mut self, addr: u32) -> Result<u8> {
         match addr {
             0x00000000..=0x007FFFFF => self.dma_bus.main_ram.read_u8(addr & 0x1FFFFF),
             0x80000000..=0x807FFFFF => self.dma_bus.main_ram.read_u8(addr & 0x1FFFFF),
@@ -429,7 +433,7 @@ impl BusLine for CpuBus {
         }
     }
 
-    fn write_u8(&mut self, addr: u32, data: u8) {
+    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()> {
         match addr {
             0x00000000..=0x007FFFFF => self.dma_bus.main_ram.write_u8(addr & 0x1FFFFF, data),
             0x80000000..=0x807FFFFF => self.dma_bus.main_ram.write_u8(addr & 0x1FFFFF, data),

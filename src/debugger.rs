@@ -331,10 +331,10 @@ impl Debugger {
                 println!("Stack: SP=0x{:08X}", sp);
                 for i in 0..n {
                     let d = psx.bus_read_u32(sp + i * 4);
-                    if let Some(d) = d {
+                    if let Ok(d) = d {
                         println!("    {:08X}", d);
                     } else {
-                        println!("    <invalid address>, must be 32bit aligned");
+                        println!("    Error reading {:08X}: {:?}", sp + i * 4, d);
                         break;
                     }
                 }
@@ -423,10 +423,10 @@ impl Debugger {
                     for i in 0..count {
                         let addr = addr + i * 4;
                         let val = psx.bus_read_u32(addr);
-                        if let Some(val) = val {
+                        if let Ok(val) = val {
                             println!("0x{:08X}: 0x{:08X}", addr, val);
                         } else {
-                            println!("Invalid address, must be 32bit aligned");
+                            println!("Error reading u32 {:08X}: {:?}", addr, val);
                             break;
                         }
                     }
@@ -440,10 +440,10 @@ impl Debugger {
                     for i in 0..count {
                         let addr = addr + i * 2;
                         let val = psx.bus_read_u16(addr);
-                        if let Some(val) = val {
+                        if let Ok(val) = val {
                             println!("0x{:08X}: 0x{:04X}", addr, val);
                         } else {
-                            println!("Invalid address, must be 16bit aligned");
+                            println!("Error reading u16 {:08X}: {:?}", addr, val);
                             break;
                         }
                     }
@@ -475,7 +475,7 @@ impl Debugger {
                 let addr = addr.unwrap_or(psx.cpu().registers().read(RegisterType::Pc));
 
                 let previous_instr_d = psx.bus_read_u32(addr - 4);
-                if let Some(previous_instr_d) = previous_instr_d {
+                if let Ok(previous_instr_d) = previous_instr_d {
                     let mut previous_instr = Instruction::from_u32(previous_instr_d, addr - 4);
 
                     for i in 0..count {
@@ -492,7 +492,7 @@ impl Debugger {
                         previous_instr = instr;
                     }
                 } else {
-                    println!("Invalid address, must be 32bit aligned");
+                    println!("Error reading u32 {:08X}: {:?}", addr - 4, previous_instr_d);
                 }
             }
             "hook_add" => {

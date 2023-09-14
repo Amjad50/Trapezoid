@@ -106,7 +106,7 @@ impl Debugger {
             }
 
             // PC is always word aligned
-            let instr = bus.read_u32(regs.pc - offset);
+            let instr = bus.read_u32(regs.pc - offset).unwrap();
             let instr = Instruction::from_u32(instr, regs.pc);
 
             // check that the instruction we are about to execute is `Jal/r`

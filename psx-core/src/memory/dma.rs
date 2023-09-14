@@ -1,4 +1,5 @@
 use crate::mdec;
+use crate::memory::Result;
 
 use super::interrupts::InterruptRequester;
 use super::BusLine;
@@ -196,9 +197,9 @@ impl Dma {
         let mut address = channel.base_address & 0xFFFFFC;
 
         for _ in 0..block_size {
-            let data = dma_bus.main_ram.read_u32(address);
+            let data = dma_bus.main_ram.read_u32(address).unwrap();
             // TODO: write to params directly
-            dma_bus.mdec.write_u32(0, data);
+            dma_bus.mdec.write_u32(0, data).unwrap();
 
             // step
             address += 4;
@@ -288,7 +289,7 @@ impl Dma {
             // The location of the write, this is result of the re-ordering
             // of the MDEC blocks.
             let effective_address = (address as i32 + (offset * 4)) as u32;
-            dma_bus.main_ram.write_u32(effective_address, data);
+            dma_bus.main_ram.write_u32(effective_address, data).unwrap();
 
             // step
             address += 4;
@@ -325,15 +326,15 @@ impl Dma {
 
                 if direction_from_main_ram {
                     for _ in 0..block_size {
-                        let data = dma_bus.main_ram.read_u32(address);
-                        dma_bus.gpu.write_u32(0, data);
+                        let data = dma_bus.main_ram.read_u32(address).unwrap();
+                        dma_bus.gpu.write_u32(0, data).unwrap();
                         // step
                         address = (address as i32 + address_step) as u32;
                     }
                 } else {
                     for _ in 0..block_size {
-                        let data = dma_bus.gpu.read_u32(0);
-                        dma_bus.main_ram.write_u32(address, data);
+                        let data = dma_bus.gpu.read_u32(0).unwrap();
+                        dma_bus.main_ram.write_u32(address, data).unwrap();
                         // step
                         address = (address as i32 + address_step) as u32;
                     }
@@ -352,7 +353,7 @@ impl Dma {
                 assert!(channel.channel_control.address_step() == 4);
                 let mut linked_entry_addr = channel.base_address & 0xFFFFFC;
 
-                let mut linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr);
+                let mut linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr).unwrap();
                 let mut n_entries = linked_list_data >> 24;
                 // make sure the GPU can handle this entry
                 log::info!(
@@ -368,7 +369,7 @@ impl Dma {
 
                 while n_entries == 0 && linked_list_data & 0xFFFFFF != 0xFFFFFF {
                     linked_entry_addr = linked_list_data & 0xFFFFFC;
-                    linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr);
+                    linked_list_data = dma_bus.main_ram.read_u32(linked_entry_addr).unwrap();
                     n_entries = linked_list_data >> 24;
 
                     if n_entries != 0 {
@@ -387,10 +388,13 @@ impl Dma {
                 }
 
                 for i in 1..(n_entries + 1) {
-                    let cmd = dma_bus.main_ram.read_u32(linked_entry_addr + i * 4);
+                    let cmd = dma_bus
+                        .main_ram
+                        .read_u32(linked_entry_addr + i * 4)
+                        .unwrap();
                     // gp0 command
                     // TODO: make sure that `gp1(04h)` is set to 2
-                    dma_bus.gpu.write_u32(0, cmd);
+                    dma_bus.gpu.write_u32(0, cmd).unwrap();
                 }
 
                 channel.base_address = linked_list_data & 0xFFFFFF;
@@ -446,12 +450,12 @@ impl Dma {
         for _ in 0..block_size {
             // DATA FIFO
             // read u32
-            let mut data = dma_bus.cdrom.read_u8(2) as u32;
-            data |= (dma_bus.cdrom.read_u8(2) as u32) << 8;
-            data |= (dma_bus.cdrom.read_u8(2) as u32) << 16;
-            data |= (dma_bus.cdrom.read_u8(2) as u32) << 24;
+            let mut data = dma_bus.cdrom.read_u8(2).unwrap() as u32;
+            data |= (dma_bus.cdrom.read_u8(2).unwrap() as u32) << 8;
+            data |= (dma_bus.cdrom.read_u8(2).unwrap() as u32) << 16;
+            data |= (dma_bus.cdrom.read_u8(2).unwrap() as u32) << 24;
 
-            dma_bus.main_ram.write_u32(address, data);
+            dma_bus.main_ram.write_u32(address, data).unwrap();
 
             // step
             address += 4;
@@ -505,7 +509,7 @@ impl Dma {
         if direction_from_main_ram {
             let mut block = Vec::with_capacity(block_size as usize);
             for _ in 0..block_size {
-                let data = dma_bus.main_ram.read_u32(address);
+                let data = dma_bus.main_ram.read_u32(address).unwrap();
                 block.push(data);
                 // step
                 address = (address as i32 + address_step) as u32;
@@ -516,7 +520,7 @@ impl Dma {
             let block = dma_bus.spu.dma_read_buf(block_size as usize);
 
             for data in block {
-                dma_bus.main_ram.write_u32(address, data);
+                dma_bus.main_ram.write_u32(address, data).unwrap();
                 // step
                 address = (address as i32 + address_step) as u32;
             }
@@ -584,10 +588,10 @@ impl Dma {
         for _ in 0..(n_entries - 1) {
             let next = current - 4;
             // write a pointer to the next address
-            dma_bus.main_ram.write_u32(current, next);
+            dma_bus.main_ram.write_u32(current, next).unwrap();
             current = next;
         }
-        dma_bus.main_ram.write_u32(current, 0xFFFFFF);
+        dma_bus.main_ram.write_u32(current, 0xFFFFFF).unwrap();
 
         if chopping {
             channel.block_control = 0;
@@ -695,8 +699,8 @@ impl Dma {
 }
 
 impl BusLine for Dma {
-    fn read_u32(&mut self, addr: u32) -> u32 {
-        match addr {
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
+        let r = match addr {
             0x80..=0xEF => {
                 let channel_index = (addr >> 4) - 8;
                 log::info!("DMA, reading from channel {}", channel_index);
@@ -705,10 +709,11 @@ impl BusLine for Dma {
             0xF0 => self.control,
             0xF4 => self.interrupt.bits(),
             _ => unreachable!(),
-        }
+        };
+        Ok(r)
     }
 
-    fn write_u32(&mut self, addr: u32, mut data: u32) {
+    fn write_u32(&mut self, addr: u32, mut data: u32) -> Result<()> {
         match addr {
             0x80..=0xEF => {
                 let channel_index = (addr >> 4) - 8;
@@ -755,37 +760,39 @@ impl BusLine for Dma {
             }
             _ => unreachable!(),
         }
+
+        Ok(())
     }
 
-    fn read_u16(&mut self, _addr: u32) -> u16 {
+    fn read_u16(&mut self, _addr: u32) -> Result<u16> {
         todo!()
     }
 
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
+    fn write_u16(&mut self, _addr: u32, _data: u16) -> Result<()> {
         todo!()
     }
 
-    fn read_u8(&mut self, addr: u32) -> u8 {
-        let u32_data = self.read_u32(addr & 0xFFFFFFFC);
+    fn read_u8(&mut self, addr: u32) -> Result<u8> {
+        let u32_data = self.read_u32(addr & 0xFFFFFFFC)?;
         let shift = (addr & 3) * 8;
 
-        ((u32_data >> shift) & 0xFF) as u8
+        Ok(((u32_data >> shift) & 0xFF) as u8)
     }
 
-    fn write_u8(&mut self, addr: u32, data: u8) {
+    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()> {
         match addr {
             // most register, and interrupt flags
             0x80..=0xF3 | 0xF7 => {
                 let aligned_addr = addr & 0xFFFFFFFC;
-                let current_u32 = self.read_u32(aligned_addr);
+                let current_u32 = self.read_u32(aligned_addr)?;
                 let shift = (addr & 3) * 8;
                 let new_u32 = (current_u32 & !(0xFF << shift)) | ((data as u32) << shift);
-                self.write_u32(aligned_addr, new_u32)
+                self.write_u32(aligned_addr, new_u32)?;
             }
             // the lower section of the interrrupt register
             // is special becasue we don't want to reset interrupts.
             0xF4..=0xF6 => {
-                let current_u32 = self.read_u32(0xF4);
+                let current_u32 = self.read_u32(0xF4)?;
                 let shift = (addr & 3) * 8;
                 let new_u32 = (current_u32 & !(0xFF << shift)) | ((data as u32) << shift);
 
@@ -793,10 +800,11 @@ impl BusLine for Dma {
                 // and we don't want that if there is already interrupts
                 // so we convert them to 0
                 let new_u32 = new_u32 & !0xFF000000;
-                self.write_u32(0xF4, new_u32)
+                self.write_u32(0xF4, new_u32)?;
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
 }
 

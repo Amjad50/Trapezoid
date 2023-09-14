@@ -3,7 +3,7 @@ mod front_blit;
 mod gpu_backend;
 mod gpu_context;
 
-use crate::memory::{interrupts::InterruptRequester, BusLine};
+use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 use gpu_backend::GpuBackend;
 
@@ -707,15 +707,16 @@ impl Gpu {
 }
 
 impl BusLine for Gpu {
-    fn read_u32(&mut self, addr: u32) -> u32 {
-        match addr {
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
+        let r = match addr {
             0 => self.gpu_read(),
             4 => self.read_gpu_stat(),
             _ => unreachable!(),
-        }
+        };
+        Ok(r)
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
+    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()> {
         match addr {
             0 => {
                 self.handle_gp0(data);
@@ -725,21 +726,22 @@ impl BusLine for Gpu {
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
 
-    fn read_u16(&mut self, _addr: u32) -> u16 {
+    fn read_u16(&mut self, _addr: u32) -> Result<u16> {
         todo!()
     }
 
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
+    fn write_u16(&mut self, _addr: u32, _data: u16) -> Result<()> {
         todo!()
     }
 
-    fn read_u8(&mut self, _addr: u32) -> u8 {
+    fn read_u8(&mut self, _addr: u32) -> Result<u8> {
         todo!()
     }
 
-    fn write_u8(&mut self, _addr: u32, _data: u8) {
+    fn write_u8(&mut self, _addr: u32, _data: u8) -> Result<()> {
         todo!()
     }
 }

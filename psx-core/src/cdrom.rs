@@ -1,5 +1,5 @@
 use crate::{
-    memory::{interrupts::InterruptRequester, BusLine},
+    memory::{interrupts::InterruptRequester, BusLine, Result},
     spu::Spu,
 };
 use bitflags::bitflags;
@@ -1402,26 +1402,26 @@ impl Cdrom {
 }
 
 impl BusLine for Cdrom {
-    fn read_u32(&mut self, _addr: u32) -> u32 {
+    fn read_u32(&mut self, _addr: u32) -> Result<u32> {
         todo!()
     }
 
-    fn write_u32(&mut self, _addr: u32, _data: u32) {
+    fn write_u32(&mut self, _addr: u32, _data: u32) -> Result<()> {
         todo!()
     }
 
-    fn read_u16(&mut self, addr: u32) -> u16 {
+    fn read_u16(&mut self, addr: u32) -> Result<u16> {
         assert!(addr == 2);
 
         todo!()
     }
 
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
+    fn write_u16(&mut self, _addr: u32, _data: u16) -> Result<()> {
         todo!()
     }
 
-    fn read_u8(&mut self, addr: u32) -> u8 {
-        match addr {
+    fn read_u8(&mut self, addr: u32) -> Result<u8> {
+        let r = match addr {
             0 => self.read_index_status(),
             1 => self.read_next_response(),
             2 => self.read_next_data_fifo(),
@@ -1431,10 +1431,11 @@ impl BusLine for Cdrom {
                 _ => unreachable!(),
             },
             _ => unreachable!(),
-        }
+        };
+        Ok(r)
     }
 
-    fn write_u8(&mut self, addr: u32, data: u8) {
+    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()> {
         match addr {
             0 => {
                 self.index = data & 3;
@@ -1491,5 +1492,7 @@ impl BusLine for Cdrom {
             },
             _ => unreachable!(),
         }
+
+        Ok(())
     }
 }
