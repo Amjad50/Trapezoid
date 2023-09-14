@@ -237,6 +237,10 @@ impl CpuBus {
     pub fn spu_mut(&mut self) -> &mut Spu {
         &mut self.dma_bus.spu
     }
+
+    pub fn cdrom_mut(&mut self) -> &mut Cdrom {
+        &mut self.dma_bus.cdrom
+    }
 }
 
 impl CpuBus {

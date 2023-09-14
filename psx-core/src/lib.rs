@@ -241,6 +241,10 @@ impl Psx {
             .change_controller_key_state(key, pressed);
     }
 
+    pub fn change_cdrom_shell_open_state(&mut self, open: bool) {
+        self.bus.cdrom_mut().change_cdrom_shell_open_state(open);
+    }
+
     pub fn blit_to_front<D>(
         &mut self,
         dest_image: Arc<D>,

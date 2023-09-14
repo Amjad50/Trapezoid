@@ -12,7 +12,13 @@ use std::{
 };
 
 const CDROM_COMMAND_DEFAULT_DELAY: u32 = 0x1100;
-const CDROM_READ_COMMAND_DELAY: u32 = 0x6AA00;
+// This is to achive 75 sectors per second
+// Which is calculated as 33868800 (CPU CYCLES) / 75
+// because the default delay is always used, we subtract it from the delay needed
+// to get the final delay
+//
+// Reduced a bit with 0x2000, audio felt a bit jagged with the original delay
+const CDROM_READ_PLAY_DELAY: u32 = 0x6e400 - 0x2000;
 
 bitflags! {
     #[derive(Default)]
@@ -33,15 +39,94 @@ bitflags! {
 
 bitflags! {
     #[derive(Default, Debug)]
-    struct CdromStatus: u8 {
+    struct BitCdromStatus: u8 {
         const ERROR        = 0b00000001;
         const MOTOR_ON     = 0b00000010;
         const SEEK_ERROR   = 0b00000100;
         const GETID_ERROR  = 0b00001000;
         const SHELL_OPEN   = 0b00010000;
-        const READING_DATA = 0b00100000;
-        const SEEKING      = 0b01000000;
-        const PLAYING      = 0b10000000;
+        // const READING_DATA = 0b00100000;
+        // const SEEKING      = 0b01000000;
+        // const PLAYING      = 0b10000000;
+    }
+}
+
+/// Weither the Cdrom is `Reading`, `Seeking`, or `Playing`
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum ActionStatus {
+    #[default]
+    None,
+    Read {
+        second_delivery_attempt: bool,
+    },
+    Seek,
+    Play,
+}
+
+#[derive(Default, Debug)]
+struct CdromStatus {
+    bit_status: BitCdromStatus,
+    action_status: ActionStatus,
+    error: bool,
+    shell_open: bool,
+}
+
+impl CdromStatus {
+    fn bits(&self) -> u8 {
+        if self.error {
+            // show errors only
+            return self.bit_status.bits() & 0b00011101;
+        }
+
+        let action_bits = match self.action_status {
+            ActionStatus::None => 0,
+            ActionStatus::Read { .. } => 0b00100000,
+            ActionStatus::Seek => 0b01000000,
+            ActionStatus::Play => 0b10000000,
+        };
+        self.bit_status.bits() | action_bits
+    }
+
+    fn reset_errors_bits(&mut self) {
+        // did all errors cleared?
+        // TODO: support other errors
+        if !self.shell_open {
+            self.error = false;
+            self.bit_status
+                .remove(BitCdromStatus::SHELL_OPEN | BitCdromStatus::ERROR);
+        }
+    }
+
+    fn start_motor(&mut self) {
+        self.bit_status.insert(BitCdromStatus::MOTOR_ON);
+    }
+
+    fn stop_motor(&mut self) {
+        self.bit_status.remove(BitCdromStatus::MOTOR_ON);
+    }
+
+    fn reset_action_status(&mut self) {
+        self.action_status = ActionStatus::None;
+    }
+
+    fn set_shell_open_state(&mut self, open: bool) {
+        self.shell_open = open;
+
+        // if its false, it will be reset by the next `GetStatus` command
+        if open {
+            self.bit_status.insert(BitCdromStatus::SHELL_OPEN);
+        }
+
+        self.set_error(open);
+    }
+
+    fn set_error(&mut self, error: bool) {
+        // if its false, it will be reset by the next `GetStatus` command
+        if error {
+            self.error = error;
+
+            self.bit_status.insert(BitCdromStatus::ERROR);
+        }
     }
 }
 
@@ -272,6 +357,8 @@ pub struct Cdrom {
     /// This is needed because the bios is not designed to receive interrupt
     /// immediately after the command starts, so this is just a mitigation.
     command_delay_timer: u32,
+    /// Timer to control how fast we are reading from the cdrom
+    read_play_delay_timer: u32,
     /// A way to be able to execute a command through more than one cycle,
     /// The type and design might change later
     command_state: Option<u8>,
@@ -313,6 +400,7 @@ pub struct Cdrom {
     vol_cd_right_to_spu_right: u8,
 
     adpcm_mute: bool,
+    cd_mute: bool,
 }
 
 impl Default for Cdrom {
@@ -320,13 +408,14 @@ impl Default for Cdrom {
         Self {
             index: 0,
             fifo_status: FifosStatus::PARAMETER_FIFO_EMPTY | FifosStatus::PARAMETER_FIFO_NOT_FULL,
-            status: CdromStatus::empty(),
+            status: CdromStatus::default(),
             interrupt_enable: 0,
             interrupt_flag: 0,
             parameter_fifo: VecDeque::new(),
             response_fifo: VecDeque::new(),
             command: None,
             command_delay_timer: 0,
+            read_play_delay_timer: 0,
             command_state: None,
             cue_file: None,
             // empty vectors are not allocated
@@ -361,6 +450,7 @@ impl Default for Cdrom {
             vol_cd_right_to_spu_right: 0,
 
             adpcm_mute: false,
+            cd_mute: true,
         }
     }
 }
@@ -376,8 +466,7 @@ impl Cdrom {
     fn load_cue_file(&mut self, cue_file: &Path) {
         // TODO: support parsing and loading the data based on the cue file
         // TODO: since some Cds can be large, try to do mmap
-        // start motor
-        self.status.insert(CdromStatus::MOTOR_ON);
+        self.status.start_motor();
 
         // read cue file
         let mut file = fs::File::open(cue_file).unwrap();
@@ -413,6 +502,11 @@ impl Cdrom {
         self.cue_file_content = cue_content;
         self.disk_data = bin_file_content;
     }
+
+    pub fn change_cdrom_shell_open_state(&mut self, open: bool) {
+        log::info!("CDROM shell open state: {}", open);
+        self.status.set_shell_open_state(open);
+    }
 }
 
 // clocking and commands
@@ -423,437 +517,579 @@ impl Cdrom {
         spu: &mut Spu,
         cycles: u32,
     ) {
+        if self.interrupt_flag & 7 == 0 && self.status.shell_open {
+            // shell is open, no commands can be executed
+            log::warn!("CDROM command ignored, shell is open");
+            self.set_response(self.status.bits());
+            self.request_interrupt_0_7(5);
+            return;
+        }
+
+        if let Some(cmd) = self.command {
+            self.handle_command(cycles, cmd);
+        }
+
+        if self.interrupt_flag & 7 == 0 {
+            self.handle_reading_data(cycles, spu);
+        }
+
+        // fire irq only if the interrupt is enabled
+        if self.interrupt_flag & self.interrupt_enable != 0 {
+            interrupt_requester.request_cdrom();
+        }
+    }
+
+    fn handle_command(&mut self, cycles: u32, cmd: u8) {
+        // delay (this applies for all parts of the command)
+        // If no delay is needed, it can be reset from the command itself
+        if self.command_delay_timer > cycles + 1 {
+            self.command_delay_timer -= cycles;
+            return;
+        }
+
         if self.interrupt_flag & 7 != 0 {
             // pending interrupts, waiting for acknowledgement
             return;
         }
-        if let Some(cmd) = self.command {
-            // delay (this applies for all parts of the command)
-            // If no delay is needed, it can be reset from the command itself
-            if self.command_delay_timer > cycles + 1 {
-                self.command_delay_timer -= cycles;
-                return;
+
+        // reset the timer here, so that if a command needs to change the value
+        // it can do so
+        self.command_delay_timer = CDROM_COMMAND_DEFAULT_DELAY;
+        // every command starts the motor (if its not already on)
+        self.status.start_motor();
+        match cmd {
+            0x01 => {
+                // GetStat
+                log::info!("cdrom cmd: GetStat");
+
+                self.set_response(self.status.bits());
+                let interrupt_code = if self.status.error { 5 } else { 3 };
+                // must be done after accessing `error` field
+                self.status.reset_errors_bits();
+                self.request_interrupt_0_7(interrupt_code);
+
+                self.reset_command();
+            }
+            0x02 => {
+                // SetLoc
+
+                let mut params = [0; 3];
+                // minutes
+                params[0] = from_bcd(self.read_next_parameter().unwrap());
+                // seconds
+                params[1] = from_bcd(self.read_next_parameter().unwrap());
+                // sector
+                params[2] = from_bcd(self.read_next_parameter().unwrap());
+
+                self.set_loc_params = Some(params);
+
+                log::info!("cdrom cmd: SetLoc({:?})", params);
+                self.set_response(self.status.bits());
+                self.request_interrupt_0_7(3);
+
+                self.reset_command();
+            }
+            0x06 | 0x1B => {
+                // ReadN/ReadS
+
+                log::info!("cdrom cmd: ReadN");
+                self.do_seek();
+                self.status.reset_action_status();
+
+                self.status.action_status = ActionStatus::Read {
+                    second_delivery_attempt: false,
+                };
+
+                self.set_response(self.status.bits());
+                self.request_interrupt_0_7(3);
+
+                self.read_play_delay_timer = if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
+                    CDROM_READ_PLAY_DELAY / 2
+                } else {
+                    CDROM_READ_PLAY_DELAY
+                };
+
+                // reset data buffer
+                self.read_data_buffer.clear();
+
+                self.reset_command();
+            }
+            0x08 => {
+                // Stop
+
+                if self.command_state.is_none() {
+                    // FIRST
+                    log::info!("cdrom cmd: Stop");
+                    self.status.stop_motor();
+                    self.status.reset_action_status();
+
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(3);
+                    // any data for now, just to proceed to SECOND
+                    self.command_state = Some(0);
+                } else {
+                    // SECOND
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(2);
+                    self.reset_command();
+                }
+            }
+            0x09 => {
+                // Pause
+
+                // TODO: not sure how to do pause else on pause
+                //       since the buffer is cleared after every sector read
+                if self.command_state.is_none() {
+                    // FIRST
+                    log::info!("cdrom cmd: Pause");
+                    self.status.reset_action_status();
+
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(3);
+                    // any data for now, just to proceed to SECOND
+                    self.command_state = Some(0);
+                } else {
+                    // SECOND
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(2);
+                    self.reset_command();
+                }
+            }
+            0x0A => {
+                // Init
+
+                if self.command_state.is_none() {
+                    // FIRST
+                    log::info!("cdrom cmd: Init");
+
+                    // TODO: check what exactly needs to be reset
+                    //       do we reset all fifos?
+                    //       do we reset setloc params and cursor position?
+
+                    self.mode = CdromMode::empty();
+                    // reset the status and run the motor
+                    self.status = CdromStatus::default();
+                    self.status.start_motor();
+                    // reset fifos
+                    self.data_fifo_buffer.clear();
+                    self.data_fifo_buffer_index = 0;
+                    self.read_data_buffer.clear();
+                    self.fifo_status.remove(FifosStatus::DATA_FIFO_NOT_EMPTY);
+                    self.reset_parameter_fifo();
+                    self.response_fifo.clear();
+                    self.fifo_status
+                        .remove(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
+
+                    // reset cursor and set_loc positions
+                    self.set_loc_params = None;
+                    self.cursor_sector_position = 0;
+
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(3);
+                    // any data for now, just to proceed to SECOND
+                    self.command_state = Some(0);
+                } else {
+                    // SECOND
+
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(2);
+                    self.reset_command();
+                }
+            }
+            0x0B => {
+                // Mute
+
+                log::info!("cdrom cmd: Mute");
+
+                self.cd_mute = true;
+
+                self.set_response(self.status.bits());
+                self.request_interrupt_0_7(3);
+
+                self.reset_command();
+            }
+            0x0C => {
+                // Demute
+
+                log::info!("cdrom cmd: Demute");
+
+                self.cd_mute = false;
+
+                self.set_response(self.status.bits());
+                self.request_interrupt_0_7(3);
+
+                self.reset_command();
+            }
+            0x0D => {
+                // Setfilter
+                self.filter_file = self.read_next_parameter().unwrap();
+                self.filter_channel = self.read_next_parameter().unwrap();
+
+                log::info!(
+                    "cdrom cmd: Setfilter: file: {}, channel: {}",
+                    self.filter_file,
+                    self.filter_channel
+                );
+
+                self.set_response(self.status.bits());
+                self.request_interrupt_0_7(3);
+
+                self.reset_command();
+            }
+            0x0E => {
+                // Setmode
+
+                self.mode = CdromMode::from_bits_retain(self.read_next_parameter().unwrap());
+                log::info!("cdrom cmd: Setmode({:?})", self.mode);
+
+                self.set_response(self.status.bits());
+                self.request_interrupt_0_7(3);
+
+                self.reset_command();
+            }
+            0x11 => {
+                // GetLocP
+
+                // TODO: fix when supporting multiple tracks
+                //       also, min, second, sectors below as well
+
+                log::info!("cdrom cmd: GetLocP");
+                let track = 1;
+                let index = 1;
+
+                let sector = self.cursor_sector_position % 75;
+                let total_seconds = (self.cursor_sector_position / 75) + 2;
+                let minutes = total_seconds / 60;
+                let seconds = total_seconds % 60;
+
+                self.set_response_slice(&[
+                    to_bcd(track),
+                    to_bcd(index),
+                    // track
+                    to_bcd(minutes as u8),
+                    to_bcd(seconds as u8),
+                    to_bcd(sector as u8),
+                    // whole disk
+                    to_bcd(minutes as u8),
+                    to_bcd(seconds as u8),
+                    to_bcd(sector as u8),
+                ]);
+
+                self.request_interrupt_0_7(3);
+
+                self.reset_command();
+            }
+            0x13 => {
+                // GetTN
+                // TODO: fix when supporting multiple tracks
+
+                log::info!("cdrom cmd: GetTN");
+                let first_track = 1;
+                let last_track = 1;
+
+                self.set_response_slice(&[
+                    self.status.bits(),
+                    to_bcd(first_track),
+                    to_bcd(last_track),
+                ]);
+
+                self.request_interrupt_0_7(3);
+
+                self.reset_command();
+            }
+            0x14 => {
+                // GetTD
+                // TODO: fix when supporting multiple tracks
+
+                let track = from_bcd(self.read_next_parameter().unwrap());
+
+                log::info!("cdrom cmd: GetTD: track = {}", track);
+
+                let res_minutes;
+                let res_seconds;
+                // return the end of the last track
+                if track == 0 {
+                    let total_disk_size = self.disk_data.len();
+                    let total_sectors = total_disk_size / 2352;
+                    let total_seconds = total_sectors / 75;
+                    res_minutes = (total_seconds / 60) as u8;
+                    res_seconds = (total_seconds % 60) as u8;
+                } else if track == 1 {
+                    res_minutes = 0;
+                    res_seconds = 2;
+                } else {
+                    todo!("Doesn't support more than 1 track");
+                }
+
+                self.set_response_slice(&[
+                    self.status.bits(),
+                    to_bcd(res_minutes),
+                    to_bcd(res_seconds),
+                ]);
+
+                self.request_interrupt_0_7(3);
+
+                self.reset_command();
+            }
+            0x15 => {
+                // SeekL
+
+                // TODO: the two seek commands are different, from the doc
+                //       it seems that this reads the sector headers to know
+                //       where it should go?
+                //       Not really sure, check and fix
+                if self.command_state.is_none() {
+                    // FIRST
+                    log::info!("cdrom cmd: SeekL");
+
+                    self.do_seek();
+
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(3);
+                    // any data for now, just to proceed to SECOND
+                    self.command_state = Some(0);
+                } else {
+                    // SECOND
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(2);
+                    self.reset_command();
+                }
+            }
+            0x16 => {
+                // SeekP
+
+                if self.command_state.is_none() {
+                    // FIRST
+                    log::info!("cdrom cmd: SeekP");
+
+                    self.do_seek();
+
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(3);
+                    // any data for now, just to proceed to SECOND
+                    self.command_state = Some(0);
+                } else {
+                    // SECOND
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(2);
+                    self.reset_command();
+                }
+            }
+            0x19 => {
+                // Test
+                let test_code = self.read_next_parameter().unwrap();
+                log::info!("cdrom cmd: Test({:02x})", test_code);
+                self.execute_test(test_code);
+
+                self.reset_command();
+            }
+            0x1A => {
+                // GetID
+
+                if self.command_state.is_none() {
+                    // FIRST
+                    log::info!("cdrom cmd: GetID");
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(3);
+                    // any data for now, just to proceed to SECOND
+                    self.command_state = Some(0);
+                } else {
+                    // SECOND
+                    // TODO: rewrite GetID implementation to fill
+                    //       all the details correctly from the state of the cdrom
+                    let (response, interrupt) = if self.cue_file.is_some() {
+                        // last byte is the region code identifier
+                        // A(0x41): NTSC
+                        // E(0x45): PAL
+                        // I(0x49): JP
+                        (&[0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x41], 2)
+                    } else {
+                        //  5 interrupt means error
+                        (&[0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 5)
+                    };
+
+                    self.set_response_slice(response);
+                    self.request_interrupt_0_7(interrupt);
+                    self.reset_command();
+                }
+            }
+            0x1E => {
+                // GetToc
+
+                if self.command_state.is_none() {
+                    // FIRST
+                    log::info!("cdrom cmd: GetToc");
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(3);
+                    // any data for now, just to proceed to SECOND
+                    self.command_state = Some(0);
+                } else {
+                    // SECOND
+                    self.set_response(self.status.bits());
+                    self.request_interrupt_0_7(2);
+                    self.reset_command();
+                }
+            }
+            _ => todo!("cmd={:02X},state={:?}", cmd, self.command_state),
+        }
+    }
+
+    fn handle_reading_data(&mut self, cycles: u32, spu: &mut Spu) {
+        let ActionStatus::Read { second_delivery_attempt } = &mut self.status.action_status else {
+            return;
+        };
+
+        // delay
+        if self.read_play_delay_timer > cycles + 1 {
+            self.read_play_delay_timer -= cycles;
+            return;
+        }
+
+        // refresh the delay timer
+        self.read_play_delay_timer += if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
+            CDROM_READ_PLAY_DELAY / 2
+        } else {
+            CDROM_READ_PLAY_DELAY
+        };
+
+        let sector_start = self.cursor_sector_position * 2352;
+
+        // skip the sync bytes
+        let whole_sector = &self.disk_data[sector_start + 12..sector_start + 0x930];
+
+        // TODO: add filtering and coding info handling
+        let mode = whole_sector[3];
+        let file = whole_sector[4];
+        let channel = whole_sector[5] & 0x1F;
+        let submode = whole_sector[6];
+        let coding_info = whole_sector[7];
+        let submode_audio = submode & 0x4 != 0;
+        let submode_realtime = submode & 0x40 != 0;
+
+        // was the current sector read, and should we move to the next?
+        let mut sector_read = false;
+
+        let filter_match = self.filter_file == file && self.filter_channel == channel;
+
+        // convert from cursor pos to sector,seconds,minutes
+        // for debugging
+        let sector = self.cursor_sector_position % 75;
+        let total_seconds = (self.cursor_sector_position / 75) + 2;
+        let minutes = total_seconds / 60;
+        let seconds = total_seconds % 60;
+
+        // delivery options:
+        //   try_deliver_as_adpcm_sector:
+        //    TODO: reject if CD-DA AUDIO format
+        //    reject if sector isn't MODE2 format
+        //    reject if adpcm_disabled(setmode.6)
+        //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
+        //    reject if submode isn't audio+realtime (bit2 and bit6 must be both set)
+        //    deliver: send sector to xa-adpcm decoder when passing above cases
+
+        // mode 2 is CD-XA mode, which is the mode of the sector
+        if mode == 2
+            && self.mode.intersects(CdromMode::XA_ADPCM)
+            && (!self.mode.intersects(CdromMode::XA_FILTER) || filter_match)
+            && submode_audio
+            && submode_realtime
+        {
+            *second_delivery_attempt = false; // reset data delivery attempts
+
+            self.deliver_adpcm_to_spu(
+                self.cursor_sector_position,
+                CodingInfo::from_bits_retain(coding_info),
+                spu,
+            );
+            log::info!(
+                "cdrom: ReadN: sector {} [{:02}:{:02}:{:02}] deilverd to ADPCM-SPU",
+                self.cursor_sector_position,
+                minutes,
+                seconds,
+                sector
+            );
+            sector_read = true;
+
+        // TODO: for some reason, this doesn't work on CTR,
+        //       it expects to get data interrupts on other channels
+        //       when reading from XA interleaved sectors,
+        //       the current implementation doesn't do the below check to the
+        //       letter, it only does it in the second attempt, so the first
+        //       attempt will always send something.
+        //       Try to find what is the best approach to this
+        //
+        //  try_deliver_as_data_sector:
+        //    reject data-delivery if "try_deliver_as_adpcm_sector" did do adpcm-delivery
+        //    reject if filter_enabled(setmode.3) AND submode is audio+realtime (bit2+bit6)
+        //    1st delivery attempt: send INT1+data, unless there's another INT pending
+        //    delay, and retry at later time... but this time with file/channel checking!
+        //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
+        //    2nd delivery attempt: send INT1+data, unless there's another INT pending
+        } else if *second_delivery_attempt == false
+            || !self.mode.intersects(CdromMode::XA_FILTER)
+            || !(submode_audio && submode_realtime)
+                && (!self.mode.intersects(CdromMode::XA_FILTER) || filter_match)
+        {
+            // only refill the data if the buffer is taken, else
+            // just interrupt
+            //
+            // if we're on the second attempt, and the buffer is still not empty
+            // perform buffer overrun, i.e. replace the data of the current buffer
+            if self.read_data_buffer.is_empty() || *second_delivery_attempt {
+                // wait until the data fifo buffer is empty
+                log::info!(
+                    "cdrom cmd: ReadN: pushing sector {} [{:02}:{:02}:{:02}] to data fifo buffer",
+                    self.cursor_sector_position,
+                    minutes,
+                    seconds,
+                    sector
+                );
+
+                let data = if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
+                    whole_sector
+                } else {
+                    // skip the sub header
+                    &whole_sector[12..12 + 0x800]
+                };
+
+                // if there is something, override it
+                self.read_data_buffer.clear();
+                self.read_data_buffer.extend_from_slice(&data);
+
+                *second_delivery_attempt = false;
+                sector_read = true;
+
+                self.set_response(self.status.bits());
+                self.request_interrupt_0_7(1);
+            } else {
+                // set the second delivery attempt flag, so that next time we perform the
+                // file/channel checks
+                *second_delivery_attempt = true;
+
+                // when retrying for the second time, do not wait for a full delay
+                // as this results in audio stuttering
+                self.read_play_delay_timer = 0;
             }
 
-            // reset the timer here, so that if a command needs to change the value
-            // it can do so
-            self.command_delay_timer = CDROM_COMMAND_DEFAULT_DELAY;
-            // every command starts the motor (if its not already on)
-            self.status.insert(CdromStatus::MOTOR_ON);
-            match cmd {
-                0x01 => {
-                    // GetStat
-                    log::info!("cdrom cmd: GetStat");
-                    // TODO: handle errors
-                    assert!(self.status.bits() & 0b101 == 0);
+        //  else:
+        //    ignore sector silently
+        } else {
+            *second_delivery_attempt = false; // reset data delivery attempts
 
-                    self.write_to_response_fifo(self.status.bits());
-                    self.request_interrupt_0_7(3);
+            log::info!(
+                "cdrom: ReadN: skipping sector {} [{:02}:{:02}:{:02}]",
+                self.cursor_sector_position,
+                minutes,
+                seconds,
+                sector
+            );
+            // skip sector
+            sector_read = true;
+        }
 
-                    self.reset_command();
-                }
-                0x02 => {
-                    // SetLoc
-
-                    let mut params = [0; 3];
-                    // minutes
-                    params[0] = from_bcd(self.read_next_parameter().unwrap());
-                    // seconds
-                    params[1] = from_bcd(self.read_next_parameter().unwrap());
-                    // sector
-                    params[2] = from_bcd(self.read_next_parameter().unwrap());
-
-                    self.set_loc_params = Some(params);
-
-                    log::info!("cdrom cmd: SetLoc({:?})", params);
-                    self.write_to_response_fifo(self.status.bits());
-                    self.request_interrupt_0_7(3);
-
-                    self.reset_command();
-                }
-                0x06 | 0x1B => {
-                    // ReadN/ReadS
-
-                    if self.command_state.is_none() {
-                        // FIRST
-
-                        log::info!("cdrom cmd: ReadN");
-                        self.do_seek();
-
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(3);
-                        // This stores the value 0 if this is the first attemp
-                        // to read a data sector, otherwise store any other value.
-                        //
-                        // Check later on the reading logic to know what this mean.
-                        //
-                        // 0 is the start value
-                        self.command_state = Some(0);
-
-                        self.command_delay_timer += if self.mode.intersects(CdromMode::DOUBLE_SPEED)
-                        {
-                            CDROM_READ_COMMAND_DELAY / 2
-                        } else {
-                            CDROM_READ_COMMAND_DELAY
-                        };
-
-                        // reset data buffer
-                        self.read_data_buffer.clear();
-                    } else {
-                        let command_state = self.command_state.as_mut().unwrap();
-
-                        // SECOND
-
-                        let sector_start = self.cursor_sector_position * 2352;
-
-                        // skip the sync bytes
-                        let whole_sector = &self.disk_data[sector_start + 12..sector_start + 0x930];
-
-                        // TODO: add filtering and coding info handling
-                        let mode = whole_sector[3];
-                        let file = whole_sector[4];
-                        let channel = whole_sector[5] & 0x1F;
-                        let submode = whole_sector[6];
-                        let coding_info = whole_sector[7];
-                        let submode_audio = submode & 0x4 != 0;
-                        let submode_realtime = submode & 0x40 != 0;
-
-                        // was the current sector read, and should we move to the next?
-                        let mut sector_read = false;
-
-                        let filter_match =
-                            self.filter_file == file && self.filter_channel == channel;
-
-                        // delivery options:
-                        //   try_deliver_as_adpcm_sector:
-                        //    TODO: reject if CD-DA AUDIO format
-                        //    reject if sector isn't MODE2 format
-                        //    reject if adpcm_disabled(setmode.6)
-                        //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
-                        //    reject if submode isn't audio+realtime (bit2 and bit6 must be both set)
-                        //    deliver: send sector to xa-adpcm decoder when passing above cases
-
-                        // mode 2 is CD-XA mode, which is the mode of the sector
-                        if mode == 2
-                            && self.mode.intersects(CdromMode::XA_ADPCM)
-                            && (!self.mode.intersects(CdromMode::XA_FILTER) || filter_match)
-                            && submode_audio
-                            && submode_realtime
-                        {
-                            *command_state = 0; // reset data delivery attempts
-
-                            self.deliver_adpcm_to_spu(
-                                self.cursor_sector_position,
-                                CodingInfo::from_bits_retain(coding_info),
-                                spu,
-                            );
-                            sector_read = true;
-
-                        // TODO: for some reason, this doesn't work on CTR,
-                        //       it expects to get data interrupts on other channels
-                        //       when reading from XA interleaved sectors,
-                        //       the current implementation doesn't do the below check to the
-                        //       letter, it only does it in the second attempt, so the first
-                        //       attempt will always send something.
-                        //       Try to find what is the best approach to this
-                        //
-                        //  try_deliver_as_data_sector:
-                        //    reject data-delivery if "try_deliver_as_adpcm_sector" did do adpcm-delivery
-                        //    reject if filter_enabled(setmode.3) AND submode is audio+realtime (bit2+bit6)
-                        //    1st delivery attempt: send INT1+data, unless there's another INT pending
-                        //    delay, and retry at later time... but this time with file/channel checking!
-                        //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
-                        //    2nd delivery attempt: send INT1+data, unless there's another INT pending
-                        } else if *command_state == 0
-                            || !self.mode.intersects(CdromMode::XA_FILTER)
-                            || !(submode_audio && submode_realtime)
-                                && (!self.mode.intersects(CdromMode::XA_FILTER) || filter_match)
-                        {
-                            // only refill the data if the buffer is taken, else
-                            // just interrupt
-                            if self.read_data_buffer.is_empty() {
-                                // convert from cursor pos to sector,seconds,minutes
-                                // for debugging
-                                let sector = self.cursor_sector_position % 75;
-                                let total_seconds = (self.cursor_sector_position / 75) + 2;
-                                let minutes = total_seconds / 60;
-                                let seconds = total_seconds % 60;
-
-                                // wait until the data fifo buffer is empty
-                                log::info!(
-                                    "cdrom cmd: ReadN: pushing sector {} [{:02}:{:02}:{:02}] to data fifo buffer",
-                                    self.cursor_sector_position,
-                                    minutes,
-                                    seconds,
-                                    sector
-                                );
-
-                                let data = if self.mode.intersects(CdromMode::USE_WHOLE_SECTOR) {
-                                    whole_sector
-                                } else {
-                                    // skip the sub header
-                                    &whole_sector[12..12 + 0x800]
-                                };
-
-                                self.read_data_buffer.extend_from_slice(&data);
-
-                                sector_read = true;
-                            }
-
-                            // switch between 1st and 2nd delivery attempt
-                            // 0 and 1
-                            *command_state ^= 1;
-
-                            self.write_to_response_fifo(self.status.bits());
-                            self.request_interrupt_0_7(1);
-                        //  else:
-                        //    ignore sector silently
-                        } else {
-                            *command_state = 0; // reset data delivery attempts
-
-                            // skip sector
-                            sector_read = true;
-                        }
-
-                        // if we haven't read, just wait the default delay and re-interrupt.
-                        if sector_read {
-                            self.cursor_sector_position += 1;
-                            self.command_delay_timer +=
-                                if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
-                                    CDROM_READ_COMMAND_DELAY / 2
-                                } else {
-                                    CDROM_READ_COMMAND_DELAY
-                                };
-                        }
-                    }
-                }
-                0x08 => {
-                    // Stop
-
-                    if self.command_state.is_none() {
-                        // FIRST
-                        log::info!("cdrom cmd: Stop");
-                        self.status.remove(CdromStatus::MOTOR_ON);
-
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(3);
-                        // any data for now, just to proceed to SECOND
-                        self.command_state = Some(0);
-                    } else {
-                        // SECOND
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(2);
-                        self.reset_command();
-                    }
-                }
-                0x09 => {
-                    // Pause
-
-                    // TODO: not sure how to do pause else on pause
-                    //       since the buffer is cleared after every sector read
-                    if self.command_state.is_none() {
-                        // FIRST
-                        log::info!("cdrom cmd: Pause");
-
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(3);
-                        // any data for now, just to proceed to SECOND
-                        self.command_state = Some(0);
-                    } else {
-                        // SECOND
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(2);
-                        self.reset_command();
-                    }
-                }
-                0x0A => {
-                    // Init
-
-                    if self.command_state.is_none() {
-                        // FIRST
-                        log::info!("cdrom cmd: Init");
-
-                        // TODO: check what exactly needs to be reset
-                        //       do we reset all fifos?
-                        //       do we reset setloc params and cursor position?
-
-                        self.mode = CdromMode::empty();
-                        // reset the status and run the motor
-                        self.status = CdromStatus::MOTOR_ON;
-                        // reset fifos
-                        self.data_fifo_buffer.clear();
-                        self.data_fifo_buffer_index = 0;
-                        self.read_data_buffer.clear();
-                        self.fifo_status.remove(FifosStatus::DATA_FIFO_NOT_EMPTY);
-                        self.reset_parameter_fifo();
-                        self.response_fifo.clear();
-                        self.fifo_status
-                            .remove(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
-
-                        // reset cursor and set_loc positions
-                        self.set_loc_params = None;
-                        self.cursor_sector_position = 0;
-
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(3);
-                        // any data for now, just to proceed to SECOND
-                        self.command_state = Some(0);
-                    } else {
-                        // SECOND
-
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(2);
-                        self.reset_command();
-                    }
-                }
-                0x0C => {
-                    // Demute
-
-                    log::info!("cdrom cmd: Demute");
-                    self.write_to_response_fifo(self.status.bits());
-                    self.request_interrupt_0_7(3);
-
-                    self.reset_command();
-                }
-                0x0D => {
-                    // Setfilter
-                    self.filter_file = self.read_next_parameter().unwrap();
-                    self.filter_channel = self.read_next_parameter().unwrap();
-
-                    log::info!(
-                        "cdrom cmd: Setfilter: file: {}, channel: {}",
-                        self.filter_file,
-                        self.filter_channel
-                    );
-
-                    self.write_to_response_fifo(self.status.bits());
-                    self.request_interrupt_0_7(3);
-
-                    self.reset_command();
-                }
-                0x0E => {
-                    // Setmode
-
-                    self.mode = CdromMode::from_bits_retain(self.read_next_parameter().unwrap());
-                    log::info!("cdrom cmd: Setmode({:?})", self.mode);
-
-                    self.write_to_response_fifo(self.status.bits());
-                    self.request_interrupt_0_7(3);
-
-                    self.reset_command();
-                }
-                0x11 => {
-                    // GetLocP
-
-                    // TODO: fix when supporting multiple tracks
-                    //       also, min, second, sectors below as well
-                    let track = 1;
-                    let index = 1;
-
-                    let sector = self.cursor_sector_position % 75;
-                    let total_seconds = (self.cursor_sector_position / 75) + 2;
-                    let minutes = total_seconds / 60;
-                    let seconds = total_seconds % 60;
-
-                    self.write_slice_to_response_fifo(&[
-                        track,
-                        index,
-                        // track
-                        to_bcd(minutes as u8),
-                        to_bcd(seconds as u8),
-                        to_bcd(sector as u8),
-                        // whole disk
-                        to_bcd(minutes as u8),
-                        to_bcd(seconds as u8),
-                        to_bcd(sector as u8),
-                    ]);
-
-                    self.request_interrupt_0_7(3);
-
-                    self.reset_command();
-                }
-                0x15 => {
-                    // SeekL
-
-                    if self.command_state.is_none() {
-                        // FIRST
-                        log::info!("cdrom cmd: SeekL");
-
-                        self.do_seek();
-
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(3);
-                        // any data for now, just to proceed to SECOND
-                        self.command_state = Some(0);
-                    } else {
-                        // SECOND
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(2);
-                        self.reset_command();
-                    }
-                }
-                0x19 => {
-                    // Test
-                    let test_code = self.read_next_parameter().unwrap();
-                    log::info!("cdrom cmd: Test({:02x})", test_code);
-                    self.execute_test(test_code);
-
-                    self.reset_command();
-                }
-                0x1A => {
-                    // GetID
-
-                    if self.command_state.is_none() {
-                        // FIRST
-                        log::info!("cdrom cmd: GetID");
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(3);
-                        // any data for now, just to proceed to SECOND
-                        self.command_state = Some(0);
-                    } else {
-                        // SECOND
-                        // TODO: rewrite GetID implementation to fill
-                        //       all the details correctly from the state of the cdrom
-                        let (response, interrupt) = if self.cue_file.is_some() {
-                            // last byte is the region code identifier
-                            // A(0x41): NTSC
-                            // E(0x45): PAL
-                            // I(0x49): JP
-                            (&[0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x41], 2)
-                        } else {
-                            //  5 interrupt means error
-                            (&[0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 5)
-                        };
-
-                        self.write_slice_to_response_fifo(response);
-                        self.request_interrupt_0_7(interrupt);
-                        self.reset_command();
-                    }
-                }
-                0x1E => {
-                    // GetToc
-
-                    if self.command_state.is_none() {
-                        // FIRST
-                        log::info!("cdrom cmd: GetToc");
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(3);
-                        // any data for now, just to proceed to SECOND
-                        self.command_state = Some(0);
-                    } else {
-                        // SECOND
-                        self.write_to_response_fifo(self.status.bits());
-                        self.request_interrupt_0_7(2);
-                        self.reset_command();
-                    }
-                }
-                _ => todo!("cmd={:02X},state={:?}", cmd, self.command_state),
-            }
-
-            // fire irq only if the interrupt is enabled
-            if self.interrupt_flag & self.interrupt_enable != 0 {
-                interrupt_requester.request_cdrom();
-            }
+        // if we haven't read, just wait the default delay and re-interrupt.
+        if sector_read {
+            self.cursor_sector_position += 1;
         }
     }
 
@@ -926,7 +1162,7 @@ impl Cdrom {
             (&cd_audio_left, &cd_audio_left)
         };
 
-        if !self.adpcm_mute {
+        if !self.cd_mute && !self.adpcm_mute {
             for (i, (&left, &right)) in audio_left.iter().zip(audio_right.iter()).enumerate() {
                 let l = (left as i32 * self.vol_cd_left_to_spu_left as i32 / 0x80)
                     + (right as i32 * self.vol_cd_right_to_spu_left as i32 / 0x80);
@@ -944,16 +1180,30 @@ impl Cdrom {
     fn execute_test(&mut self, test_code: u8) {
         match test_code {
             0x20 => {
-                self.write_slice_to_response_fifo(&[0x99u8, 0x02, 0x01, 0xC3]);
+                // Get the CD-ROM hardware version
+                self.set_response_slice(&[0x99u8, 0x02, 0x01, 0xC3]);
                 self.request_interrupt_0_7(3);
             }
-            _ => todo!(),
+            0x04 | 0x05 => {
+                // Read SCEx strings
+                // Get SCEx counters
+                //
+                // This is how the hardware worked, normally, the `Get counters` command
+                // will return the (total, success) counters for the SCEx strings found in the
+                // Lead-In area of the CD-ROM.
+                // But not sure how, returning just the `Status` register works.
+                self.set_response(self.status.bits());
+                self.request_interrupt_0_7(3);
+            }
+            _ => todo!("Test code {:02X}", test_code),
         }
     }
 
     #[inline]
     fn do_seek(&mut self) {
         if let Some(params) = self.set_loc_params {
+            self.status.action_status = ActionStatus::Seek;
+
             // setting the position from the setLoc data
             let minutes = params[0] as usize;
             let seconds = params[1] as usize;
@@ -987,6 +1237,7 @@ impl Cdrom {
         self.command = None;
         self.command_delay_timer = 0;
         self.command_state = None;
+        self.parameter_fifo.clear();
         self.fifo_status.remove(FifosStatus::BUSY);
     }
 }
@@ -1058,36 +1309,37 @@ impl Cdrom {
         out
     }
 
-    fn write_to_response_fifo(&mut self, data: u8) {
-        if self.response_fifo.is_empty() {
-            self.fifo_status
-                .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
-        }
+    fn set_response(&mut self, data: u8) {
         log::info!("writing to response fifo={:02X}", data);
-
+        // override the current response if any
+        self.response_fifo.clear();
         self.response_fifo.push_back(data);
+        self.fifo_status
+            .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
     }
 
-    fn write_slice_to_response_fifo(&mut self, data: &[u8]) {
-        if self.response_fifo.is_empty() {
-            self.fifo_status
-                .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
-        }
+    fn set_response_slice(&mut self, data: &[u8]) {
         log::info!("writing to response fifo={:02X?}", data);
-
+        // override the current response if any
+        self.response_fifo.clear();
         self.response_fifo.extend(data);
+        self.fifo_status
+            .insert(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
     }
 
     fn read_next_response(&mut self) -> u8 {
         let out = self.response_fifo.pop_front();
+
+        log::info!("reading from response fifo={:02X?}", out);
 
         if self.response_fifo.is_empty() {
             self.fifo_status
                 .remove(FifosStatus::RESPONSE_FIFO_NOT_EMPTY);
         }
 
-        // TODO: handle reading while being empty
-        out.unwrap()
+        // Pad with 0x00, until the size of 16 bytes
+        // TODO: currently, the fifo buffer is kinda infinite, so need to be limited to 16 bytes
+        out.unwrap_or(0)
     }
 
     fn request_interrupt_0_7(&mut self, int_value: u8) {
@@ -1103,16 +1355,33 @@ impl Cdrom {
             // want data
             // this buffer should be set by Read commands
             if !self.read_data_buffer.is_empty() {
+                log::info!(
+                    "setting data fifo buffer, read buffer len={}",
+                    self.read_data_buffer.len()
+                );
                 self.data_fifo_buffer
                     .extend_from_slice(&self.read_data_buffer);
                 self.read_data_buffer.clear();
                 self.fifo_status.insert(FifosStatus::DATA_FIFO_NOT_EMPTY);
             }
-        } else {
-            log::info!("clearing data fifo buffer");
+            // This is a hack, as some games would clear and request the buffer 2 times for some reason,
+            // this would result in the buffer being empty, as it was cleared after being filled
+            // so, in that case, we will only clear the buffer if its going to be filled soon.
+            //
+            // FIXME: find a better solution, or find out why the game was doing that
+        } else if !self.read_data_buffer.is_empty() {
+            log::info!(
+                "clearing data fifo buffer, current data fifo len={}",
+                self.data_fifo_buffer.len()
+            );
             self.data_fifo_buffer_index = 0;
             self.data_fifo_buffer.clear();
             self.fifo_status.remove(FifosStatus::DATA_FIFO_NOT_EMPTY);
+        } else {
+            log::info!(
+                "data fifo buffer was not cleared, current data fifo len={}",
+                self.data_fifo_buffer.len()
+            );
         }
     }
 
