@@ -59,6 +59,10 @@ impl Debugger {
     pub fn trace_write(&mut self, _addr: u32, _bits: u8) {}
 
     pub fn trace_read(&mut self, _addr: u32, _bits: u8) {}
+
+    pub fn call_stack(&self) -> &[u32] {
+        &[]
+    }
 }
 
 const SHELL_LOCATION: u32 = 0x80030000;
@@ -848,6 +852,19 @@ impl Cpu {
 }
 
 impl Cpu {
+    fn print_call_stack(&self) {
+        let call_stack = self.debugger.call_stack();
+
+        if call_stack.is_empty() {
+            log::error!("call stack is empty");
+        } else {
+            log::error!("call stack:");
+            for (i, pc) in call_stack.iter().enumerate() {
+                log::error!("  {:02}: {:08X}", i, pc);
+            }
+        }
+    }
+
     fn bus_read_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u32> {
         self.elapsed_cycles += 2;
 
@@ -877,6 +894,7 @@ impl Cpu {
                             self.current_instr_pc,
                             err
                         );
+                        self.print_call_stack();
                         None
                     }
                 }
@@ -908,6 +926,7 @@ impl Cpu {
                             self.current_instr_pc,
                             err
                         );
+                        self.print_call_stack();
                     }
                 }
             }
@@ -942,6 +961,7 @@ impl Cpu {
                             self.current_instr_pc,
                             err
                         );
+                        self.print_call_stack();
                         None
                     }
                 }
@@ -972,6 +992,7 @@ impl Cpu {
                             self.current_instr_pc,
                             err
                         );
+                        self.print_call_stack();
                     }
                 }
             }
@@ -994,6 +1015,7 @@ impl Cpu {
                             self.current_instr_pc,
                             err
                         );
+                        self.print_call_stack();
                         0
                     }
                 }
@@ -1015,6 +1037,7 @@ impl Cpu {
                         self.current_instr_pc,
                         err
                     );
+                    self.print_call_stack();
                 }
             }
         }

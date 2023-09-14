@@ -469,7 +469,10 @@ struct PsxEmuArgs {
 }
 
 fn main() {
-    env_logger::builder().format_timestamp(None).init();
+    env_logger::builder()
+        .format_timestamp(None)
+        .filter_level(log::LevelFilter::Error)
+        .init();
 
     let args = PsxEmuArgs::parse();
 
