@@ -529,7 +529,9 @@ impl Cdrom {
             self.handle_command(cycles, cmd);
         }
 
-        self.handle_reading_data(cycles, spu);
+        if self.interrupt_flag & 7 == 0 {
+            self.handle_reading_data(cycles, spu);
+        }
 
         // fire irq only if the interrupt is enabled
         if self.interrupt_flag & self.interrupt_enable != 0 {
@@ -933,19 +935,15 @@ impl Cdrom {
     }
 
     fn handle_reading_data(&mut self, cycles: u32, spu: &mut Spu) {
+        let ActionStatus::Read { second_delivery_attempt } = &mut self.status.action_status else {
+            return;
+        };
+
         // delay
         if self.read_play_delay_timer > cycles + 1 {
             self.read_play_delay_timer -= cycles;
             return;
         }
-
-        if self.interrupt_flag & 7 != 0 {
-            return;
-        }
-
-        let ActionStatus::Read { second_delivery_attempt } = &mut self.status.action_status else {
-            return;
-        };
 
         // refresh the delay timer
         self.read_play_delay_timer += if self.mode.intersects(CdromMode::DOUBLE_SPEED) {
