@@ -1232,7 +1232,7 @@ impl GpuContext {
         self.check_and_flush_buffered_draws(None);
         self.flush_command_builder();
 
-        let (topleft, size) = if full_vram {
+        let (mut topleft, size) = if full_vram {
             ([0; 2], [1024, 512])
         } else {
             // (((X2-X1)/cycles_per_pix)+2) AND NOT 3
@@ -1262,6 +1262,12 @@ impl GpuContext {
                 [horizontal_size, vertical_size],
             )
         };
+
+        // the rendering offset is more of a byte offset than pixel offset
+        // so in 24bit mode, we have to change that.
+        if gpu_stat.is_24bit_color_depth() {
+            topleft[0] = (topleft[0] * 2) / 3;
+        }
 
         let front_image = StorageImage::with_usage(
             &self.memory_allocator,
