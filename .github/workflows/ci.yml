@@ -8,11 +8,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
     - name: Download system deps
       run: sudo apt-get update -y && sudo apt-get install -y libasound2-dev
@@ -20,12 +21,23 @@ jobs:
     # - uses: actions-rs/audit-check@v1
     #   with:
     #     token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: stable
+          override: true
+          target: x86_64-unknown-linux-gnu
+    - name: Run sccache-cache
+      uses: mozilla-actions/sccache-action@v0.0.3
+      with:
+        version: "v0.5.4"
+    - name: Build
+      run: cargo build --verbose
     - name: Extract bios
       run: sh ./.github/extract_bios.sh
       env:
         BIOS_PASSPHRASE: ${{ secrets.BIOS_PASSPHRASE }}
-    - name: Build
-      run: cargo build --verbose
     - name: Download tests
       run: sh ./.github/download_tests.sh
     - name: Run tests
