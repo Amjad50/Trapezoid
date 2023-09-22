@@ -1,3 +1,5 @@
+use crate::memory::Result;
+
 use super::BusLine;
 
 #[derive(Default)]
@@ -17,36 +19,21 @@ pub struct MemoryControl1 {
 }
 
 impl BusLine for MemoryControl1 {
-    fn read_u32(&mut self, addr: u32) -> u32 {
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
         let addr = addr & 0xFF;
         let index = (addr / 4) as usize;
 
-        self.data[index]
+        Ok(self.data[index])
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
+    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()> {
         let addr = addr & 0xFF;
         let index = (addr / 4) as usize;
 
         log::trace!("mem_ctrl1: index={}, data=0x{:08X}", index, data);
 
         self.data[index] = data;
-    }
-
-    fn read_u16(&mut self, _addr: u32) -> u16 {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
-        todo!()
-    }
-
-    fn read_u8(&mut self, _addr: u32) -> u8 {
-        todo!()
-    }
-
-    fn write_u8(&mut self, _addr: u32, _data: u8) {
-        todo!()
+        Ok(())
     }
 }
 
@@ -55,11 +42,11 @@ impl BusLine for MemoryControl1 {
 pub struct MemoryControl2(u32);
 
 impl BusLine for MemoryControl2 {
-    fn read_u32(&mut self, _addr: u32) -> u32 {
-        self.0
+    fn read_u32(&mut self, _addr: u32) -> Result<u32> {
+        Ok(self.0)
     }
 
-    fn write_u32(&mut self, _addr: u32, data: u32) {
+    fn write_u32(&mut self, _addr: u32, data: u32) -> Result<()> {
         // TODO: implement different ram modes
         assert!(
             data == 0xB88 || data == 0x888,
@@ -67,22 +54,7 @@ impl BusLine for MemoryControl2 {
             data
         );
         self.0 = data;
-    }
-
-    fn read_u16(&mut self, _addr: u32) -> u16 {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
-        todo!()
-    }
-
-    fn read_u8(&mut self, _addr: u32) -> u8 {
-        todo!()
-    }
-
-    fn write_u8(&mut self, _addr: u32, _data: u8) {
-        todo!()
+        Ok(())
     }
 }
 
@@ -90,29 +62,14 @@ impl BusLine for MemoryControl2 {
 pub struct CacheControl(u32);
 
 impl BusLine for CacheControl {
-    fn read_u32(&mut self, _addr: u32) -> u32 {
-        self.0
+    fn read_u32(&mut self, _addr: u32) -> Result<u32> {
+        Ok(self.0)
     }
 
-    fn write_u32(&mut self, _addr: u32, data: u32) {
+    fn write_u32(&mut self, _addr: u32, data: u32) -> Result<()> {
         // TODO: implement this registerproperly
         log::info!("LOG cache control written with {:08X}", data);
         self.0 = data;
-    }
-
-    fn read_u16(&mut self, _addr: u32) -> u16 {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
-        todo!()
-    }
-
-    fn read_u8(&mut self, _addr: u32) -> u8 {
-        todo!()
-    }
-
-    fn write_u8(&mut self, _addr: u32, _data: u8) {
-        todo!()
+        Ok(())
     }
 }

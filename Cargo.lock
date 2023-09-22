@@ -1284,6 +1284,7 @@ dependencies = [
  "clap",
  "cpal",
  "env_logger",
+ "log",
  "psx-core",
  "ringbuf",
  "rustyline",

@@ -59,6 +59,10 @@ impl Debugger {
     pub fn trace_write(&mut self, _addr: u32, _bits: u8) {}
 
     pub fn trace_read(&mut self, _addr: u32, _bits: u8) {}
+
+    pub fn call_stack(&self) -> &[u32] {
+        &[]
+    }
 }
 
 const SHELL_LOCATION: u32 = 0x80030000;
@@ -126,6 +130,7 @@ pub struct Cpu {
     elapsed_cycles: u32,
 
     shell_reached: bool,
+    current_instr_pc: u32,
 
     debugger: Debugger,
 }
@@ -141,6 +146,7 @@ impl Cpu {
 
             elapsed_cycles: 0,
             shell_reached: false,
+            current_instr_pc: 0,
 
             debugger: Debugger::new(),
         }
@@ -186,6 +192,8 @@ impl Cpu {
 
             if let Some(instruction) = self.bus_read_u32(bus, self.regs.pc) {
                 let instruction = Instruction::from_u32(instruction, self.regs.pc);
+
+                self.current_instr_pc = self.regs.pc;
 
                 log::trace!(
                     "{:08X}: {}{}",
@@ -844,10 +852,28 @@ impl Cpu {
 }
 
 impl Cpu {
+    fn print_call_stack(&self) {
+        let call_stack = self.debugger.call_stack();
+
+        if call_stack.is_empty() {
+            log::error!("call stack is empty");
+        } else {
+            log::error!("call stack:");
+            for (i, pc) in call_stack.iter().enumerate() {
+                log::error!("  {:02}: {:08X}", i, pc);
+            }
+        }
+    }
+
     fn bus_read_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u32> {
         self.elapsed_cycles += 2;
 
         if addr % 4 != 0 {
+            log::error!(
+                "AddressErrorLoad(u32): {:08X} at {:08X}",
+                addr,
+                self.current_instr_pc
+            );
             self.execute_exception(Exception::AddressErrorLoad);
             self.cop0.write_bad_vaddr(addr);
 
@@ -855,23 +881,54 @@ impl Cpu {
         }
 
         self.debugger.trace_read(addr, 32);
-        Some(match addr {
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
-            _ => bus.read_u32(addr),
-        })
+        match addr {
+            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => Some(0),
+            _ => {
+                let r = bus.read_u32(addr);
+                match r {
+                    Ok(value) => Some(value),
+                    Err(err) => {
+                        log::error!(
+                            "bus_read_u32: {:08X} at {:08X}: {}",
+                            addr,
+                            self.current_instr_pc,
+                            err
+                        );
+                        self.print_call_stack();
+                        None
+                    }
+                }
+            }
+        }
     }
 
     fn bus_write_u32<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u32) {
         self.elapsed_cycles += 1;
 
         if addr % 4 != 0 {
+            log::error!(
+                "AddressErrorStore(u32): {:08X} at {:08X}",
+                addr,
+                self.current_instr_pc
+            );
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
             self.debugger.trace_write(addr, 32);
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
-                _ => bus.write_u32(addr, data),
+                _ => {
+                    let r = bus.write_u32(addr, data);
+                    if let Err(err) = r {
+                        log::error!(
+                            "bus_write_u32: {:08X} at {:08X}: {}",
+                            addr,
+                            self.current_instr_pc,
+                            err
+                        );
+                        self.print_call_stack();
+                    }
+                }
             }
         }
     }
@@ -879,6 +936,11 @@ impl Cpu {
     fn bus_read_u16<P: BusLine>(&mut self, bus: &mut P, addr: u32) -> Option<u16> {
         self.elapsed_cycles += 1;
         if addr % 2 != 0 {
+            log::error!(
+                "AddressErrorLoad(u16): {:08X} at {:08X}",
+                addr,
+                self.current_instr_pc
+            );
             self.execute_exception(Exception::AddressErrorLoad);
             self.cop0.write_bad_vaddr(addr);
 
@@ -886,22 +948,53 @@ impl Cpu {
         }
 
         self.debugger.trace_read(addr, 16);
-        Some(match addr {
-            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
-            _ => bus.read_u16(addr),
-        })
+        match addr {
+            0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => Some(0),
+            _ => {
+                let r = bus.read_u16(addr);
+                match r {
+                    Ok(value) => Some(value),
+                    Err(err) => {
+                        log::error!(
+                            "bus_read_u16: {:08X} at {:08X}: {}",
+                            addr,
+                            self.current_instr_pc,
+                            err
+                        );
+                        self.print_call_stack();
+                        None
+                    }
+                }
+            }
+        }
     }
 
     fn bus_write_u16<P: BusLine>(&mut self, bus: &mut P, addr: u32, data: u16) {
         self.elapsed_cycles += 1;
         if addr % 2 != 0 {
+            log::error!(
+                "AddressErrorStore(u16): {:08X} at {:08X}",
+                addr,
+                self.current_instr_pc
+            );
             self.execute_exception(Exception::AddressErrorStore);
             self.cop0.write_bad_vaddr(addr);
         } else {
             self.debugger.trace_write(addr, 16);
             match addr {
                 0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
-                _ => bus.write_u16(addr, data),
+                _ => {
+                    let r = bus.write_u16(addr, data);
+                    if let Err(err) = r {
+                        log::error!(
+                            "bus_write_u16: {:08X} at {:08X}: {}",
+                            addr,
+                            self.current_instr_pc,
+                            err
+                        );
+                        self.print_call_stack();
+                    }
+                }
             }
         }
     }
@@ -911,7 +1004,22 @@ impl Cpu {
         self.debugger.trace_read(addr, 8);
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => 0,
-            _ => bus.read_u8(addr),
+            _ => {
+                let r = bus.read_u8(addr);
+                match r {
+                    Ok(value) => value,
+                    Err(err) => {
+                        log::error!(
+                            "bus_read_u8: {:08X} at {:08X}: {}",
+                            addr,
+                            self.current_instr_pc,
+                            err
+                        );
+                        self.print_call_stack();
+                        0
+                    }
+                }
+            }
         }
     }
 
@@ -920,7 +1028,18 @@ impl Cpu {
         self.debugger.trace_write(addr, 8);
         match addr {
             0x00000000..=0x00001000 if self.cop0.is_cache_isolated() => {}
-            _ => bus.write_u8(addr, data),
+            _ => {
+                let r = bus.write_u8(addr, data);
+                if let Err(err) = r {
+                    log::error!(
+                        "bus_write_u8: {:08X} at {:08X}: {}",
+                        addr,
+                        self.current_instr_pc,
+                        err
+                    );
+                    self.print_call_stack();
+                }
+            }
         }
     }
 }

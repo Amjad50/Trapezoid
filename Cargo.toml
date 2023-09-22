@@ -12,6 +12,7 @@ debugger = ["psx-core/debugger", "dep:rustyline"]
 [dependencies]
 psx-core = { path = "./psx-core", version = "*" }
 env_logger = { version = "0.10", default-features = false, features = ["auto-color"] }
+log = "0.4"
 clap = { version = "4.2", features = ["derive"] }
 
 vulkano = "0.33"

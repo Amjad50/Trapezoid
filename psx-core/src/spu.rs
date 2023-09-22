@@ -4,7 +4,7 @@ use std::{
     ops::{Index, IndexMut, Range},
 };
 
-use crate::memory::{interrupts::InterruptRequester, BusLine};
+use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
 
 const CPU_CLOCKS_PER_SPU: u32 = 0x300;
 
@@ -856,34 +856,37 @@ impl Spu {
 }
 
 impl BusLine for Spu {
-    fn read_u32(&mut self, addr: u32) -> u32 {
-        match addr {
-            0x000..=0x17F => todo!("u32 read voice register {:03X}", addr),
-            0x180..=0x187 => todo!("u32 read spu control {:03X}", addr),
-            0x188..=0x19F => todo!("u32 read voice flags {:03X}", addr),
-            0x1A0..=0x1BF => todo!("u32 read spu  control {:03X}", addr),
-            0x1C0..=0x1FF => todo!("u32 read reverb configuration {:03X}", addr),
-            0x200..=0x25F => todo!("u32 read voice internal reg {:03X}", addr),
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
+        let r = match addr {
+            0x000..=0x17F => Err(format!("SPU u32 read voice register {:03X}", addr)),
+            0x180..=0x187 => Err(format!("SPU u32 read spu control {:03X}", addr)),
+            0x188..=0x19F => Err(format!("SPU u32 read voice flags {:03X}", addr)),
+            0x1A0..=0x1BF => Err(format!("SPU u32 read spu  control {:03X}", addr)),
+            0x1C0..=0x1FF => Err(format!("SPU u32 read reverb configuration {:03X}", addr)),
+            0x200..=0x25F => Err(format!("SPU u32 read voice internal reg {:03X}", addr)),
             0x260..=0x2FF => unreachable!("u32 read unknown {:03X}", addr),
             _ => unreachable!(),
-        }
+        };
+        r
     }
 
-    fn write_u32(&mut self, addr: u32, _data: u32) {
-        match addr {
-            0x000..=0x17F => todo!("u32 write voice register {:03X}", addr),
-            0x180..=0x187 => todo!("u32 write spu control {:03X}", addr),
-            0x188..=0x19F => todo!("u32 write voice flags {:03X}", addr),
-            0x1A0..=0x1BF => todo!("u32 write spu  control {:03X}", addr),
-            0x1C0..=0x1FF => todo!("u32 write reverb configuration {:03X}", addr),
-            0x200..=0x25F => todo!("u32 write voice internal reg {:03X}", addr),
+    fn write_u32(&mut self, addr: u32, _data: u32) -> Result<()> {
+        let r = match addr {
+            0x000..=0x17F => Err(format!("SPU u32 write voice register {:03X}", addr)),
+            0x180..=0x187 => Err(format!("SPU u32 write spu control {:03X}", addr)),
+            0x188..=0x19F => Err(format!("SPU u32 write voice flags {:03X}", addr)),
+            0x1A0..=0x1BF => Err(format!("SPU u32 write spu  control {:03X}", addr)),
+            0x1C0..=0x1FF => Err(format!("SPU u32 write reverb configuration {:03X}", addr)),
+            0x200..=0x25F => Err(format!("SPU u32 write voice internal reg {:03X}", addr)),
             0x260..=0x2FF => unreachable!("u32 write unknown {:03X}", addr),
             _ => unreachable!(),
-        }
+        };
+
+        r
     }
 
-    fn read_u16(&mut self, addr: u32) -> u16 {
-        match addr {
+    fn read_u16(&mut self, addr: u32) -> Result<u16> {
+        let r = match addr {
             0x000..=0x17E => {
                 let reg = addr & 0xF;
                 let voice_idx = (addr >> 4) as usize;
@@ -943,10 +946,11 @@ impl BusLine for Spu {
                 0
             }
             _ => unreachable!(),
-        }
+        };
+        Ok(r)
     }
 
-    fn write_u16(&mut self, addr: u32, data: u16) {
+    fn write_u16(&mut self, addr: u32, data: u16) -> Result<()> {
         match addr {
             0x000..=0x17E => {
                 let reg = addr & 0xF;
@@ -1187,13 +1191,14 @@ impl BusLine for Spu {
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
 
-    fn read_u8(&mut self, _addr: u32) -> u8 {
+    fn read_u8(&mut self, _addr: u32) -> Result<u8> {
         todo!()
     }
 
-    fn write_u8(&mut self, addr: u32, _data: u8) {
+    fn write_u8(&mut self, addr: u32, _data: u8) -> Result<()> {
         // The SPU is connected to a 16bit databus.
         // 8bit/16bit/32bit reads and 16bit/32bit writes are implemented.
         // However, 8bit writes are NOT implemented: 8bit writes to

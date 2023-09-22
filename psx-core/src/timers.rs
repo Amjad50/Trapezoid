@@ -1,4 +1,4 @@
-use crate::memory::{interrupts::InterruptRequester, BusLine};
+use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
 use bitflags::bitflags;
 
 bitflags! {
@@ -409,14 +409,14 @@ impl Timers {
 }
 
 impl BusLine for Timers {
-    fn read_u32(&mut self, addr: u32) -> u32 {
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
         let timer_index = (addr >> 4) & 0x3;
         let reg_index = (addr & 0xF) / 4;
 
-        self.read(timer_index, reg_index) as u32
+        Ok(self.read(timer_index, reg_index) as u32)
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
+    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()> {
         let timer_index = (addr >> 4) & 0x3;
         let reg_index = (addr & 0xF) / 4;
 
@@ -427,21 +427,23 @@ impl BusLine for Timers {
         );
 
         self.write(timer_index, reg_index, data as u16);
+        Ok(())
     }
 
-    fn read_u16(&mut self, addr: u32) -> u16 {
+    fn read_u16(&mut self, addr: u32) -> Result<u16> {
         let timer_index = (addr >> 4) & 0x3;
         let is_inside_reg = ((addr & 0xF) / 2) % 2 == 0;
         let reg_index = (addr & 0xF) / 4;
 
-        if is_inside_reg {
+        let r = if is_inside_reg {
             self.read(timer_index, reg_index)
         } else {
             0
-        }
+        };
+        Ok(r)
     }
 
-    fn write_u16(&mut self, addr: u32, data: u16) {
+    fn write_u16(&mut self, addr: u32, data: u16) -> Result<()> {
         let timer_index = (addr >> 4) & 0x3;
         let is_inside_reg = ((addr & 0xF) / 2) % 2 == 0;
         let reg_index = (addr & 0xF) / 4;
@@ -460,13 +462,7 @@ impl BusLine for Timers {
                 data
             );
         }
+        Ok(())
     }
 
-    fn read_u8(&mut self, _addr: u32) -> u8 {
-        todo!()
-    }
-
-    fn write_u8(&mut self, _addr: u32, _data: u8) {
-        todo!()
-    }
 }

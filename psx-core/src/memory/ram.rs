@@ -1,5 +1,7 @@
 use byteorder::{ByteOrder, LittleEndian};
 
+use crate::memory::Result;
+
 use super::BusLine;
 
 pub struct MainRam {
@@ -25,36 +27,38 @@ impl MainRam {
 }
 
 impl BusLine for MainRam {
-    fn read_u32(&mut self, addr: u32) -> u32 {
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
         let index = (addr as usize) & 0x1FFFFF;
 
-        LittleEndian::read_u32(&self.data[index..index + 4])
+        Ok(LittleEndian::read_u32(&self.data[index..index + 4]))
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
+    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()> {
         let index = (addr as usize) & 0x1FFFFF;
 
-        LittleEndian::write_u32(&mut self.data[index..index + 4], data)
+        LittleEndian::write_u32(&mut self.data[index..index + 4], data);
+        Ok(())
     }
 
-    fn read_u16(&mut self, addr: u32) -> u16 {
+    fn read_u16(&mut self, addr: u32) -> Result<u16> {
+        let index = (addr as usize) & 0x1FFFFF;
+        Ok(LittleEndian::read_u16(&self.data[index..index + 2]))
+    }
+
+    fn write_u16(&mut self, addr: u32, data: u16) -> Result<()> {
         let index = (addr as usize) & 0x1FFFFF;
 
-        LittleEndian::read_u16(&self.data[index..index + 2])
+        LittleEndian::write_u16(&mut self.data[index..index + 2], data);
+        Ok(())
     }
 
-    fn write_u16(&mut self, addr: u32, data: u16) {
-        let index = (addr as usize) & 0x1FFFFF;
-
-        LittleEndian::write_u16(&mut self.data[index..index + 2], data)
+    fn read_u8(&mut self, addr: u32) -> Result<u8> {
+        Ok(self.data[(addr as usize) & 0x1FFFFF])
     }
 
-    fn read_u8(&mut self, addr: u32) -> u8 {
-        self.data[(addr as usize) & 0x1FFFFF]
-    }
-
-    fn write_u8(&mut self, addr: u32, data: u8) {
+    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()> {
         self.data[(addr as usize) & 0x1FFFFF] = data;
+        Ok(())
     }
 }
 
@@ -71,35 +75,38 @@ impl Default for Scratchpad {
 }
 
 impl BusLine for Scratchpad {
-    fn read_u32(&mut self, addr: u32) -> u32 {
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
         let index = addr as usize;
 
-        LittleEndian::read_u32(&self.data[index..index + 4])
+        Ok(LittleEndian::read_u32(&self.data[index..index + 4]))
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
+    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()> {
         let index = addr as usize;
 
-        LittleEndian::write_u32(&mut self.data[index..index + 4], data)
+        LittleEndian::write_u32(&mut self.data[index..index + 4], data);
+        Ok(())
     }
 
-    fn read_u16(&mut self, addr: u32) -> u16 {
+    fn read_u16(&mut self, addr: u32) -> Result<u16> {
         let index = addr as usize;
 
-        LittleEndian::read_u16(&self.data[index..index + 2])
+        Ok(LittleEndian::read_u16(&self.data[index..index + 2]))
     }
 
-    fn write_u16(&mut self, addr: u32, data: u16) {
+    fn write_u16(&mut self, addr: u32, data: u16) -> Result<()> {
         let index = addr as usize;
 
-        LittleEndian::write_u16(&mut self.data[index..index + 2], data)
+        LittleEndian::write_u16(&mut self.data[index..index + 2], data);
+        Ok(())
     }
 
-    fn read_u8(&mut self, addr: u32) -> u8 {
-        self.data[addr as usize]
+    fn read_u8(&mut self, addr: u32) -> Result<u8> {
+        Ok(self.data[addr as usize])
     }
 
-    fn write_u8(&mut self, addr: u32, data: u8) {
+    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()> {
         self.data[addr as usize] = data;
+        Ok(())
     }
 }

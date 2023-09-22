@@ -1,4 +1,4 @@
-use crate::memory::{interrupts::InterruptRequester, BusLine};
+use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
 use bitflags::bitflags;
 
 use std::{collections::VecDeque, fmt::Write, fs};
@@ -980,28 +980,26 @@ impl ControllerAndMemoryCard {
 }
 
 impl BusLine for ControllerAndMemoryCard {
-    fn read_u32(&mut self, addr: u32) -> u32 {
-        match addr {
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
+        let r = match addr {
             0x4 => self.get_stat(),
             _ => unreachable!(),
-        }
+        };
+        Ok(r)
     }
 
-    fn write_u32(&mut self, _addr: u32, _data: u32) {
-        todo!()
-    }
-
-    fn read_u16(&mut self, addr: u32) -> u16 {
-        match addr {
+    fn read_u16(&mut self, addr: u32) -> Result<u16> {
+        let r = match addr {
             0x4 => self.get_stat() as u16,
             0x8 => self.mode.bits(),
             0xA => self.ctrl.bits(),
             0xE => self.baudrate_timer_reload as u16,
             _ => unreachable!(),
-        }
+        };
+        Ok(r)
     }
 
-    fn write_u16(&mut self, addr: u32, data: u16) {
+    fn write_u16(&mut self, addr: u32, data: u16) -> Result<()> {
         match addr {
             0x8 => {
                 self.mode = JoyMode::from_bits_retain(data);
@@ -1048,18 +1046,20 @@ impl BusLine for ControllerAndMemoryCard {
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
 
     // only used with 0x1F801040
-    fn read_u8(&mut self, addr: u32) -> u8 {
+    fn read_u8(&mut self, addr: u32) -> Result<u8> {
         assert!(addr == 0);
-        self.pop_from_rx_fifo()
+        Ok(self.pop_from_rx_fifo())
     }
 
     // only used with 0x1F801040
-    fn write_u8(&mut self, addr: u32, data: u8) {
+    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()> {
         assert!(addr == 0);
         self.push_to_tx_fifo(data);
         log::info!("Add to TX fifo {:02X}", data);
+        Ok(())
     }
 }

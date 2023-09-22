@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::memory::BusLine;
+use crate::memory::{BusLine, Result};
 use bitflags::bitflags;
 use byteorder::{ByteOrder, LittleEndian};
 
@@ -625,35 +625,21 @@ impl Mdec {
 }
 
 impl BusLine for Mdec {
-    fn read_u32(&mut self, addr: u32) -> u32 {
-        match addr & 0xF {
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
+        let r = match addr & 0xF {
             0 => self.read_fifo(),
             4 => self.read_status(),
             _ => unreachable!(),
-        }
+        };
+        Ok(r)
     }
 
-    fn write_u32(&mut self, addr: u32, data: u32) {
+    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()> {
         match addr & 0xF {
             0 => self.write_command_params(data),
             4 => self.write_control(data),
             _ => unreachable!(),
         }
-    }
-
-    fn read_u16(&mut self, _addr: u32) -> u16 {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
-        todo!()
-    }
-
-    fn read_u8(&mut self, _addr: u32) -> u8 {
-        todo!()
-    }
-
-    fn write_u8(&mut self, _addr: u32, _data: u8) {
-        todo!()
+        Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use crate::PsxConfig;
+use crate::{memory::Result, PsxConfig};
 
 use super::BusLine;
 
@@ -22,27 +22,11 @@ impl Default for ExpansionRegion1 {
 }
 
 impl BusLine for ExpansionRegion1 {
-    fn read_u32(&mut self, _addr: u32) -> u32 {
-        todo!()
+    fn read_u8(&mut self, addr: u32) -> Result<u8> {
+        Ok(self.data[addr as usize])
     }
 
-    fn write_u32(&mut self, _addr: u32, _data: u32) {
-        todo!()
-    }
-
-    fn read_u16(&mut self, _addr: u32) -> u16 {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
-        todo!()
-    }
-
-    fn read_u8(&mut self, addr: u32) -> u8 {
-        self.data[addr as usize]
-    }
-
-    fn write_u8(&mut self, addr: u32, data: u8) {
+    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()> {
         self.data[addr as usize] = data;
 
         log::info!(
@@ -50,6 +34,7 @@ impl BusLine for ExpansionRegion1 {
             addr,
             data
         );
+        Ok(())
     }
 }
 
@@ -157,33 +142,17 @@ impl ExpansionRegion2 {
 }
 
 impl BusLine for ExpansionRegion2 {
-    fn read_u32(&mut self, _addr: u32) -> u32 {
-        todo!()
-    }
-
-    fn write_u32(&mut self, _addr: u32, _data: u32) {
-        todo!()
-    }
-
-    fn read_u16(&mut self, _addr: u32) -> u16 {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) {
-        todo!()
-    }
-
-    fn read_u8(&mut self, addr: u32) -> u8 {
+    fn read_u8(&mut self, addr: u32) -> Result<u8> {
         let out = match addr {
             0x20..=0x2F => self.tty_duart.read(addr & 0xF),
             _ => self.data[addr as usize],
         };
 
         log::info!("expansion region 2 read at {:02X}, value {:02X}", addr, out);
-        out
+        Ok(out)
     }
 
-    fn write_u8(&mut self, addr: u32, data: u8) {
+    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()> {
         log::info!(
             "expansion region 2 write at {:02X}, value {:02X}",
             addr,
@@ -198,5 +167,6 @@ impl BusLine for ExpansionRegion2 {
         }
 
         self.data[addr as usize] = data;
+        Ok(())
     }
 }
