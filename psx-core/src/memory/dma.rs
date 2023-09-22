@@ -764,14 +764,6 @@ impl BusLine for Dma {
         Ok(())
     }
 
-    fn read_u16(&mut self, _addr: u32) -> Result<u16> {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) -> Result<()> {
-        todo!()
-    }
-
     fn read_u8(&mut self, addr: u32) -> Result<u8> {
         let u32_data = self.read_u32(addr & 0xFFFFFFFC)?;
         let shift = (addr & 3) * 8;

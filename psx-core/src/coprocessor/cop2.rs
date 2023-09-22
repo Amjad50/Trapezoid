@@ -879,16 +879,18 @@ impl Gte {
         }
     }
 
-    pub fn execute_command(&mut self, cmd: u32) {
+    pub fn execute_command(&mut self, cmd_word: u32) {
         // clear before start of command
         self.flag = Flag::empty();
 
-        let cmd = GteCommand::from_u32(cmd);
+        let cmd = GteCommand::from_u32(cmd_word);
 
         log::info!("cop2 executing command {:?}", cmd);
 
         match cmd.opcode {
-            GteCommandOpcode::Na => todo!(),
+            GteCommandOpcode::Na => {
+                println!("WARN: GTE: unknown command command, cmd: {:08X}", cmd_word);
+            },
             GteCommandOpcode::Rtps => {
                 self.rtps(0, cmd.sf, cmd.lm, false, true);
             }

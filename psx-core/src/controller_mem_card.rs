@@ -988,10 +988,6 @@ impl BusLine for ControllerAndMemoryCard {
         Ok(r)
     }
 
-    fn write_u32(&mut self, _addr: u32, _data: u32) -> Result<()> {
-        todo!()
-    }
-
     fn read_u16(&mut self, addr: u32) -> Result<u16> {
         let r = match addr {
             0x4 => self.get_stat() as u16,

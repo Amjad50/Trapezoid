@@ -31,14 +31,27 @@ use ram::{MainRam, Scratchpad};
 pub type Result<T, E = String> = std::result::Result<T, E>;
 
 pub trait BusLine {
-    fn read_u32(&mut self, addr: u32) -> Result<u32>;
-    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()>;
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
+        Err(format!("{}: u32 read from {:08X}", std::any::type_name::<Self>(), addr))
+    }
 
-    fn read_u16(&mut self, addr: u32) -> Result<u16>;
-    fn write_u16(&mut self, addr: u32, data: u16) -> Result<()>;
+    fn write_u32(&mut self, addr: u32, _data: u32) -> Result<()> {
+        Err(format!("{}: u32 write to {:08X}", std::any::type_name::<Self>(), addr))
+    }
 
-    fn read_u8(&mut self, addr: u32) -> Result<u8>;
-    fn write_u8(&mut self, addr: u32, data: u8) -> Result<()>;
+    fn read_u16(&mut self, addr: u32) -> Result<u16> {
+        Err(format!("{}: u16 read from {:08X}", std::any::type_name::<Self>(), addr))
+    }
+    fn write_u16(&mut self, addr: u32, _data: u16) -> Result<()> {
+        Err(format!("{}: u16 write to {:08X}", std::any::type_name::<Self>(), addr))
+    }
+
+    fn read_u8(&mut self, addr: u32) -> Result<u8> {
+        Err(format!("{}: u8 read from {:08X}", std::any::type_name::<Self>(), addr))
+    }
+    fn write_u8(&mut self, addr: u32, _data: u8) -> Result<()> {
+        Err(format!("{}: u8 write to {:08X}", std::any::type_name::<Self>(), addr))
+    }
 }
 
 pub struct Bios {
@@ -348,7 +361,7 @@ impl BusLine for CpuBus {
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.read_u32(addr & 0x3FF),
             0xFFFE0130 => self.cache_control.read_u32(addr),
             _ => {
-                todo!("u32 read from {:08X}", addr)
+                Err(format!("MainBus: u32 read from {:08X}", addr))
             }
         }
     }
@@ -371,7 +384,7 @@ impl BusLine for CpuBus {
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.write_u32(addr & 0x3FF, data),
             0xFFFE0130 => self.cache_control.write_u32(addr, data),
             _ => {
-                todo!("u32 write to {:08X}", addr)
+                Err(format!("MainBus: u32 write to {:08X}", addr))
             }
         }
     }
@@ -391,7 +404,7 @@ impl BusLine for CpuBus {
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.read_u16(addr & 0x3FF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u16(addr),
             _ => {
-                todo!("u16 read from {:08X}", addr)
+                Err(format!("u16 read from {:08X}", addr))
             }
         }
     }
@@ -410,7 +423,7 @@ impl BusLine for CpuBus {
             0x1F801100..=0x1F80112F => self.timers.write_u16(addr & 0xFF, data),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.write_u16(addr & 0x3FF, data),
             _ => {
-                todo!("u16 write to {:08X}", addr)
+                Err(format!("u16 write to {:08X}", addr))
             }
         }
     }
@@ -428,7 +441,7 @@ impl BusLine for CpuBus {
             0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
             _ => {
-                todo!("u8 read from {:08X}", addr)
+                Err(format!("u8 read from {:08X}", addr))
             }
         }
     }
@@ -446,7 +459,7 @@ impl BusLine for CpuBus {
             0x1F801800..=0x1F801803 => self.dma_bus.cdrom.write_u8(addr & 3, data),
             0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),
             _ => {
-                todo!("u8 write to {:08X}", addr)
+                Err(format!("u8 write to {:08X}", addr))
             }
         }
     }

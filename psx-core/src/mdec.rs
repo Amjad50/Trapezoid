@@ -642,20 +642,4 @@ impl BusLine for Mdec {
         }
         Ok(())
     }
-
-    fn read_u16(&mut self, _addr: u32) -> Result<u16> {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) -> Result<()> {
-        todo!()
-    }
-
-    fn read_u8(&mut self, _addr: u32) -> Result<u8> {
-        todo!()
-    }
-
-    fn write_u8(&mut self, _addr: u32, _data: u8) -> Result<()> {
-        todo!()
-    }
 }

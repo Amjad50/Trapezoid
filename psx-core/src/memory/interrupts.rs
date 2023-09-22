@@ -98,14 +98,6 @@ impl BusLine for Interrupts {
         }
         Ok(())
     }
-
-    fn read_u8(&mut self, _addr: u32) -> Result<u8> {
-        todo!()
-    }
-
-    fn write_u8(&mut self, _addr: u32, _data: u8) -> Result<()> {
-        todo!()
-    }
 }
 
 impl InterruptRequester for Interrupts {

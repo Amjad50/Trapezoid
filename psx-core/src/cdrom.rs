@@ -1402,24 +1402,6 @@ impl Cdrom {
 }
 
 impl BusLine for Cdrom {
-    fn read_u32(&mut self, _addr: u32) -> Result<u32> {
-        todo!()
-    }
-
-    fn write_u32(&mut self, _addr: u32, _data: u32) -> Result<()> {
-        todo!()
-    }
-
-    fn read_u16(&mut self, addr: u32) -> Result<u16> {
-        assert!(addr == 2);
-
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) -> Result<()> {
-        todo!()
-    }
-
     fn read_u8(&mut self, addr: u32) -> Result<u8> {
         let r = match addr {
             0 => self.read_index_status(),

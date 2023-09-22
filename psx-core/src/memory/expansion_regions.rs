@@ -22,22 +22,6 @@ impl Default for ExpansionRegion1 {
 }
 
 impl BusLine for ExpansionRegion1 {
-    fn read_u32(&mut self, _addr: u32) -> Result<u32> {
-        todo!()
-    }
-
-    fn write_u32(&mut self, _addr: u32, _data: u32) -> Result<()> {
-        todo!()
-    }
-
-    fn read_u16(&mut self, _addr: u32) -> Result<u16> {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) -> Result<()> {
-        todo!()
-    }
-
     fn read_u8(&mut self, addr: u32) -> Result<u8> {
         Ok(self.data[addr as usize])
     }
@@ -158,22 +142,6 @@ impl ExpansionRegion2 {
 }
 
 impl BusLine for ExpansionRegion2 {
-    fn read_u32(&mut self, _addr: u32) -> Result<u32> {
-        todo!()
-    }
-
-    fn write_u32(&mut self, _addr: u32, _data: u32) -> Result<()> {
-        todo!()
-    }
-
-    fn read_u16(&mut self, _addr: u32) -> Result<u16> {
-        todo!()
-    }
-
-    fn write_u16(&mut self, _addr: u32, _data: u16) -> Result<()> {
-        todo!()
-    }
-
     fn read_u8(&mut self, addr: u32) -> Result<u8> {
         let out = match addr {
             0x20..=0x2F => self.tty_duart.read(addr & 0xF),
