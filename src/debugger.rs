@@ -247,7 +247,7 @@ impl Debugger {
                 });
                 // read register
                 reg_ty.map(|r| psx.cpu().registers().read(r))
-            } else if let Some(hw_register_name) = a.strip_prefix("@") {
+            } else if let Some(hw_register_name) = a.strip_prefix('@') {
                 HW_REGISTERS.get(hw_register_name).copied().or_else(|| {
                     println!("Invalid hardware register name: {}", hw_register_name);
                     None
@@ -319,11 +319,11 @@ impl Debugger {
                             );
                         },
                     )));
-                println!("Instruction trace: {}", true);
+                println!("Instruction trace: true");
             }
             "tf" => {
                 psx.cpu().debugger().set_instruction_trace_handler(None);
-                println!("Instruction trace: {}", false);
+                println!("Instruction trace: false");
             }
             "stack" => {
                 let n = addr.unwrap_or(10);
@@ -577,7 +577,7 @@ impl Debugger {
     fn run_hooks(&mut self, psx: &mut Psx) {
         let hooks = std::mem::take(&mut self.breakpoint_hooks);
         for hook in &hooks {
-            self.handle_command(psx, &hook);
+            self.handle_command(psx, hook);
         }
         self.breakpoint_hooks = hooks;
     }

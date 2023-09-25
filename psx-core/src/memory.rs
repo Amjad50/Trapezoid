@@ -20,7 +20,7 @@ use crate::gpu::Gpu;
 use crate::mdec::Mdec;
 use crate::spu::Spu;
 use crate::timers::Timers;
-use crate::PsxConfig;
+use crate::{PsxConfig, PsxError};
 
 use dma::Dma;
 use expansion_regions::{ExpansionRegion1, ExpansionRegion2};
@@ -32,25 +32,49 @@ pub type Result<T, E = String> = std::result::Result<T, E>;
 
 pub trait BusLine {
     fn read_u32(&mut self, addr: u32) -> Result<u32> {
-        Err(format!("{}: u32 read from {:08X}", std::any::type_name::<Self>(), addr))
+        Err(format!(
+            "{}: u32 read from {:08X}",
+            std::any::type_name::<Self>(),
+            addr
+        ))
     }
 
     fn write_u32(&mut self, addr: u32, _data: u32) -> Result<()> {
-        Err(format!("{}: u32 write to {:08X}", std::any::type_name::<Self>(), addr))
+        Err(format!(
+            "{}: u32 write to {:08X}",
+            std::any::type_name::<Self>(),
+            addr
+        ))
     }
 
     fn read_u16(&mut self, addr: u32) -> Result<u16> {
-        Err(format!("{}: u16 read from {:08X}", std::any::type_name::<Self>(), addr))
+        Err(format!(
+            "{}: u16 read from {:08X}",
+            std::any::type_name::<Self>(),
+            addr
+        ))
     }
     fn write_u16(&mut self, addr: u32, _data: u16) -> Result<()> {
-        Err(format!("{}: u16 write to {:08X}", std::any::type_name::<Self>(), addr))
+        Err(format!(
+            "{}: u16 write to {:08X}",
+            std::any::type_name::<Self>(),
+            addr
+        ))
     }
 
     fn read_u8(&mut self, addr: u32) -> Result<u8> {
-        Err(format!("{}: u8 read from {:08X}", std::any::type_name::<Self>(), addr))
+        Err(format!(
+            "{}: u8 read from {:08X}",
+            std::any::type_name::<Self>(),
+            addr
+        ))
     }
     fn write_u8(&mut self, addr: u32, _data: u8) -> Result<()> {
-        Err(format!("{}: u8 write to {:08X}", std::any::type_name::<Self>(), addr))
+        Err(format!(
+            "{}: u8 write to {:08X}",
+            std::any::type_name::<Self>(),
+            addr
+        ))
     }
 }
 
@@ -112,12 +136,13 @@ impl Bios {
 
 impl Bios {
     // TODO: produce a valid `Error` struct
-    pub fn from_file<P: AsRef<Path>>(bios_file_path: P) -> Result<Self, ()> {
+    pub fn from_file<P: AsRef<Path>>(bios_file_path: P) -> Result<Self, PsxError> {
         let mut data = Vec::new();
 
-        let mut file = File::open(bios_file_path).map_err(|_| ())?;
+        let mut file = File::open(bios_file_path).map_err(|_| PsxError::CouldNotLoadBios)?;
 
-        file.read_to_end(&mut data).map_err(|_| ())?;
+        file.read_to_end(&mut data)
+            .map_err(|_| PsxError::CouldNotLoadBios)?;
 
         let mut s = Self { data };
 
@@ -193,7 +218,7 @@ impl CpuBus {
         config: PsxConfig,
         device: Arc<Device>,
         queue: Arc<Queue>,
-    ) -> Self {
+    ) -> Result<Self, PsxError> {
         let mut s = Self {
             bios,
             mem_ctrl_1: MemoryControl1::default(),
@@ -231,12 +256,14 @@ impl CpuBus {
                 .to_ascii_lowercase()
                 .as_str()
             {
-                "cue" => s.dma_bus.cdrom.set_cue_file(disk_file),
-                _ => todo!("Only cue is supported now"),
+                "cue" => s.dma_bus.cdrom.set_cue_file(disk_file)?,
+                _ => {
+                    return Err(PsxError::DiskTypeNotSupported);
+                }
             }
         }
 
-        s
+        Ok(s)
     }
 
     pub fn gpu(&self) -> &Gpu {
@@ -267,15 +294,6 @@ impl CpuBus {
     pub fn load_exe_in_memory<P: AsRef<Path>>(&mut self, exe_file_path: P) -> (u32, u32, u32) {
         let mut file = File::open(exe_file_path).unwrap();
         let mut magic = [0; 8];
-        let initial_pc;
-        let initial_gp;
-        let destination;
-        let file_size;
-        let _data_section_start;
-        let _data_section_size;
-        let _bss_section_start;
-        let _bss_section_size;
-        let mut initial_sp_fp;
         let mut data = Vec::new();
 
         file.read_exact(&mut magic).unwrap();
@@ -283,15 +301,15 @@ impl CpuBus {
         // bytes from 0x8 to 0xF
         assert!(file.read_u64::<LittleEndian>().unwrap() == 0);
 
-        initial_pc = file.read_u32::<LittleEndian>().unwrap();
-        initial_gp = file.read_u32::<LittleEndian>().unwrap();
-        destination = file.read_u32::<LittleEndian>().unwrap();
-        file_size = file.read_u32::<LittleEndian>().unwrap();
-        _data_section_start = file.read_u32::<LittleEndian>().unwrap();
-        _data_section_size = file.read_u32::<LittleEndian>().unwrap();
-        _bss_section_start = file.read_u32::<LittleEndian>().unwrap();
-        _bss_section_size = file.read_u32::<LittleEndian>().unwrap();
-        initial_sp_fp = file.read_u32::<LittleEndian>().unwrap();
+        let initial_pc = file.read_u32::<LittleEndian>().unwrap();
+        let initial_gp = file.read_u32::<LittleEndian>().unwrap();
+        let destination = file.read_u32::<LittleEndian>().unwrap();
+        let file_size = file.read_u32::<LittleEndian>().unwrap();
+        let _data_section_start = file.read_u32::<LittleEndian>().unwrap();
+        let _data_section_size = file.read_u32::<LittleEndian>().unwrap();
+        let _bss_section_start = file.read_u32::<LittleEndian>().unwrap();
+        let _bss_section_size = file.read_u32::<LittleEndian>().unwrap();
+        let mut initial_sp_fp = file.read_u32::<LittleEndian>().unwrap();
         initial_sp_fp += file.read_u32::<LittleEndian>().unwrap();
         // ascii marker and zero filled data
         file.seek(SeekFrom::Start(0x800)).unwrap();
@@ -360,9 +378,7 @@ impl BusLine for CpuBus {
             0x1F801820..=0x1F801824 => self.dma_bus.mdec.read_u32(addr & 0xF),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.read_u32(addr & 0x3FF),
             0xFFFE0130 => self.cache_control.read_u32(addr),
-            _ => {
-                Err(format!("MainBus: u32 read from {:08X}", addr))
-            }
+            _ => Err(format!("MainBus: u32 read from {:08X}", addr)),
         }
     }
 
@@ -383,9 +399,7 @@ impl BusLine for CpuBus {
             0x1F801820..=0x1F801824 => self.dma_bus.mdec.write_u32(addr & 0xF, data),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.write_u32(addr & 0x3FF, data),
             0xFFFE0130 => self.cache_control.write_u32(addr, data),
-            _ => {
-                Err(format!("MainBus: u32 write to {:08X}", addr))
-            }
+            _ => Err(format!("MainBus: u32 write to {:08X}", addr)),
         }
     }
 
@@ -403,9 +417,7 @@ impl BusLine for CpuBus {
             0x1F801100..=0x1F80112F => self.timers.read_u16(addr & 0xFF),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.read_u16(addr & 0x3FF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u16(addr),
-            _ => {
-                Err(format!("u16 read from {:08X}", addr))
-            }
+            _ => Err(format!("u16 read from {:08X}", addr)),
         }
     }
 
@@ -422,9 +434,7 @@ impl BusLine for CpuBus {
             0x1F801070..=0x1F801077 => self.interrupts.write_u16(addr & 0xF, data),
             0x1F801100..=0x1F80112F => self.timers.write_u16(addr & 0xFF, data),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.write_u16(addr & 0x3FF, data),
-            _ => {
-                Err(format!("u16 write to {:08X}", addr))
-            }
+            _ => Err(format!("u16 write to {:08X}", addr)),
         }
     }
     fn read_u8(&mut self, addr: u32) -> Result<u8> {
@@ -440,9 +450,7 @@ impl BusLine for CpuBus {
             0x1F801800..=0x1F801803 => self.dma_bus.cdrom.read_u8(addr & 3),
             0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
             0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
-            _ => {
-                Err(format!("u8 read from {:08X}", addr))
-            }
+            _ => Err(format!("u8 read from {:08X}", addr)),
         }
     }
 
@@ -458,9 +466,7 @@ impl BusLine for CpuBus {
             0x1F801080..=0x1F8010FF => self.dma.write_u8(addr & 0xFF, data),
             0x1F801800..=0x1F801803 => self.dma_bus.cdrom.write_u8(addr & 3, data),
             0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),
-            _ => {
-                Err(format!("u8 write to {:08X}", addr))
-            }
+            _ => Err(format!("u8 write to {:08X}", addr)),
         }
     }
 }

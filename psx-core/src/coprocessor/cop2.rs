@@ -495,7 +495,7 @@ impl Gte {
 
             let shifted_mac3 = self.mac[3].wrapping_shr(12);
 
-            if shifted_mac3 > 0x7FFF || shifted_mac3 < -0x8000 {
+            if !(-0x8000..=0x7FFF).contains(&shifted_mac3) {
                 self.flag
                     .insert(Flag::IR3_SATURATED_TO_P0000_P7FFF_OR_N8000_P7FFF);
             }
@@ -890,7 +890,7 @@ impl Gte {
         match cmd.opcode {
             GteCommandOpcode::Na => {
                 println!("WARN: GTE: unknown command command, cmd: {:08X}", cmd_word);
-            },
+            }
             GteCommandOpcode::Rtps => {
                 self.rtps(0, cmd.sf, cmd.lm, false, true);
             }

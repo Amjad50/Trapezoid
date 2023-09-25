@@ -101,9 +101,9 @@ impl AdpcmDecoder {
                     sample = ((sample as u32) | 0xfffffff0) as i32;
                 }
                 // shift
-                sample = sample << shift_factor;
+                sample <<= shift_factor;
                 // apply adpcm filter
-                sample = sample + (self.old * f0 + self.older * f1 + 32) / 64;
+                sample += (self.old * f0 + self.older * f1 + 32) / 64;
                 sample = sample.clamp(-0x8000, 0x7fff);
 
                 self.older = self.old;
@@ -396,7 +396,7 @@ impl Voice {
         }
 
         self.i_adpcm_decoder
-            .decode_block(&adpcm_block, &mut self.i_cached_28_samples_block);
+            .decode_block(adpcm_block, &mut self.i_cached_28_samples_block);
 
         endx_set
     }
@@ -857,7 +857,7 @@ impl Spu {
 
 impl BusLine for Spu {
     fn read_u32(&mut self, addr: u32) -> Result<u32> {
-        let r = match addr {
+        match addr {
             0x000..=0x17F => Err(format!("SPU u32 read voice register {:03X}", addr)),
             0x180..=0x187 => Err(format!("SPU u32 read spu control {:03X}", addr)),
             0x188..=0x19F => Err(format!("SPU u32 read voice flags {:03X}", addr)),
@@ -866,12 +866,11 @@ impl BusLine for Spu {
             0x200..=0x25F => Err(format!("SPU u32 read voice internal reg {:03X}", addr)),
             0x260..=0x2FF => unreachable!("u32 read unknown {:03X}", addr),
             _ => unreachable!(),
-        };
-        r
+        }
     }
 
     fn write_u32(&mut self, addr: u32, _data: u32) -> Result<()> {
-        let r = match addr {
+        match addr {
             0x000..=0x17F => Err(format!("SPU u32 write voice register {:03X}", addr)),
             0x180..=0x187 => Err(format!("SPU u32 write spu control {:03X}", addr)),
             0x188..=0x19F => Err(format!("SPU u32 write voice flags {:03X}", addr)),
@@ -880,9 +879,7 @@ impl BusLine for Spu {
             0x200..=0x25F => Err(format!("SPU u32 write voice internal reg {:03X}", addr)),
             0x260..=0x2FF => unreachable!("u32 write unknown {:03X}", addr),
             _ => unreachable!(),
-        };
-
-        r
+        }
     }
 
     fn read_u16(&mut self, addr: u32) -> Result<u16> {

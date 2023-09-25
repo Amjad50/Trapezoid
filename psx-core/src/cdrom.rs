@@ -1,6 +1,7 @@
 use crate::{
     memory::{interrupts::InterruptRequester, BusLine, Result},
     spu::Spu,
+    PsxError,
 };
 use bitflags::bitflags;
 
@@ -60,6 +61,7 @@ enum ActionStatus {
         second_delivery_attempt: bool,
     },
     Seek,
+    #[allow(dead_code)]
     Play,
 }
 
@@ -225,9 +227,9 @@ impl AdpcmDecoder {
             };
 
             // shift
-            sample = sample << shift_factor;
+            sample <<= shift_factor;
             // apply adpcm filter
-            sample = sample + (self.old * f0 + self.older * f1 + 32) / 64;
+            sample += (self.old * f0 + self.older * f1 + 32) / 64;
             sample = sample.clamp(-0x8000, 0x7fff);
 
             self.older = self.old;
@@ -457,50 +459,70 @@ impl Default for Cdrom {
 
 // file reading and handling
 impl Cdrom {
-    pub fn set_cue_file<P: AsRef<Path>>(&mut self, cue_file: P) {
+    pub fn set_cue_file<P: AsRef<Path>>(&mut self, cue_file: P) -> Result<(), PsxError> {
         let a = cue_file.as_ref().to_path_buf();
-        self.load_cue_file(&a);
+        self.load_cue_file(&a)?;
         self.cue_file = Some(a);
+        Ok(())
     }
 
-    fn load_cue_file(&mut self, cue_file: &Path) {
+    fn load_cue_file(&mut self, cue_file: &Path) -> Result<(), PsxError> {
+        macro_rules! parse_expect {
+            ($var:ident, $expected:expr) => {
+                if $var.next().unwrap_or("") != $expected {
+                    return Err(PsxError::CouldNotLoadDisk(
+                        concat!("Invalid cue file: at ", $expected).to_string(),
+                    ));
+                }
+            };
+        }
+
         // TODO: support parsing and loading the data based on the cue file
         // TODO: since some Cds can be large, try to do mmap
         self.status.start_motor();
 
         // read cue file
-        let mut file = fs::File::open(cue_file).unwrap();
+        let mut file =
+            fs::File::open(cue_file).map_err(|e| PsxError::CouldNotLoadDisk(e.to_string()))?;
         let mut cue_content = String::new();
-        file.read_to_string(&mut cue_content).unwrap();
+        file.read_to_string(&mut cue_content)
+            .map_err(|e| PsxError::CouldNotLoadDisk(e.to_string()))?;
         // parse cue format
         let mut parts = cue_content.split_whitespace();
-        assert!(parts.next().unwrap() == "FILE");
-        let mut bin_file_name = parts.next().unwrap().to_string();
+        parse_expect!(parts, "FILE");
+        let mut bin_file_name = parts
+            .next()
+            .ok_or_else(|| PsxError::CouldNotLoadDisk("Doesn't have bin filename".to_string()))?
+            .to_string();
         // must be in quotes
         assert!(bin_file_name.starts_with('"'));
         while !bin_file_name.ends_with('"') {
-            bin_file_name.push_str(" ");
+            bin_file_name.push(' ');
             bin_file_name.push_str(parts.next().unwrap());
         }
         // remove quotes
         bin_file_name = bin_file_name.trim_matches('"').to_string();
-        assert!(parts.next().unwrap() == "BINARY");
-        assert!(parts.next().unwrap() == "TRACK");
-        assert!(parts.next().unwrap() == "01");
-        assert!(parts.next().unwrap() == "MODE2/2352");
-        assert!(parts.next().unwrap() == "INDEX");
-        assert!(parts.next().unwrap() == "01");
-        assert!(parts.next().unwrap() == "00:00:00");
+        parse_expect!(parts, "BINARY");
+        parse_expect!(parts, "TRACK");
+        parse_expect!(parts, "01");
+        parse_expect!(parts, "MODE2/2352");
+        parse_expect!(parts, "INDEX");
+        parse_expect!(parts, "01");
+        parse_expect!(parts, "00:00:00");
 
         // load bin file
         let bin_file_path = cue_file.parent().unwrap().join(bin_file_name);
         log::info!("Loading bin file: {:?}", bin_file_path);
-        let mut file = fs::File::open(bin_file_path).unwrap();
+        let mut file =
+            fs::File::open(bin_file_path).map_err(|e| PsxError::CouldNotLoadDisk(e.to_string()))?;
         // read to new vector
         let mut bin_file_content = Vec::new();
-        file.read_to_end(&mut bin_file_content).unwrap();
+        file.read_to_end(&mut bin_file_content)
+            .map_err(|e| PsxError::CouldNotLoadDisk(e.to_string()))?;
         self.cue_file_content = cue_content;
         self.disk_data = bin_file_content;
+
+        Ok(())
     }
 
     pub fn change_cdrom_shell_open_state(&mut self, open: bool) {
@@ -1025,7 +1047,7 @@ impl Cdrom {
         //    delay, and retry at later time... but this time with file/channel checking!
         //    reject if filter_enabled(setmode.3) AND selected file/channel doesn't match
         //    2nd delivery attempt: send INT1+data, unless there's another INT pending
-        } else if *second_delivery_attempt == false
+        } else if !(*second_delivery_attempt)
             || !self.mode.intersects(CdromMode::XA_FILTER)
             || !(submode_audio && submode_realtime)
                 && (!self.mode.intersects(CdromMode::XA_FILTER) || filter_match)
@@ -1054,7 +1076,7 @@ impl Cdrom {
 
                 // if there is something, override it
                 self.read_data_buffer.clear();
-                self.read_data_buffer.extend_from_slice(&data);
+                self.read_data_buffer.extend_from_slice(data);
 
                 *second_delivery_attempt = false;
                 sector_read = true;
