@@ -110,10 +110,10 @@ impl Fps {
 
     /// Locks the current thread to the target FPS
     /// This is useful when running on a higher FPS than 60
-    fn lock_at_fps(&mut self, target_fps: u64) {
-        // add 1 to the target fps to account for sleeping time and extra errors
-        let target_fps = target_fps + 1;
-        let duration_per_frame = Duration::from_micros(1_000_000 / target_fps);
+    fn lock_fps(&mut self, target_fps: u64) {
+        // add 0.5 to the target fps to account for sleeping time and extra errors
+        let target_fps = target_fps as f64 + 0.5;
+        let duration_per_frame = Duration::from_secs_f64(1.0 / target_fps);
 
         let elapsed = self.last_frame.elapsed();
 
@@ -614,7 +614,7 @@ fn main() {
             },
             Event::MainEventsCleared => {
                 // limit the frame rate to 60 fps if the display support more than that
-                display.fps.lock_at_fps(60);
+                display.fps.lock_fps(60);
                 display.fps.tick();
 
                 // if the debugger is enabled, we don't run the emulation
