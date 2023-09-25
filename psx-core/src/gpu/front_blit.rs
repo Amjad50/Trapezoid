@@ -313,7 +313,7 @@ impl FrontBlit {
         D: ImageAccess + std::fmt::Debug + 'static,
         IF: GpuFuture,
     {
-        let span = tracing::span!(tracing::Level::TRACE, "FrontBlit::blit");
+        let span = tracing::trace_span!("FrontBlit::blit");
         let _enter = span.enter();
 
         let [width, height] = dest_image.dimensions().width_height();

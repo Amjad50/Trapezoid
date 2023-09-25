@@ -223,6 +223,9 @@ impl Psx {
     }
 
     pub fn clock_full_audio_frame(&mut self) -> cpu::CpuState {
+        let span = tracing::trace_span!("Psx::clock_full_audio_frame");
+        let _enter = span.enter();
+
         // sync the CPU clocks to the SPU so that the audio would be clearer.
         const CYCLES_PER_FRAME: u32 = 564480;
 
@@ -239,6 +242,9 @@ impl Psx {
     }
 
     pub fn clock_full_video_frame(&mut self) -> cpu::CpuState {
+        let span = tracing::trace_span!("Psx::clock_full_video_frame");
+        let _enter = span.enter();
+
         let mut prev_vblank = self.bus.gpu().in_vblank();
         let mut current_vblank = prev_vblank;
 

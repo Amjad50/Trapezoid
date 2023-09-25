@@ -380,7 +380,7 @@ impl VkDisplay {
                 future,
                 ..
             } => {
-                let span = tracing::span!(tracing::Level::TRACE, "VkDisplay::render_frame");
+                let span = tracing::trace_span!("VkDisplay::render_frame");
                 let _enter = span.enter();
 
                 let t = Instant::now();
@@ -394,14 +394,18 @@ impl VkDisplay {
                     (self.render_time_average.average() * 10.).round() / 10.
                 ));
 
+                let acquire_next_image_span =
+                    tracing::trace_span!("VkDisplay::render_frame::acquire_next_image");
                 let (image_num, suboptimal, acquire_future) =
-                    match swapchain::acquire_next_image(swapchain.clone(), None) {
-                        Ok(r) => r,
-                        Err(AcquireError::OutOfDate) => {
-                            panic!("recreate swapchain");
+                    acquire_next_image_span.in_scope(|| {
+                        match swapchain::acquire_next_image(swapchain.clone(), None) {
+                            Ok(r) => r,
+                            Err(AcquireError::OutOfDate) => {
+                                panic!("recreate swapchain");
+                            }
+                            Err(e) => panic!("Failed to acquire next image: {:?}", e),
                         }
-                        Err(e) => panic!("Failed to acquire next image: {:?}", e),
-                    };
+                    });
 
                 if suboptimal {
                     recreate_swapchain = true;
@@ -415,19 +419,23 @@ impl VkDisplay {
                     current_future.join(acquire_future).boxed(),
                 );
 
-                *future = Some(
-                    current_future
-                        .then_swapchain_present(
-                            self.queue.clone(),
-                            SwapchainPresentInfo::swapchain_image_index(
-                                swapchain.clone(),
-                                image_num,
-                            ),
-                        )
-                        .then_signal_fence_and_flush()
-                        .unwrap()
-                        .boxed(),
-                );
+                let present_span = tracing::trace_span!("VkDisplay::render_frame::present");
+
+                *future = present_span.in_scope(|| {
+                    Some(
+                        current_future
+                            .then_swapchain_present(
+                                self.queue.clone(),
+                                SwapchainPresentInfo::swapchain_image_index(
+                                    swapchain.clone(),
+                                    image_num,
+                                ),
+                            )
+                            .then_signal_fence_and_flush()
+                            .unwrap()
+                            .boxed(),
+                    )
+                });
 
                 let elapsed = t.elapsed();
                 self.render_time_average.add(elapsed.as_micros() as f64);
