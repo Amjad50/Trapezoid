@@ -29,6 +29,24 @@ use vulkano::{
 
 const MAX_CPU_CYCLES_TO_CLOCK: u32 = 2000;
 
+#[derive(Debug)]
+pub enum PsxError {
+    CouldNotLoadBios,
+    CouldNotLoadDisk(String),
+    DiskTypeNotSupported,
+}
+
+impl std::error::Error for PsxError {}
+impl std::fmt::Display for PsxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PsxError::CouldNotLoadBios => write!(f, "Could not load BIOS"),
+            PsxError::CouldNotLoadDisk(s) => write!(f, "Could not load disk: {}", s),
+            PsxError::DiskTypeNotSupported => write!(f, "Disk type not supported"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PsxConfig {
     pub stdout_debug: bool,
@@ -59,7 +77,7 @@ impl Psx {
         config: PsxConfig,
         device: Arc<Device>,
         queue: Arc<Queue>,
-    ) -> Result<Self, ()> {
+    ) -> Result<Self, PsxError> {
         let bios = Bios::from_file(bios_file_path)?;
 
         // save the exe file if there is any
@@ -77,7 +95,9 @@ impl Psx {
             {
                 "exe" => (Some(path), None),
                 "cue" => (None, Some(path)),
-                _ => todo!("Only cue and exe is supported now"),
+                _ => {
+                    return Err(PsxError::DiskTypeNotSupported);
+                }
             }
         } else {
             // only fast_boot if there is anything to run
@@ -87,7 +107,7 @@ impl Psx {
         Ok(Self {
             cpu: cpu::Cpu::new(),
             disk_available: disk_file.is_some(),
-            bus: CpuBus::new(bios, disk_file, config, device, queue),
+            bus: CpuBus::new(bios, disk_file, config, device, queue)?,
             exe_file,
             config,
             excess_cpu_cycles: 0,

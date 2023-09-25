@@ -13,6 +13,8 @@ struct EnabledBreakpoints {
     normal: bool,
 }
 
+type InstructionTraceHandler = Box<dyn Fn(&Registers, &Instruction, bool)>;
+
 pub struct Debugger {
     paused: bool,
     last_state: CpuState,
@@ -29,7 +31,7 @@ pub struct Debugger {
     step: bool,
     step_over: bool,
 
-    instruction_trace_handler: Option<Box<dyn Fn(&Registers, &Instruction, bool)>>,
+    instruction_trace_handler: Option<InstructionTraceHandler>,
 
     last_instruction: Instruction,
 }
@@ -90,7 +92,6 @@ impl Debugger {
         if self.step_over {
             self.step_over = false;
 
-            let offset;
             // check that the instruction we just executed is `Jal/r` and we are in the middle
             // of jump
             //
@@ -99,11 +100,7 @@ impl Debugger {
             // of jump) (+4)
             //
             // Otherwise, we will break on the instruction after the jump (+8)
-            if jumping {
-                offset = 4;
-            } else {
-                offset = 0;
-            }
+            let offset = if jumping { 4 } else { 0 };
 
             // PC is always word aligned
             let instr = bus.read_u32(regs.pc - offset).unwrap();
@@ -248,10 +245,7 @@ impl Debugger {
     /// - registers
     /// - instruction
     /// - jumping: indicates if we are in the middle of a jump
-    pub fn set_instruction_trace_handler(
-        &mut self,
-        handler: Option<Box<dyn Fn(&Registers, &Instruction, bool)>>,
-    ) {
+    pub fn set_instruction_trace_handler(&mut self, handler: Option<InstructionTraceHandler>) {
         self.instruction_trace_handler = handler;
     }
 

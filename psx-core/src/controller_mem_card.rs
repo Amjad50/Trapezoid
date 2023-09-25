@@ -504,13 +504,11 @@ impl MemoryCard {
 
         // TODO: move to managed folder with resources
         fs::read(format!("memcard{}.mcd", id))
-            .and_then(|m| {
+            .map(|m| {
                 if m.len() == 0x400 * 128 {
                     println!("Loaded memory card {}", id);
                     data.copy_from_slice(&m);
                 }
-
-                Ok(())
             })
             .ok();
 

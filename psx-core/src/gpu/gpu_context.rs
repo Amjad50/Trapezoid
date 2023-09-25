@@ -169,6 +169,7 @@ struct DrawingVertexFull {
 }
 
 impl DrawingVertexFull {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         v: &DrawingVertex,
         texture_params: &DrawingTextureParams,
@@ -916,14 +917,12 @@ impl GpuContext {
     }
 
     fn new_command_buffer_builder(&mut self) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
-        let builder = AutoCommandBufferBuilder::primary(
+        AutoCommandBufferBuilder::primary(
             &self.command_buffer_allocator,
             self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
-        .unwrap();
-
-        builder
+        .unwrap()
     }
 
     fn schedule_back_image_update(&mut self) {
@@ -1087,7 +1086,7 @@ impl GpuContext {
     }
 
     /// common function to draw polygons and polylines
-    #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn draw(
         &mut self,
         vertices: &[DrawingVertex],
@@ -1115,8 +1114,6 @@ impl GpuContext {
 
         let texture_window_mask = state_snapshot.texture_window_mask;
         let texture_window_offset = state_snapshot.texture_window_offset;
-
-        drop(state_snapshot);
 
         let mut semi_transparency_mode = if textured {
             texture_params.semi_transparency_mode

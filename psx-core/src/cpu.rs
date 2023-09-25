@@ -349,7 +349,7 @@ impl Cpu {
         F: FnOnce(u32, &Instruction) -> u32,
     {
         let rs = self.regs.read_general(instruction.rs_raw);
-        let result = handler(rs, &instruction);
+        let result = handler(rs, instruction);
         self.regs.write_general(instruction.rt_raw, result);
     }
 

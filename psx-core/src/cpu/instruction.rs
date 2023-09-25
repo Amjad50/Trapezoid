@@ -179,21 +179,21 @@ impl Instruction {
     }
 
     pub fn is_branch(&self) -> bool {
-        match self.opcode {
+        matches!(
+            self.opcode,
             Opcode::J
-            | Opcode::Jal
-            | Opcode::Jalr
-            | Opcode::Jr
-            | Opcode::Beq
-            | Opcode::Bne
-            | Opcode::Bgtz
-            | Opcode::Blez
-            | Opcode::Bltz
-            | Opcode::Bgez
-            | Opcode::Bltzal
-            | Opcode::Bgezal => true,
-            _ => false,
-        }
+                | Opcode::Jal
+                | Opcode::Jalr
+                | Opcode::Jr
+                | Opcode::Beq
+                | Opcode::Bne
+                | Opcode::Bgtz
+                | Opcode::Blez
+                | Opcode::Bltz
+                | Opcode::Bgez
+                | Opcode::Bltzal
+                | Opcode::Bgezal
+        )
     }
 
     #[inline]
@@ -516,14 +516,14 @@ impl fmt::Display for Instruction {
                 "{} 0x{:07X} => 0x{:08X}",
                 opcode_str(self.opcode),
                 self.imm26(),
-                self.pc & 0xF0000000 | self.imm26() * 4
+                (self.pc & 0xF0000000) | (self.imm26() * 4)
             ),
             Opcode::Jal => write!(
                 f,
                 "{} 0x{:07X} => 0x{:08X}",
                 opcode_str(self.opcode),
                 self.imm26(),
-                self.pc & 0xF0000000 | self.imm26() * 4
+                (self.pc & 0xF0000000) | (self.imm26() * 4)
             ),
             Opcode::Jr => write!(f, "{} {}", opcode_str(self.opcode), self.rs()),
             // some specs says "jalr rd,rs"

@@ -55,7 +55,7 @@ impl Debugger {
 }
 
 /// Moving average fps counter
-struct FPS {
+struct Fps {
     frames: [f64; 100],
     current_index: usize,
     sum: f64,
@@ -64,7 +64,7 @@ struct FPS {
     check_offset: Duration,
 }
 
-impl FPS {
+impl Fps {
     fn new() -> Self {
         Self {
             frames: [0.0; 100],
@@ -135,7 +135,7 @@ struct VkDisplay {
     device: Arc<Device>,
     queue: Arc<Queue>,
     display_type: DisplayType,
-    fps: FPS,
+    fps: Fps,
 }
 
 impl VkDisplay {
@@ -245,7 +245,7 @@ impl VkDisplay {
         Self {
             device: device.clone(),
             queue,
-            fps: FPS::new(),
+            fps: Fps::new(),
             display_type: DisplayType::Windowed {
                 event_loop: Some(event_loop),
                 surface,
@@ -314,7 +314,7 @@ impl VkDisplay {
         Self {
             device,
             queue,
-            fps: FPS::new(),
+            fps: Fps::new(),
             display_type: DisplayType::Headless,
         }
     }

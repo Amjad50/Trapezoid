@@ -99,7 +99,7 @@ impl DecodeMacroBlockCommandState {
 }
 
 enum MdecCommand {
-    DecodeMacroBlock(DecodeMacroBlockCommandState),
+    DecodeMacroBlock(Box<DecodeMacroBlockCommandState>),
     SetQuantTable { color_and_luminance: bool },
     SetScaleTable,
 }
@@ -451,11 +451,9 @@ impl Mdec {
             2 => {
                 // 48 words
                 size = 48;
-                let mut data_iter = data.iter();
-
                 let mut word_buffer = [0; 4];
                 let mut word_buffer_i = 0;
-                while let Some(color) = data_iter.next() {
+                for color in data {
                     let [r, g, b, _] = color.to_le_bytes();
                     let current_color = [r, g, b];
 
