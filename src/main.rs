@@ -86,8 +86,6 @@ impl MovingAverage {
 struct Fps {
     moving_average: MovingAverage,
     last_frame: Instant,
-    last_instance_check: Instant,
-    check_offset: Duration,
 }
 
 impl Fps {
@@ -95,46 +93,44 @@ impl Fps {
         Self {
             moving_average: MovingAverage::new(),
             last_frame: Instant::now(),
-            last_instance_check: Instant::now(),
-            check_offset: Duration::from_millis(0),
         }
     }
 
-    fn tick(&mut self) -> f64 {
+    fn tick(&mut self) {
         let now = Instant::now();
         let delta = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
 
         self.moving_average.add(delta);
-
-        self.fps()
     }
 
     fn fps(&self) -> f64 {
         1.0 / self.moving_average.average()
     }
 
-    fn did_reach_target(&mut self, target_fps: u64) -> bool {
+    /// Locks the current thread to the target FPS
+    /// This is useful when running on a higher FPS than 60
+    fn lock_at_fps(&mut self, target_fps: u64) {
+        // add 1 to the target fps to account for sleeping time and extra errors
+        let target_fps = target_fps + 1;
         let duration_per_frame = Duration::from_micros(1_000_000 / target_fps);
 
-        let elapsed = self.last_frame.elapsed().saturating_sub(self.check_offset);
-
-        // this gives us the approx time since the last check
-        // for high refresh rates, this will be smaller than the expected 60 FPS
-        let elapsed_since_last_check = self.last_instance_check.elapsed();
-        self.last_instance_check = Instant::now();
+        let elapsed = self.last_frame.elapsed();
 
         if elapsed >= duration_per_frame {
-            true
+            return;
         } else {
             let remaining = duration_per_frame - elapsed;
-            // if we will reach in the middle, then allow this time, but add an offset for next frame
-            if elapsed_since_last_check >= remaining {
-                // we have offsetted the check, so it affects the next frame
-                self.check_offset = elapsed_since_last_check - remaining;
-                true
-            } else {
-                false
+            if remaining > Duration::from_millis(1) {
+                std::thread::sleep(remaining - Duration::from_millis(1));
+                let elapsed = self.last_frame.elapsed();
+                if elapsed >= duration_per_frame {
+                    return;
+                }
+            }
+            // spinlock for the remaining time
+            while self.last_frame.elapsed() < duration_per_frame {
+                std::hint::spin_loop();
             }
         }
     }
@@ -606,9 +602,7 @@ fn main() {
             },
             Event::MainEventsCleared => {
                 // limit the frame rate to 60 fps if the display support more than that
-                if !display.fps.did_reach_target(60) {
-                    return ControlFlow::Poll;
-                }
+                display.fps.lock_at_fps(60);
                 display.fps.tick();
 
                 // if the debugger is enabled, we don't run the emulation
