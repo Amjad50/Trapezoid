@@ -395,7 +395,7 @@ impl VkDisplay {
                                 image_num,
                             ),
                         )
-                        .then_signal_fence_and_flush()
+                        .then_signal_semaphore_and_flush()
                         .unwrap()
                         .boxed(),
                 );

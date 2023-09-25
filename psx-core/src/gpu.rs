@@ -439,11 +439,10 @@ impl Gpu {
                 .unwrap();
             let cb = builder.build().unwrap();
 
-            // TODO: remove wait
             in_future
                 .then_execute(self.queue.clone(), cb)
                 .unwrap()
-                .then_signal_fence_and_flush()
+                .then_signal_semaphore_and_flush()
                 .unwrap()
                 .boxed()
         } else {

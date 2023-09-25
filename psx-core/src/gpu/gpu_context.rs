@@ -959,7 +959,7 @@ impl GpuContext {
                 .unwrap()
                 .then_execute(self.queue.clone(), command_buffer)
                 .unwrap()
-                .then_signal_fence_and_flush()
+                .then_signal_semaphore_and_flush()
                 .unwrap()
                 .boxed(),
         );
@@ -1280,8 +1280,8 @@ impl GpuContext {
         )
         .unwrap();
 
-        // TODO: try to remove the `wait` from here
-        self.front_blit
+        let sem = self
+            .front_blit
             .blit(
                 front_image.clone(),
                 topleft,
@@ -1289,15 +1289,13 @@ impl GpuContext {
                 !full_vram && gpu_stat.is_24bit_color_depth(),
                 self.gpu_future.take().unwrap(),
             )
-            .then_signal_fence_and_flush()
-            .unwrap()
-            .wait(None)
+            .then_signal_semaphore_and_flush()
             .unwrap();
 
         // send the front buffer
         self.gpu_front_image_sender.send(front_image).unwrap();
 
         // reset future since we are waiting
-        self.gpu_future = Some(sync::now(self.device.clone()).boxed());
+        self.gpu_future = Some(sem.boxed());
     }
 }
