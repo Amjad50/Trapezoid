@@ -807,6 +807,19 @@ impl GpuContext {
         buffer_read.to_vec()
     }
 
+    pub fn vram_vram_blit(
+        &mut self,
+        src_range: (Range<u32>, Range<u32>),
+        dst_range: (Range<u32>, Range<u32>),
+    ) {
+        if src_range == dst_range {
+            return;
+        }
+        // TODO: use vulkan image copy itself
+        let block = self.read_vram_block(src_range);
+        self.write_vram_block(dst_range, &block);
+    }
+
     pub fn fill_color(&mut self, top_left: (u32, u32), size: (u32, u32), color: (u8, u8, u8)) {
         let mut width = size.0;
         let mut height = size.1;
