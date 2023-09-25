@@ -143,6 +143,7 @@ enum DisplayType {
         swapchain: Arc<Swapchain>,
         images: Vec<Arc<SwapchainImage>>,
         future: Option<Box<dyn GpuFuture>>,
+        tracy_client: tracing_tracy::client::Client,
         full_vram_display: bool,
     },
     Headless,
@@ -284,6 +285,7 @@ impl VkDisplay {
                 images,
                 full_vram_display,
                 future: Some(sync::now(device).boxed()),
+                tracy_client: tracing_tracy::client::Client::start(),
             },
         }
     }
@@ -386,6 +388,7 @@ impl VkDisplay {
                 full_vram_display,
                 surface,
                 future,
+                tracy_client,
                 ..
             } => {
                 let span = tracing::trace_span!("VkDisplay::render_frame");
@@ -447,6 +450,7 @@ impl VkDisplay {
 
                 let elapsed = t.elapsed();
                 self.render_time_average.add(elapsed.as_micros() as f64);
+                tracy_client.frame_mark();
             }
             DisplayType::Headless => {}
         }
