@@ -17,7 +17,10 @@ use vulkano::{
         view::{ImageView, ImageViewCreateInfo},
         ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage,
     },
-    memory::allocator::{AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator},
+    memory::allocator::{
+        AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryUsage,
+        StandardMemoryAllocator,
+    },
     pipeline::{
         graphics::{
             color_blend::{
@@ -37,6 +40,7 @@ use vulkano::{
         SamplerMipmapMode,
     },
     sync::{self, GpuFuture},
+    DeviceSize,
 };
 
 use super::front_blit::FrontBlit;
@@ -314,7 +318,28 @@ impl GpuContext {
         queue: Arc<Queue>,
         gpu_front_image_sender: Sender<Arc<StorageImage>>,
     ) -> Self {
-        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        const B: DeviceSize = 1;
+        const K: DeviceSize = 1024 * B;
+        const M: DeviceSize = 1024 * K;
+        const G: DeviceSize = 1024 * M;
+
+        // Use a custom allocation size, the default (as of writing) in vulkano is 256MB, which is quite a lot
+        // as it allocates several Heaps.
+        //
+        // The emulator currently uses around 23-30MB only, so this is plenty to work with.
+        let allocation_create_info = GenericMemoryAllocatorCreateInfo {
+            #[rustfmt::skip]
+            block_sizes: &[
+                // Threshold 0 B -> 32MB
+                (0,  32 * M),
+                // Threshold 1 GB -> 64MB
+                (G, 64 * M),
+            ],
+            ..Default::default()
+        };
+
+        let memory_allocator =
+            Arc::new(StandardMemoryAllocator::new(device.clone(), allocation_create_info).unwrap());
         let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone());
         let command_buffer_allocator =
             StandardCommandBufferAllocator::new(device.clone(), Default::default());
@@ -472,7 +497,12 @@ impl GpuContext {
         )
         .unwrap();
 
-        let front_blit = FrontBlit::new(device.clone(), queue.clone(), render_image.clone());
+        let front_blit = FrontBlit::new(
+            device.clone(),
+            queue.clone(),
+            render_image.clone(),
+            &memory_allocator,
+        );
 
         let gpu_future = Some(image_clear_future.boxed());
 

@@ -16,7 +16,7 @@ use vulkano::{
         view::{ImageView, ImageViewCreateInfo},
         ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage,
     },
-    memory::allocator::{AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator},
+    memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryUsage},
     pipeline::{
         graphics::{
             input_assembly::{InputAssemblyState, PrimitiveTopology},
@@ -156,12 +156,15 @@ pub(super) struct FrontBlit {
 }
 
 impl FrontBlit {
-    pub fn new(device: Arc<Device>, queue: Arc<Queue>, source_image: Arc<StorageImage>) -> Self {
+    pub fn new(
+        device: Arc<Device>,
+        queue: Arc<Queue>,
+        source_image: Arc<StorageImage>,
+        memory_allocator: &impl MemoryAllocator,
+    ) -> Self {
         let vs = vs::load(device.clone()).unwrap();
         let fs = fs::load(device.clone()).unwrap();
         let cs = cs::load(device.clone()).unwrap();
-
-        let memory_allocator = StandardMemoryAllocator::new_default(device.clone());
 
         let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone());
         let command_buffer_allocator =
@@ -206,7 +209,7 @@ impl FrontBlit {
         .unwrap();
 
         let texture_24bit_image = StorageImage::with_usage(
-            &memory_allocator,
+            memory_allocator,
             ImageDimensions::Dim2d {
                 width: 1024,
                 height: 512,
@@ -220,7 +223,7 @@ impl FrontBlit {
         .unwrap();
 
         let texture_24bit_in_buffer = Buffer::new_slice::<u16>(
-            &memory_allocator,
+            memory_allocator,
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE_BUFFER,
                 ..Default::default()
@@ -234,7 +237,7 @@ impl FrontBlit {
         .unwrap();
 
         let texture_24bit_out_buffer = Buffer::new_slice::<u32>(
-            &memory_allocator,
+            memory_allocator,
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_SRC | BufferUsage::STORAGE_BUFFER,
                 ..Default::default()
@@ -258,7 +261,7 @@ impl FrontBlit {
         .unwrap();
 
         let vertex_buffer = Buffer::from_iter(
-            &memory_allocator,
+            memory_allocator,
             BufferCreateInfo {
                 usage: BufferUsage::VERTEX_BUFFER,
                 ..Default::default()
