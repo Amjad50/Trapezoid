@@ -943,6 +943,9 @@ impl GpuContext {
     }
 
     fn flush_command_builder(&mut self) {
+        let span = tracing::span!(tracing::Level::TRACE, "GpuContext::flush_command_builder");
+        let _enter = span.enter();
+
         // No need to flush if there no draw commands
         if self.buffered_commands == 0 {
             return;
@@ -1221,8 +1224,11 @@ impl GpuContext {
             state_snapshot,
         );
     }
-
+    
     pub(super) fn blit_to_front(&mut self, full_vram: bool, state_snapshot: GpuStateSnapshot) {
+        let span = tracing::span!(tracing::Level::TRACE, "GpuContext::blit_to_front");
+        let _enter = span.enter();
+
         let gpu_stat = state_snapshot.gpu_stat;
         let vram_display_area_start = state_snapshot.vram_display_area_start;
 

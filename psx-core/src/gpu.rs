@@ -404,12 +404,17 @@ impl Gpu {
     where
         D: ImageAccess + 'static,
     {
+        let span = tracing::span!(tracing::Level::TRACE, "Gpu::sync_gpu_and_blit_to_front");
+        let _enter = span.enter();
         // if we have a previous image, then we are not in the first frame,
         // so there should be an image in the channel.
         if !self.first_frame {
+            let span = tracing::span!(tracing::Level::TRACE, "Gpu::sync_gpu_and_blit_to_front::receiving_image");
+            let _enter = span.enter();
             // `recv` is blocking, here we will wait for the GPU to finish all drawing.
             // FIXME: Do not block. Find a way to keep the GPU synced with minimal performance loss.
             self.current_front_image = Some(self.gpu_front_image_receiver.recv().unwrap());
+            drop(_enter);
         }
         self.first_frame = false;
 

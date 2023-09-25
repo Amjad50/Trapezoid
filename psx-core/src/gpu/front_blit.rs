@@ -313,6 +313,9 @@ impl FrontBlit {
         D: ImageAccess + std::fmt::Debug + 'static,
         IF: GpuFuture,
     {
+        let span = tracing::span!(tracing::Level::TRACE, "FrontBlit::blit");
+        let _enter = span.enter();
+
         let [width, height] = dest_image.dimensions().width_height();
 
         let mut source_image = self.texture_image.clone();

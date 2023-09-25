@@ -12,6 +12,7 @@ use audio::AudioPlayer;
 use psx_core::{DigitalControllerKey, Psx, PsxConfig};
 
 use clap::Parser;
+use tracing_subscriber::layer::SubscriberExt;
 use vulkano::{
     device::{
         physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, Queue,
@@ -379,6 +380,9 @@ impl VkDisplay {
                 future,
                 ..
             } => {
+                let span = tracing::span!(tracing::Level::TRACE, "VkDisplay::render_frame");
+                let _enter = span.enter();
+
                 let t = Instant::now();
                 let mut current_future = future.take().unwrap();
                 current_future.cleanup_finished();
@@ -501,6 +505,11 @@ fn main() {
         .format_timestamp(None)
         .filter_level(log::LevelFilter::Error)
         .init();
+
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(tracing_tracy::TracyLayer::new()),
+    )
+    .expect("set up the subscriber");
 
     let args = PsxEmuArgs::parse();
 

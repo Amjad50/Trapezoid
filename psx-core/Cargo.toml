@@ -12,6 +12,7 @@ debugger = []
 [dependencies]
 byteorder = "1.4.2"
 log = "0.4"
+tracing = "0.1"
 bitflags = "2.1"
 
 vulkano = "0.33"
