@@ -118,19 +118,19 @@ impl Fps {
 
         if elapsed >= duration_per_frame {
             return;
-        } else {
-            let remaining = duration_per_frame - elapsed;
-            if remaining > Duration::from_millis(1) {
-                std::thread::sleep(remaining - Duration::from_millis(1));
-                let elapsed = self.last_frame.elapsed();
-                if elapsed >= duration_per_frame {
-                    return;
-                }
+        }
+
+        let remaining = duration_per_frame - elapsed;
+        if remaining > Duration::from_millis(1) {
+            std::thread::sleep(remaining - Duration::from_millis(1));
+            let elapsed = self.last_frame.elapsed();
+            if elapsed >= duration_per_frame {
+                return;
             }
-            // spinlock for the remaining time
-            while self.last_frame.elapsed() < duration_per_frame {
-                std::hint::spin_loop();
-            }
+        }
+        // spinlock for the remaining time
+        while self.last_frame.elapsed() < duration_per_frame {
+            std::hint::spin_loop();
         }
     }
 }
@@ -241,8 +241,20 @@ impl VkDisplay {
             );
             let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
 
-            let dimensions: [u32; 2] = window.inner_size().into();
+            let present_mode = device
+                .physical_device()
+                .surface_present_modes(&surface)
+                .unwrap()
+                .min_by_key(|&m| match m {
+                    PresentMode::Mailbox => 0,
+                    PresentMode::Immediate => 1,
+                    PresentMode::Fifo => 2,
+                    PresentMode::FifoRelaxed => 3,
+                    _ => 4,
+                })
+                .unwrap();
 
+            let dimensions: [u32; 2] = window.inner_size().into();
             Swapchain::new(
                 device.clone(),
                 surface.clone(),
@@ -252,7 +264,7 @@ impl VkDisplay {
                     image_extent: dimensions,
                     image_usage: ImageUsage::TRANSFER_DST,
                     composite_alpha: CompositeAlpha::Opaque,
-                    present_mode: PresentMode::Fifo,
+                    present_mode,
                     ..Default::default()
                 },
             )
