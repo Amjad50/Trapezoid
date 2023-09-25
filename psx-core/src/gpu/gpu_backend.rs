@@ -44,7 +44,22 @@ impl GpuBackend {
 
     fn run(mut self) {
         loop {
-            match self.gpu_backend_receiver.recv() {
+            let cmd = self.gpu_backend_receiver.recv();
+
+            let cmd_name = match cmd {
+                Ok(BackendCommand::BlitFront { .. }) => "BlitFront",
+                Ok(BackendCommand::DrawPolyline { .. }) => "DrawPolyline",
+                Ok(BackendCommand::DrawPolygon { .. }) => "DrawPolygon",
+                Ok(BackendCommand::WriteVramBlock { .. }) => "WriteVramBlock",
+                Ok(BackendCommand::VramVramBlit { .. }) => "VramVramBlit",
+                Ok(BackendCommand::VramReadBlock { .. }) => "VramReadBlock",
+                Ok(BackendCommand::FillColor { .. }) => "FillColor",
+                Err(_) => "Err",
+            };
+            let span = tracing::trace_span!("GpuBackend::run", arg = cmd_name);
+            let _enter = span.enter();
+
+            match cmd {
                 Ok(BackendCommand::BlitFront {
                     full_vram,
                     state_snapshot,
