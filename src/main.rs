@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use audio::AudioPlayer;
+use audio::{AudioPlayer, BufferFlowState};
 use psx_core::{DigitalControllerKey, Psx, PsxConfig};
 
 use clap::Parser;
@@ -85,13 +85,15 @@ impl MovingAverage {
 struct Fps {
     moving_average: MovingAverage,
     last_frame: Instant,
+    target_fps: f64,
 }
 
 impl Fps {
-    fn new() -> Self {
+    fn new(target_fps: u64) -> Self {
         Self {
             moving_average: MovingAverage::new(),
             last_frame: Instant::now(),
+            target_fps: target_fps as f64,
         }
     }
 
@@ -109,10 +111,15 @@ impl Fps {
 
     /// Locks the current thread to the target FPS
     /// This is useful when running on a higher FPS than 60
-    fn lock_fps(&mut self, target_fps: u64) {
-        // add 0.5 to the target fps to account for sleeping time and extra errors
-        let target_fps = target_fps as f64 + 0.5;
-        let duration_per_frame = Duration::from_secs_f64(1.0 / target_fps);
+    fn lock_by_audio(&mut self, audio_state: BufferFlowState) {
+        let fps_off = match audio_state {
+            BufferFlowState::Normal => 0.0,
+            BufferFlowState::Overflow => -0.02,
+            BufferFlowState::Underflow => 0.02,
+        };
+
+        self.target_fps += fps_off;
+        let duration_per_frame = Duration::from_secs_f64(1.0 / self.target_fps);
 
         let elapsed = self.last_frame.elapsed();
 
@@ -274,7 +281,7 @@ impl VkDisplay {
         Self {
             device: device.clone(),
             queue,
-            fps: Fps::new(),
+            fps: Fps::new(60),
             render_time_average: MovingAverage::new(),
             display_type: DisplayType::Windowed {
                 event_loop: Some(event_loop),
@@ -344,7 +351,7 @@ impl VkDisplay {
         Self {
             device,
             queue,
-            fps: Fps::new(),
+            fps: Fps::new(60),
             render_time_average: MovingAverage::new(),
             display_type: DisplayType::Headless,
         }
@@ -596,8 +603,10 @@ fn main() {
                 _ => {}
             },
             Event::MainEventsCleared => {
-                // limit the frame rate to 60 fps if the display support more than that
-                display.fps.lock_fps(60);
+                let audio_buffer_state = audio_player.take_buffer_state();
+                // limit the frame rate to the target fps if the display support more than that
+                // use the state of the audio buffer to adjust the fps
+                display.fps.lock_by_audio(audio_buffer_state);
                 display.fps.tick();
 
                 // if the debugger is enabled, we don't run the emulation

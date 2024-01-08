@@ -2,9 +2,16 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::{HeapProducer, HeapRb};
 
+pub enum BufferFlowState {
+    Normal,
+    Overflow,
+    Underflow,
+}
+
 pub struct AudioPlayer {
     buffer_producer: HeapProducer<i16>,
     output_stream: cpal::Stream,
+    buffer_state: BufferFlowState,
 }
 
 impl AudioPlayer {
@@ -42,6 +49,7 @@ impl AudioPlayer {
         Self {
             buffer_producer,
             output_stream,
+            buffer_state: BufferFlowState::Normal,
         }
     }
 
@@ -57,7 +65,17 @@ impl AudioPlayer {
     }
 
     pub fn queue(&mut self, data: &[i16]) {
+        if self.buffer_producer.capacity() - self.buffer_producer.len() < data.len() {
+            self.buffer_state = BufferFlowState::Overflow;
+        }
+        if self.buffer_producer.len() < data.len() / 2 {
+            self.buffer_state = BufferFlowState::Underflow;
+        }
         self.buffer_producer.push_slice(data);
+    }
+
+    pub fn take_buffer_state(&mut self) -> BufferFlowState {
+        std::mem::replace(&mut self.buffer_state, BufferFlowState::Normal)
     }
 }
 
