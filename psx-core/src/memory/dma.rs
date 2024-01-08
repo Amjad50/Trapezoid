@@ -613,9 +613,13 @@ impl Dma {
 
     /// Gets the channels to run based on priority, we are getting an array, so that if we couldn't
     /// run the most important channel (because its not ready yet), we can run the next one.
-    fn get_channels_order_to_run(&self) -> Vec<usize> {
-        let mut enabled_channels: Vec<_> = self
-            .channels
+    fn get_channels_order_to_run<'a>(&self, out_order: &'a mut [usize]) -> &'a [usize] {
+        // a location to store the enabled channels id and their priority
+        // the initial value doesn't matter as it will be overwritten
+        let mut enabled_channels = [(0, 0); 7];
+
+        let mut total_enabled = 0;
+        self.channels
             .iter()
             .enumerate()
             .filter_map(|(i, channel)| {
@@ -628,18 +632,28 @@ impl Dma {
                     None
                 }
             })
-            .collect();
+            .for_each(|(i, priority)| {
+                enabled_channels[total_enabled] = (i, priority);
+                total_enabled += 1;
+            });
 
-        if enabled_channels.is_empty() {
-            return Vec::new();
+        if total_enabled == 0 {
+            return &[];
         }
 
         // sort by priority
         // high priority is 0, low priority is 7
         // if the priority is the same, the channel with the highest index is run first
-        enabled_channels.sort_unstable_by_key(|(i, priority)| *priority as i32 * 100 - *i as i32);
+        enabled_channels[..total_enabled]
+            .sort_unstable_by_key(|(i, priority)| *priority as i32 * 100 - *i as i32);
 
-        enabled_channels.into_iter().map(|(i, _)| i).collect()
+        // copy the channels to run to the output array
+        let size = out_order.len().min(total_enabled);
+        for i in 0..size {
+            out_order[i] = enabled_channels[i].0;
+        }
+
+        &out_order[..total_enabled]
     }
 
     pub(super) fn clock_dma(
@@ -650,8 +664,9 @@ impl Dma {
         // record the number of cycles that are spent of the cpu
         let mut cpu_cycles = 0;
 
-        let channels_to_run = self.get_channels_order_to_run();
-        for i in channels_to_run {
+        let mut channels_order = [0; 7];
+        let channels_to_run = self.get_channels_order_to_run(&mut channels_order);
+        for &i in channels_to_run {
             let channel = &mut self.channels[i];
             log::trace!("channel {} doing DMA", i);
 
@@ -807,8 +822,10 @@ mod tests {
     #[test]
     fn get_channels_order_no_channels_enabled() {
         let dma = Dma::default();
-        let channels_order = dma.get_channels_order_to_run();
-        assert_eq!(channels_order, Vec::<usize>::new());
+
+        let mut channels_order = [0; 7];
+        let channels_order = dma.get_channels_order_to_run(&mut channels_order);
+        assert_eq!(channels_order, &[]);
     }
 
     #[test]
@@ -818,8 +835,9 @@ mod tests {
             ..Dma::default()
         };
         dma.channels[0].channel_control = ChannelControl::START_BUSY;
-        let channels_order = dma.get_channels_order_to_run();
-        assert_eq!(channels_order, vec![0]);
+        let mut channels_order = [0; 7];
+        let channels_order = dma.get_channels_order_to_run(&mut channels_order);
+        assert_eq!(channels_order, &[0]);
     }
 
     #[test]
@@ -832,8 +850,9 @@ mod tests {
         dma.channels[1].channel_control = ChannelControl::START_BUSY;
         dma.channels[2].channel_control = ChannelControl::START_BUSY;
         dma.channels[3].channel_control = ChannelControl::START_BUSY;
-        let channels_order = dma.get_channels_order_to_run();
-        assert_eq!(channels_order, vec![3, 2, 1, 0]);
+        let mut channels_order = [0; 7];
+        let channels_order = dma.get_channels_order_to_run(&mut channels_order);
+        assert_eq!(channels_order, &[3, 2, 1, 0]);
     }
 
     #[test]
@@ -844,8 +863,9 @@ mod tests {
         };
         dma.channels[2].channel_control = ChannelControl::START_BUSY;
         dma.channels[3].channel_control = ChannelControl::START_BUSY;
-        let channels_order = dma.get_channels_order_to_run();
-        assert_eq!(channels_order, vec![2, 3]);
+        let mut channels_order = [0; 7];
+        let channels_order = dma.get_channels_order_to_run(&mut channels_order);
+        assert_eq!(channels_order, &[2, 3]);
     }
 
     #[test]
@@ -857,8 +877,9 @@ mod tests {
         for i in 0..7 {
             dma.channels[i].channel_control = ChannelControl::START_BUSY;
         }
-        let channels_order = dma.get_channels_order_to_run();
+        let mut channels_order = [0; 7];
+        let channels_order = dma.get_channels_order_to_run(&mut channels_order);
 
-        assert_eq!(channels_order, vec![0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(channels_order, &[0, 1, 2, 3, 4, 5, 6]);
     }
 }
