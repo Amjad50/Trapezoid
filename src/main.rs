@@ -54,67 +54,83 @@ impl Debugger {
     fn handle_cpu_state(&mut self, _psx: &mut Psx, _cpu_state: psx_core::cpu::CpuState) {}
 }
 
-/// Moving average fps counter
-struct Fps {
-    frames: [f64; 100],
+struct MovingAverage {
+    values: [f64; 100],
     current_index: usize,
     sum: f64,
+}
+
+impl MovingAverage {
+    fn new() -> Self {
+        Self {
+            values: [0.0; 100],
+            current_index: 0,
+            sum: 0.0,
+        }
+    }
+
+    fn add(&mut self, value: f64) {
+        self.sum -= self.values[self.current_index];
+        self.sum += value;
+        self.values[self.current_index] = value;
+        self.current_index = (self.current_index + 1) % self.values.len();
+    }
+
+    fn average(&self) -> f64 {
+        self.sum / self.values.len() as f64
+    }
+}
+
+/// Moving average fps counter
+struct Fps {
+    moving_average: MovingAverage,
     last_frame: Instant,
-    last_instance_check: Instant,
-    check_offset: Duration,
 }
 
 impl Fps {
     fn new() -> Self {
         Self {
-            frames: [0.0; 100],
-            current_index: 0,
-            sum: 0.0,
+            moving_average: MovingAverage::new(),
             last_frame: Instant::now(),
-            last_instance_check: Instant::now(),
-            check_offset: Duration::from_millis(0),
         }
     }
 
-    fn tick(&mut self) -> f64 {
+    fn tick(&mut self) {
         let now = Instant::now();
         let delta = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
 
-        self.sum -= self.frames[self.current_index];
-        self.sum += delta;
-        self.frames[self.current_index] = delta;
-        self.current_index = (self.current_index + 1) % self.frames.len();
-
-        self.frames.len() as f64 / self.sum
+        self.moving_average.add(delta);
     }
 
     fn fps(&self) -> f64 {
-        self.frames.len() as f64 / self.sum
+        1.0 / self.moving_average.average()
     }
 
-    fn did_reach_target(&mut self, target_fps: u64) -> bool {
-        let duration_per_frame = Duration::from_micros(1_000_000 / target_fps);
+    /// Locks the current thread to the target FPS
+    /// This is useful when running on a higher FPS than 60
+    fn lock_fps(&mut self, target_fps: u64) {
+        // add 0.5 to the target fps to account for sleeping time and extra errors
+        let target_fps = target_fps as f64 + 0.5;
+        let duration_per_frame = Duration::from_secs_f64(1.0 / target_fps);
 
-        let elapsed = self.last_frame.elapsed().saturating_sub(self.check_offset);
-
-        // this gives us the approx time since the last check
-        // for high refresh rates, this will be smaller than the expected 60 FPS
-        let elapsed_since_last_check = self.last_instance_check.elapsed();
-        self.last_instance_check = Instant::now();
+        let elapsed = self.last_frame.elapsed();
 
         if elapsed >= duration_per_frame {
-            true
-        } else {
-            let remaining = duration_per_frame - elapsed;
-            // if we will reach in the middle, then allow this time, but add an offset for next frame
-            if elapsed_since_last_check >= remaining {
-                // we have offsetted the check, so it affects the next frame
-                self.check_offset = elapsed_since_last_check - remaining;
-                true
-            } else {
-                false
+            return;
+        }
+
+        let remaining = duration_per_frame - elapsed;
+        if remaining > Duration::from_millis(1) {
+            std::thread::sleep(remaining - Duration::from_millis(1));
+            let elapsed = self.last_frame.elapsed();
+            if elapsed >= duration_per_frame {
+                return;
             }
+        }
+        // spinlock for the remaining time
+        while self.last_frame.elapsed() < duration_per_frame {
+            std::hint::spin_loop();
         }
     }
 }
@@ -136,6 +152,7 @@ struct VkDisplay {
     queue: Arc<Queue>,
     display_type: DisplayType,
     fps: Fps,
+    render_time_average: MovingAverage,
 }
 
 impl VkDisplay {
@@ -224,8 +241,20 @@ impl VkDisplay {
             );
             let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
 
-            let dimensions: [u32; 2] = window.inner_size().into();
+            let present_mode = device
+                .physical_device()
+                .surface_present_modes(&surface)
+                .unwrap()
+                .min_by_key(|&m| match m {
+                    PresentMode::Mailbox => 0,
+                    PresentMode::Immediate => 1,
+                    PresentMode::Fifo => 2,
+                    PresentMode::FifoRelaxed => 3,
+                    _ => 4,
+                })
+                .unwrap();
 
+            let dimensions: [u32; 2] = window.inner_size().into();
             Swapchain::new(
                 device.clone(),
                 surface.clone(),
@@ -235,7 +264,7 @@ impl VkDisplay {
                     image_extent: dimensions,
                     image_usage: ImageUsage::TRANSFER_DST,
                     composite_alpha: CompositeAlpha::Opaque,
-                    present_mode: PresentMode::Fifo,
+                    present_mode,
                     ..Default::default()
                 },
             )
@@ -246,6 +275,7 @@ impl VkDisplay {
             device: device.clone(),
             queue,
             fps: Fps::new(),
+            render_time_average: MovingAverage::new(),
             display_type: DisplayType::Windowed {
                 event_loop: Some(event_loop),
                 surface,
@@ -315,6 +345,7 @@ impl VkDisplay {
             device,
             queue,
             fps: Fps::new(),
+            render_time_average: MovingAverage::new(),
             display_type: DisplayType::Headless,
         }
     }
@@ -356,13 +387,15 @@ impl VkDisplay {
                 future,
                 ..
             } => {
+                let t = Instant::now();
                 let mut current_future = future.take().unwrap();
                 current_future.cleanup_finished();
 
                 let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
                 window.set_title(&format!(
-                    "PSX - FPS: {:.1}",
-                    (self.fps.fps() * 10.).round() / 10.
+                    "PSX - FPS: {:.1} - Render time: {:.1}us",
+                    (self.fps.fps() * 10.).round() / 10.,
+                    (self.render_time_average.average() * 10.).round() / 10.
                 ));
 
                 let (image_num, suboptimal, acquire_future) =
@@ -399,6 +432,9 @@ impl VkDisplay {
                         .unwrap()
                         .boxed(),
                 );
+
+                let elapsed = t.elapsed();
+                self.render_time_average.add(elapsed.as_micros() as f64);
             }
             DisplayType::Headless => {}
         }
@@ -561,9 +597,7 @@ fn main() {
             },
             Event::MainEventsCleared => {
                 // limit the frame rate to 60 fps if the display support more than that
-                if !display.fps.did_reach_target(60) {
-                    return ControlFlow::Poll;
-                }
+                display.fps.lock_fps(60);
                 display.fps.tick();
 
                 // if the debugger is enabled, we don't run the emulation

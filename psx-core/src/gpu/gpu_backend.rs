@@ -80,9 +80,7 @@ impl GpuBackend {
                     self.gpu_context.write_vram_block(block_range, &block);
                 }
                 Ok(BackendCommand::VramVramBlit { src, dst }) => {
-                    // TODO: use vulkan image copy itself
-                    let block = self.gpu_context.read_vram_block(src);
-                    self.gpu_context.write_vram_block(dst, &block);
+                    self.gpu_context.vram_vram_blit(src, dst);
                 }
                 Ok(BackendCommand::VramReadBlock { block_range }) => {
                     let src = (block_range.0.start, block_range.1.start);
