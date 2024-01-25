@@ -7,9 +7,7 @@
 [![Build status](https://github.com/Amjad50/trapezoid/workflows/Rust/badge.svg)](https://actions-badge.atrox.dev/Amjad50/trapezoid/goto)
 [![dependency status](https://deps.rs/repo/github/Amjad50/trapezoid/status.svg)](https://deps.rs/repo/github/Amjad50/trapezoid)
 [![license](https://img.shields.io/github/license/Amjad50/trapezoid)](./LICENSE)
-
 [![Crates.io trapezoid](https://img.shields.io/crates/v/trapezoid)](https://crates.io/crates/trapezoid)
-[![docs.rs (with version)](https://img.shields.io/docsrs/trapezoid/latest)](https://docs.rs/trapezoid/latest/trapezoid/)
 
 **trapezoid** is a [PSX/PS1](https://en.wikipedia.org/wiki/PlayStation_(console)) emulator built from scratch using [Rust].
 
