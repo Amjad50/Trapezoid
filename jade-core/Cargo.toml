@@ -1,5 +1,5 @@
 [package]
-name = "psx-core"
+name = "jade-core"
 version = "0.1.0"
 authors = ["Amjad Alsharafi <amjadsharafi10@gmail.com>"]
 edition = "2021"

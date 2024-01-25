@@ -1,5 +1,5 @@
 [package]
-name = "psx"
+name = "jade"
 version = "0.1.0"
 authors = ["Amjad Alsharafi <amjadsharafi10@gmail.com>"]
 edition = "2021"
@@ -7,10 +7,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["debugger"]
-debugger = ["psx-core/debugger", "dep:rustyline"]
+debugger = ["jade-core/debugger", "dep:rustyline"]
 
 [dependencies]
-psx-core = { path = "./psx-core", version = "*" }
+jade-core = { path = "./jade-core", version = "*" }
 env_logger = { version = "0.10", default-features = false, features = ["auto-color"] }
 log = "0.4"
 clap = { version = "4.2", features = ["derive"] }
@@ -25,7 +25,7 @@ rustyline = { version = "11.0.0", default-features = false, optional = true }
 
 [workspace]
 members = [
-    "psx-core"
+    "jade-core"
 ]
 
 [profile.dev]

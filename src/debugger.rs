@@ -1,6 +1,6 @@
 use std::{io::Write, process, sync::mpsc, thread};
 
-use psx_core::{
+use jade_core::{
     cpu::{CpuState, Instruction, RegisterType, CPU_REGISTERS},
     Psx, HW_REGISTERS,
 };
