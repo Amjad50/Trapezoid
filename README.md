@@ -410,6 +410,13 @@ This can be triggerd with the keyboard button `v`.
 
 ![vram](assets/psx_vram.png)
 
+### Contributions and TODO
+Check the [`trapezoid-core`] for more information about TODO items related to the emulator.
+
+Also check the [issues](./issues).
+
+Really appreciate any contributions. Thanks!
+
 
 ### License
 This project is under [MIT](./LICENSE) license.
