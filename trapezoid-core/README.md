@@ -1,7 +1,7 @@
 # trapezoid-core
 
-[![Crates.io trapezoid_core](https://img.shields.io/crates/v/trapezoid_core)](https://crates.io/crates/trapezoid_core)
-[![docs.rs (with version)](https://img.shields.io/docsrs/trapezoid_core/latest)](https://docs.rs/trapezoid_core/latest/trapezoid_core/)
+[![Crates.io trapezoid-core](https://img.shields.io/crates/v/trapezoid-core)](https://crates.io/crates/trapezoid-core)
+[![docs.rs (with version)](https://img.shields.io/docsrs/trapezoid-core/latest)](https://docs.rs/trapezoid-core/latest/trapezoid-core/)
 
 This is the core of a PSX emulator [`trapezoid`](https://github.com/Amjad50/trapezoid).
 It contains all the components of a working emulator, the rest is a frontend.
