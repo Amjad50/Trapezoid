@@ -457,7 +457,7 @@ impl Debugger {
                     for i in 0..count {
                         let addr = addr + i;
                         let val = psx.bus_read_u8(addr).unwrap();
-                        println!("[0x{:08X}] = 0x{:02X}", addr, val);
+                        println!("0x{:08X}: 0x{:02X}", addr, val);
                     }
                 } else {
                     println!("Usage: m8 <address>");

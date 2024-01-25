@@ -23,5 +23,7 @@ You can create your own frontend for this project, or use it as a server.
 - Memory: Hosts the whole memory as a `Box<[u8]>` and provides access to it.
 - Memory card: will save/load memcard to/from disk, it will save to the current folder.
     - TODO: add API to control this
+- Debugging: We have an API to easily create a debugger for this emulator. This is used by the frontend [`trapezoid`].
 
 [`vulkano`]: https://github.com/vulkano-rs/vulkano
+[`trapezoid`]: https://crates.io/crates/trapezoid
