@@ -15,6 +15,10 @@
 
 This is a personal project for fun and to experience emulating hardware and connecting them together.
 
+## Showcase
+
+<img src="assets/psx.png" alt="demo" width="600"/>
+
 ## Building and installation
 
 ### Installing
@@ -399,6 +403,15 @@ CPU> hook_list
 r
 i/20
 ```
+
+#### VRAM
+
+We can view the raw vram state, which you can think of as an image of 1024x512 pixels
+
+This can be triggerd with the keyboard button `v`.
+
+![vram](assets/psx_vram.png)
+
 
 ### License
 This project is under [MIT](./LICENSE) license.
