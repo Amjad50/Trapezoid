@@ -18,8 +18,8 @@ const CDROM_COMMAND_DEFAULT_DELAY: u32 = 0x1100;
 // because the default delay is always used, we subtract it from the delay needed
 // to get the final delay
 //
-// Reduced a bit with 0x2000, audio felt a bit jagged with the original delay
-const CDROM_READ_PLAY_DELAY: u32 = 0x6e400 - 0x2000;
+// Reduced a bit with 0x100, audio felt a bit jagged with the original delay
+const CDROM_READ_PLAY_DELAY: u32 = 0x6e400 - 0x100;
 
 bitflags! {
     #[derive(Default)]
@@ -547,12 +547,14 @@ impl Cdrom {
             return;
         }
 
-        if let Some(cmd) = self.command {
-            self.handle_command(cycles, cmd);
+        if self.handle_command_delay(cycles) {
+            if let Some(cmd) = self.command {
+                self.handle_command(cmd);
+            }
         }
 
-        if self.interrupt_flag & 7 == 0 {
-            self.handle_reading_data(cycles, spu);
+        if self.handle_reading_delay(cycles) {
+            self.handle_reading_data(spu);
         }
 
         // fire irq only if the interrupt is enabled
@@ -561,22 +563,31 @@ impl Cdrom {
         }
     }
 
-    fn handle_command(&mut self, cycles: u32, cmd: u8) {
+    fn handle_command_delay(&mut self, cycles: u32) -> bool {
+        self.command_delay_timer = self.command_delay_timer.saturating_sub(cycles);
+
         // delay (this applies for all parts of the command)
         // If no delay is needed, it can be reset from the command itself
-        if self.command_delay_timer > cycles + 1 {
-            self.command_delay_timer -= cycles;
-            return;
+        // if we can't execute yet, return false
+        if self.command_delay_timer != 0 {
+            return false;
         }
 
+        // if we can't execute yet, return false
         if self.interrupt_flag & 7 != 0 {
             // pending interrupts, waiting for acknowledgement
-            return;
+            return false;
         }
 
+        self.command_delay_timer = 0;
+        true
+    }
+
+    fn handle_command(&mut self, cmd: u8) {
         // reset the timer here, so that if a command needs to change the value
         // it can do so
         self.command_delay_timer = CDROM_COMMAND_DEFAULT_DELAY;
+
         // every command starts the motor (if its not already on)
         self.status.start_motor();
         match cmd {
@@ -956,15 +967,15 @@ impl Cdrom {
         }
     }
 
-    fn handle_reading_data(&mut self, cycles: u32, spu: &mut Spu) {
-        let ActionStatus::Read { second_delivery_attempt } = &mut self.status.action_status else {
-            return;
+    fn handle_reading_delay(&mut self, cycles: u32) -> bool {
+        let ActionStatus::Read { .. } = &mut self.status.action_status else {
+            return false;
         };
 
         // delay
         if self.read_play_delay_timer > cycles + 1 {
             self.read_play_delay_timer -= cycles;
-            return;
+            return false;
         }
 
         // refresh the delay timer
@@ -972,6 +983,23 @@ impl Cdrom {
             CDROM_READ_PLAY_DELAY / 2
         } else {
             CDROM_READ_PLAY_DELAY
+        };
+
+        // if we can't execute yet, return false
+        if self.interrupt_flag & 7 != 0 {
+            // pending interrupts, waiting for acknowledgement
+            return false;
+        }
+
+        true
+    }
+
+    fn handle_reading_data(&mut self, spu: &mut Spu) {
+        let ActionStatus::Read {
+            second_delivery_attempt,
+        } = &mut self.status.action_status
+        else {
+            unreachable!()
         };
 
         let sector_start = self.cursor_sector_position * 2352;
