@@ -17,17 +17,17 @@ debugger = ["trapezoid-core/debugger", "dep:rustyline"]
 
 [dependencies]
 trapezoid-core = { path = "./trapezoid-core", version = "0.1.1" }
-env_logger = { version = "0.10", default-features = false, features = ["auto-color"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color"] }
 log = "0.4"
 clap = { version = "4.2", features = ["derive"] }
 
 vulkano = "0.33"
 winit = "0.28"
 vulkano-win = "0.33"
-ringbuf = { version = "0.3.1", default-features = false, features = ["alloc"] }
+ringbuf = { version = "0.3", default-features = false, features = ["alloc"] }
 cpal = { version = "0.15", default-features = false }
 
-rustyline = { version = "11.0.0", default-features = false, optional = true }
+rustyline = { version = "13.0", default-features = false, optional = true }
 
 [workspace]
 members = [
