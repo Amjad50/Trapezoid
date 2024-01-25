@@ -16,7 +16,7 @@ default = ["debugger"]
 debugger = ["trapezoid-core/debugger", "dep:rustyline"]
 
 [dependencies]
-trapezoid-core = { path = "./trapezoid-core", version = "*" }
+trapezoid-core = { path = "./trapezoid-core", version = "0.1.0" }
 env_logger = { version = "0.10", default-features = false, features = ["auto-color"] }
 log = "0.4"
 clap = { version = "4.2", features = ["derive"] }
