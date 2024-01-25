@@ -3,6 +3,12 @@ name = "jade"
 version = "0.1.0"
 authors = ["Amjad Alsharafi <amjadsharafi10@gmail.com>"]
 edition = "2021"
+readme = "README.md"
+description = "A PSX emulator, backed by vulkano for rendering"
+license = "MIT"
+repository = "https://github.com/Amjad50/Jade"
+keywords = ["psx", "emulator", "vulkan", "rust"]
+categories = ["emulators", "games-and-graphics"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
