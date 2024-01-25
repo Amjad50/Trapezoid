@@ -1,13 +1,13 @@
 use std::{io::Write, process, sync::mpsc, thread};
 
-use psx_core::{
-    cpu::{CpuState, Instruction, RegisterType, CPU_REGISTERS},
-    Psx, HW_REGISTERS,
-};
 use rustyline::{
     completion::Completer, error::ReadlineError, highlight::Highlighter, hint::Hinter,
     history::MemHistory, line_buffer::LineBuffer, validate::Validator, Changeset, CompletionType,
     Config, Editor,
+};
+use trapezoid_core::{
+    cpu::{CpuState, Instruction, RegisterType, CPU_REGISTERS},
+    Psx, HW_REGISTERS,
 };
 
 struct EditorHelper {
@@ -457,7 +457,7 @@ impl Debugger {
                     for i in 0..count {
                         let addr = addr + i;
                         let val = psx.bus_read_u8(addr).unwrap();
-                        println!("[0x{:08X}] = 0x{:02X}", addr, val);
+                        println!("0x{:08X}: 0x{:02X}", addr, val);
                     }
                 } else {
                     println!("Usage: m8 <address>");

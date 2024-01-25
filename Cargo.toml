@@ -1,16 +1,22 @@
 [package]
-name = "psx"
-version = "0.1.0"
+name = "trapezoid"
+version = "0.1.1"
 authors = ["Amjad Alsharafi <amjadsharafi10@gmail.com>"]
 edition = "2021"
+readme = "README.md"
+description = "A PSX emulator, backed by vulkano for rendering"
+license = "MIT"
+repository = "https://github.com/Amjad50/trapezoid"
+keywords = ["psx", "emulator", "vulkan", "rust"]
+categories = ["emulators", "games-and-graphics"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["debugger"]
-debugger = ["psx-core/debugger", "dep:rustyline"]
+debugger = ["trapezoid-core/debugger", "dep:rustyline"]
 
 [dependencies]
-psx-core = { path = "./psx-core", version = "*" }
+trapezoid-core = { path = "./trapezoid-core", version = "0.1.1" }
 env_logger = { version = "0.10", default-features = false, features = ["auto-color"] }
 log = "0.4"
 clap = { version = "4.2", features = ["derive"] }
@@ -25,7 +31,7 @@ rustyline = { version = "11.0.0", default-features = false, optional = true }
 
 [workspace]
 members = [
-    "psx-core"
+    "trapezoid-core"
 ]
 
 [profile.dev]
