@@ -1,12 +1,12 @@
 [package]
-name = "jade-core"
+name = "trapezoid-core"
 version = "0.1.0"
 authors = ["Amjad Alsharafi <amjadsharafi10@gmail.com>"]
 edition = "2021"
 readme = "../README.md"
 description = "A PSX emulator, backed by vulkano for rendering"
 license = "MIT"
-repository = "https://github.com/Amjad50/Jade"
+repository = "https://github.com/Amjad50/trapezoid"
 keywords = ["psx", "emulator", "vulkan", "rust"]
 categories = ["emulators", "games-and-graphics"]
 

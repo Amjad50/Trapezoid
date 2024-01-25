@@ -1,22 +1,22 @@
 [package]
-name = "jade"
+name = "trapezoid"
 version = "0.1.0"
 authors = ["Amjad Alsharafi <amjadsharafi10@gmail.com>"]
 edition = "2021"
 readme = "README.md"
 description = "A PSX emulator, backed by vulkano for rendering"
 license = "MIT"
-repository = "https://github.com/Amjad50/Jade"
+repository = "https://github.com/Amjad50/trapezoid"
 keywords = ["psx", "emulator", "vulkan", "rust"]
 categories = ["emulators", "games-and-graphics"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["debugger"]
-debugger = ["jade-core/debugger", "dep:rustyline"]
+debugger = ["trapezoid-core/debugger", "dep:rustyline"]
 
 [dependencies]
-jade-core = { path = "./jade-core", version = "*" }
+trapezoid-core = { path = "./trapezoid-core", version = "*" }
 env_logger = { version = "0.10", default-features = false, features = ["auto-color"] }
 log = "0.4"
 clap = { version = "4.2", features = ["derive"] }
@@ -31,7 +31,7 @@ rustyline = { version = "11.0.0", default-features = false, optional = true }
 
 [workspace]
 members = [
-    "jade-core"
+    "trapezoid-core"
 ]
 
 [profile.dev]

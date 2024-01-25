@@ -9,7 +9,7 @@ use std::{
 };
 
 use audio::{AudioPlayer, BufferFlowState};
-use jade_core::{DigitalControllerKey, Psx, PsxConfig};
+use trapezoid_core::{DigitalControllerKey, Psx, PsxConfig};
 
 use clap::Parser;
 use vulkano::{

@@ -1,13 +1,13 @@
 use std::{io::Write, process, sync::mpsc, thread};
 
-use jade_core::{
-    cpu::{CpuState, Instruction, RegisterType, CPU_REGISTERS},
-    Psx, HW_REGISTERS,
-};
 use rustyline::{
     completion::Completer, error::ReadlineError, highlight::Highlighter, hint::Hinter,
     history::MemHistory, line_buffer::LineBuffer, validate::Validator, Changeset, CompletionType,
     Config, Editor,
+};
+use trapezoid_core::{
+    cpu::{CpuState, Instruction, RegisterType, CPU_REGISTERS},
+    Psx, HW_REGISTERS,
 };
 
 struct EditorHelper {
