@@ -2,7 +2,7 @@
   <a href="https://github.com/Amjad50/trapezoid"><img alt="trapezoid" src="images/logo.svg" width="60%"></a>
   <p align="center">PSX emulator in <em>Rust</em></p>
 </p> -->
-
+# Trapezoid
 
 [![Build status](https://github.com/Amjad50/trapezoid/workflows/Rust/badge.svg)](https://actions-badge.atrox.dev/Amjad50/trapezoid/goto)
 [![dependency status](https://deps.rs/repo/github/Amjad50/trapezoid/status.svg)](https://deps.rs/repo/github/Amjad50/trapezoid)
