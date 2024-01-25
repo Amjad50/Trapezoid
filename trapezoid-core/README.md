@@ -21,5 +21,7 @@ You can create your own frontend for this project, or use it as a server.
 - Timers
 - Interrupts
 - Memory: Hosts the whole memory as a `Box<[u8]>` and provides access to it.
+- Memory card: will save/load memcard to/from disk, it will save to the current folder.
+    - TODO: add API to control this
 
 [`vulkano`]: https://github.com/vulkano-rs/vulkano
