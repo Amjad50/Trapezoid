@@ -413,7 +413,7 @@ This can be triggerd with the keyboard button `v`.
 ### Contributions and TODO
 Check the [`trapezoid-core`] for more information about TODO items related to the emulator.
 
-Also check the [issues](./issues).
+Also check the [issues](https://github.com/Amjad50/Trapezoid/issues).
 
 Really appreciate any contributions. Thanks!
 
