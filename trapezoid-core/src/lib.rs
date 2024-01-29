@@ -23,7 +23,7 @@ use memory::{Bios, BusLine, CpuBus, Result};
 pub use controller_mem_card::DigitalControllerKey;
 use vulkano::{
     device::{Device, Queue},
-    image::ImageAccess,
+    image::Image,
     sync::GpuFuture,
 };
 
@@ -265,15 +265,12 @@ impl Psx {
         self.bus.cdrom_mut().change_cdrom_shell_open_state(open);
     }
 
-    pub fn blit_to_front<D>(
+    pub fn blit_to_front(
         &mut self,
-        dest_image: Arc<D>,
+        dest_image: Arc<Image>,
         full_vram: bool,
         in_future: Box<dyn GpuFuture>,
-    ) -> Box<dyn GpuFuture>
-    where
-        D: ImageAccess + 'static,
-    {
+    ) -> Box<dyn GpuFuture> {
         self.bus
             .gpu_mut()
             .sync_gpu_and_blit_to_front(dest_image, full_vram, in_future)

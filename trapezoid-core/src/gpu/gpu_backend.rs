@@ -11,7 +11,7 @@ use std::{
 };
 use vulkano::{
     device::{Device, Queue},
-    image::StorageImage,
+    image::Image,
 };
 
 pub struct GpuBackend {
@@ -29,7 +29,7 @@ impl GpuBackend {
         gpu_stat: Arc<AtomicCell<GpuStat>>,
         gpu_read_sender: Sender<u32>,
         gpu_backend_receiver: Receiver<BackendCommand>,
-        gpu_front_image_sender: Sender<Arc<StorageImage>>,
+        gpu_front_image_sender: Sender<Arc<Image>>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
             let b = GpuBackend {

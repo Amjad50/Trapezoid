@@ -2,11 +2,11 @@ use crossbeam::channel::Sender;
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     command_buffer::{
-        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, BufferImageCopy,
-        ClearAttachment, ClearColorImageInfo, ClearRect, CommandBufferInheritanceInfo,
-        CommandBufferUsage, CopyBufferToImageInfo, CopyImageInfo, CopyImageToBufferInfo, ImageCopy,
-        PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract, RenderPassBeginInfo,
-        SubpassContents,
+        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
+        AutoCommandBufferBuilder, BufferImageCopy, ClearAttachment, ClearColorImageInfo, ClearRect,
+        CommandBufferInheritanceInfo, CommandBufferUsage, CopyBufferToImageInfo, CopyImageInfo,
+        CopyImageToBufferInfo, ImageCopy, PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract,
+        RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
     },
     descriptor_set::{
         allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
@@ -14,13 +14,14 @@ use vulkano::{
     device::{Device, Queue},
     format::{ClearColorValue, Format},
     image::{
+        sampler::{
+            ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode,
+            SamplerCreateInfo, SamplerMipmapMode,
+        },
         view::{ImageView, ImageViewCreateInfo},
-        ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage,
+        Image, ImageCreateInfo, ImageType, ImageUsage,
     },
-    memory::allocator::{
-        AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryUsage,
-        StandardMemoryAllocator,
-    },
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
         graphics::{
             color_blend::{
@@ -28,19 +29,19 @@ use vulkano::{
                 ColorComponents,
             },
             input_assembly::{InputAssemblyState, PrimitiveTopology},
-            render_pass::PipelineRenderPassType::BeginRenderPass,
-            vertex_input::Vertex,
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            subpass::PipelineSubpassType,
+            vertex_input::{Vertex, VertexDefinition},
             viewport::{Viewport, ViewportState},
+            GraphicsPipelineCreateInfo,
         },
-        GraphicsPipeline, Pipeline, PipelineBindPoint, StateMode,
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        PipelineShaderStageCreateInfo,
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
-    sampler::{
-        ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
-        SamplerMipmapMode,
-    },
     sync::{self, GpuFuture},
-    DeviceSize,
 };
 
 use super::front_blit::FrontBlit;
@@ -284,7 +285,7 @@ struct BufferedDrawsState {
 }
 
 pub struct GpuContext {
-    pub(super) gpu_front_image_sender: Sender<Arc<StorageImage>>,
+    pub(super) gpu_front_image_sender: Sender<Arc<Image>>,
 
     pub(super) device: Arc<Device>,
     queue: Arc<Queue>,
@@ -292,8 +293,8 @@ pub struct GpuContext {
     memory_allocator: Arc<StandardMemoryAllocator>,
     command_buffer_allocator: StandardCommandBufferAllocator,
 
-    render_image: Arc<StorageImage>,
-    render_image_back_image: Arc<StorageImage>,
+    render_image: Arc<Image>,
+    render_image_back_image: Arc<Image>,
     should_update_back_image: bool,
 
     render_image_framebuffer: Arc<Framebuffer>,
@@ -316,62 +317,45 @@ impl GpuContext {
     pub(super) fn new(
         device: Arc<Device>,
         queue: Arc<Queue>,
-        gpu_front_image_sender: Sender<Arc<StorageImage>>,
+        gpu_front_image_sender: Sender<Arc<Image>>,
     ) -> Self {
-        const B: DeviceSize = 1;
-        const K: DeviceSize = 1024 * B;
-        const M: DeviceSize = 1024 * K;
-        const G: DeviceSize = 1024 * M;
-
-        // Use a custom allocation size, the default (as of writing) in vulkano is 256MB, which is quite a lot
-        // as it allocates several Heaps.
-        //
-        // The emulator currently uses around 23-30MB only, so this is plenty to work with.
-        let allocation_create_info = GenericMemoryAllocatorCreateInfo {
-            #[rustfmt::skip]
-            block_sizes: &[
-                // Threshold 0 B -> 32MB
-                (0,  32 * M),
-                // Threshold 1 GB -> 64MB
-                (G, 64 * M),
-            ],
-            ..Default::default()
-        };
-
-        let memory_allocator =
-            Arc::new(StandardMemoryAllocator::new(device.clone(), allocation_create_info).unwrap());
-        let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone());
-        let command_buffer_allocator =
-            StandardCommandBufferAllocator::new(device.clone(), Default::default());
-
-        let render_image = StorageImage::with_usage(
-            &memory_allocator,
-            ImageDimensions::Dim2d {
-                width: 1024,
-                height: 512,
-                array_layers: 1,
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let descriptor_set_allocator =
+            StandardDescriptorSetAllocator::new(device.clone(), Default::default());
+        let command_buffer_allocator = StandardCommandBufferAllocator::new(
+            device.clone(),
+            StandardCommandBufferAllocatorCreateInfo {
+                secondary_buffer_count: 20,
+                ..Default::default()
             },
-            Format::A1R5G5B5_UNORM_PACK16,
-            ImageUsage::TRANSFER_SRC
-                | ImageUsage::TRANSFER_DST
-                | ImageUsage::SAMPLED
-                | ImageUsage::COLOR_ATTACHMENT,
-            ImageCreateFlags::empty(),
-            [queue.queue_family_index()],
+        );
+
+        let render_image = Image::new(
+            memory_allocator.clone(),
+            ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                extent: [1024, 512, 1],
+                format: Format::A1R5G5B5_UNORM_PACK16,
+                usage: ImageUsage::TRANSFER_SRC
+                    | ImageUsage::TRANSFER_DST
+                    | ImageUsage::SAMPLED
+                    | ImageUsage::COLOR_ATTACHMENT,
+                ..Default::default()
+            },
+            Default::default(),
         )
         .unwrap();
 
-        let render_image_back_image = StorageImage::with_usage(
-            &memory_allocator,
-            ImageDimensions::Dim2d {
-                width: 1024,
-                height: 512,
-                array_layers: 1,
+        let render_image_back_image = Image::new(
+            memory_allocator.clone(),
+            ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                extent: [1024, 512, 1],
+                format: Format::A1R5G5B5_UNORM_PACK16,
+                usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                ..Default::default()
             },
-            Format::A1R5G5B5_UNORM_PACK16,
-            ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-            ImageCreateFlags::empty(),
-            [queue.queue_family_index()],
+            Default::default(),
         )
         .unwrap();
 
@@ -391,60 +375,98 @@ impl GpuContext {
         let command_buffer = builder.build().unwrap();
         let image_clear_future = command_buffer.execute(queue.clone()).unwrap();
 
-        let vs = vs::load(device.clone()).unwrap();
-        let fs = fs::load(device.clone()).unwrap();
+        let vs = vs::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+        let fs = fs::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
 
         let render_pass = vulkano::single_pass_renderpass!(
             device.clone(),
             attachments: {
                 color: {
-                    load: Load,
-                    store: Store,
                     format: Format::A1R5G5B5_UNORM_PACK16,
                     samples: 1,
+                    load_op: Load,
+                    store_op: Store,
                 }
             },
             pass: {
                 color: [color],
-                depth_stencil: {}
+                depth_stencil: {},
             }
         )
         .unwrap();
 
+        let vertex_input_state = DrawingVertexFull::per_vertex()
+            .definition(&vs.info().input_interface)
+            .unwrap();
+        let stages = [
+            PipelineShaderStageCreateInfo::new(vs),
+            PipelineShaderStageCreateInfo::new(fs),
+        ];
+
+        let layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+                .into_pipeline_layout_create_info(device.clone())
+                .unwrap(),
+        )
+        .unwrap();
+        let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
         // create multiple pipelines, one for each semi_transparency_mode
         // TODO: is there a better way to do this?
         let polygon_pipelines = (0..5)
             .map(|transparency_mode| {
-                GraphicsPipeline::start()
-                    .vertex_input_state(DrawingVertexFull::per_vertex())
-                    .vertex_shader(vs.entry_point("main").unwrap(), ())
-                    .input_assembly_state(
-                        InputAssemblyState::new().topology(PrimitiveTopology::TriangleList),
-                    )
-                    .color_blend_state(Self::create_color_blend_state(transparency_mode))
-                    .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
-                    .fragment_shader(fs.entry_point("main").unwrap(), ())
-                    .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-                    .build(device.clone())
-                    .unwrap()
+                GraphicsPipeline::new(
+                    device.clone(),
+                    None,
+                    GraphicsPipelineCreateInfo {
+                        stages: stages.clone().into_iter().collect(),
+                        vertex_input_state: Some(vertex_input_state.clone()),
+                        input_assembly_state: Some(InputAssemblyState {
+                            topology: PrimitiveTopology::TriangleList,
+                            ..Default::default()
+                        }),
+                        rasterization_state: Some(RasterizationState::default()),
+                        multisample_state: Some(MultisampleState::default()),
+                        color_blend_state: Some(Self::create_color_blend_state(transparency_mode)),
+                        viewport_state: Some(ViewportState::default()),
+                        dynamic_state: [DynamicState::Viewport].into_iter().collect(),
+                        subpass: Some(subpass.clone().into()),
+                        ..GraphicsPipelineCreateInfo::layout(layout.clone())
+                    },
+                )
+                .unwrap()
             })
             .collect::<Vec<_>>();
 
         // multiple pipelines
         let polyline_pipelines = (0..5)
             .map(|transparency_mode| {
-                GraphicsPipeline::start()
-                    .vertex_input_state(DrawingVertexFull::per_vertex())
-                    .vertex_shader(vs.entry_point("main").unwrap(), ())
-                    .input_assembly_state(
-                        InputAssemblyState::new().topology(PrimitiveTopology::LineList),
-                    )
-                    .color_blend_state(Self::create_color_blend_state(transparency_mode))
-                    .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
-                    .fragment_shader(fs.entry_point("main").unwrap(), ())
-                    .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-                    .build(device.clone())
-                    .unwrap()
+                GraphicsPipeline::new(
+                    device.clone(),
+                    None,
+                    GraphicsPipelineCreateInfo {
+                        stages: stages.clone().into_iter().collect(),
+                        vertex_input_state: Some(vertex_input_state.clone()),
+                        input_assembly_state: Some(InputAssemblyState {
+                            topology: PrimitiveTopology::LineList,
+                            ..Default::default()
+                        }),
+                        rasterization_state: Some(RasterizationState::default()),
+                        multisample_state: Some(MultisampleState::default()),
+                        color_blend_state: Some(Self::create_color_blend_state(transparency_mode)),
+                        viewport_state: Some(ViewportState::default()),
+                        dynamic_state: [DynamicState::Viewport].into_iter().collect(),
+                        subpass: Some(subpass.clone().into()),
+                        ..GraphicsPipelineCreateInfo::layout(layout.clone())
+                    },
+                )
+                .unwrap()
             })
             .collect::<Vec<_>>();
 
@@ -463,7 +485,7 @@ impl GpuContext {
         // even though, we are using the layout from the `polygon_pipeline`
         // it still works without issues with `line_pipeline` since its the
         // same layout taken from the same shader.
-        let layout = polygon_pipelines[0].layout().set_layouts().get(0).unwrap();
+        let layout = polygon_pipelines[0].layout().set_layouts().first().unwrap();
 
         let render_image_back_image_view = ImageView::new(
             render_image_back_image.clone(),
@@ -486,6 +508,7 @@ impl GpuContext {
                 render_image_back_image_view,
                 sampler,
             )],
+            [],
         )
         .unwrap();
         let render_image_framebuffer = Framebuffer::new(
@@ -501,7 +524,7 @@ impl GpuContext {
             device.clone(),
             queue.clone(),
             render_image.clone(),
-            &memory_allocator,
+            memory_allocator.clone(),
         );
 
         let gpu_future = Some(image_clear_future.boxed());
@@ -555,13 +578,14 @@ impl GpuContext {
         let height = block_range.1.len() as u32;
 
         let buffer = Buffer::from_iter(
-            &self.memory_allocator,
+            self.memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_SRC,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             block.iter().cloned(),
@@ -571,15 +595,16 @@ impl GpuContext {
         let overflow_x = left + width > 1024;
         let overflow_y = top + height > 512;
         if overflow_x || overflow_y {
-            let stage_image = StorageImage::new(
-                &self.memory_allocator,
-                ImageDimensions::Dim2d {
-                    width,
-                    height,
-                    array_layers: 1,
+            let stage_image = Image::new(
+                self.memory_allocator.clone(),
+                ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    extent: [width, height, 1],
+                    format: Format::A1R5G5B5_UNORM_PACK16,
+                    usage: ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC,
+                    ..Default::default()
                 },
-                Format::A1R5G5B5_UNORM_PACK16,
-                Some(self.queue.queue_family_index()),
+                Default::default(),
             )
             .unwrap();
 
@@ -699,13 +724,13 @@ impl GpuContext {
             .unwrap();
 
         let buffer = Buffer::new_slice::<u16>(
-            &self.memory_allocator,
+            self.memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_DST,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Download,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST,
                 ..Default::default()
             },
             (width * height) as u64,
@@ -715,15 +740,16 @@ impl GpuContext {
         let overflow_x = left + width > 1024;
         let overflow_y = top + height > 512;
         if overflow_x || overflow_y {
-            let stage_image = StorageImage::new(
-                &self.memory_allocator,
-                ImageDimensions::Dim2d {
-                    width,
-                    height,
-                    array_layers: 1,
+            let stage_image = Image::new(
+                self.memory_allocator.clone(),
+                ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    extent: [width, height, 1],
+                    format: Format::A1R5G5B5_UNORM_PACK16,
+                    usage: ImageUsage::TRANSFER_DST | ImageUsage::TRANSFER_SRC,
+                    ..Default::default()
                 },
-                Format::A1R5G5B5_UNORM_PACK16,
-                Some(self.queue.queue_family_index()),
+                Default::default(),
             )
             .unwrap();
 
@@ -874,7 +900,7 @@ impl GpuContext {
                     clear_values: vec![None],
                     ..RenderPassBeginInfo::framebuffer(self.render_image_framebuffer.clone())
                 },
-                SubpassContents::Inline,
+                Default::default(),
             )
             .unwrap()
             .clear_attachments(
@@ -888,15 +914,19 @@ impl GpuContext {
                         color.0 as f32 / 255.0,
                         0.0,
                     ]),
-                }],
+                }]
+                .into_iter()
+                .collect(),
                 [ClearRect {
                     offset: [top_left.0, top_left.1],
                     extent: [width, height],
                     array_layers: 0..1,
-                }],
+                }]
+                .into_iter()
+                .collect(),
             )
             .unwrap()
-            .end_render_pass()
+            .end_render_pass(Default::default())
             .unwrap();
         self.increment_command_builder_commands_and_flush();
     }
@@ -907,28 +937,34 @@ impl GpuContext {
         // Mode 3 has no blend, so it is used for non_transparent draws
         let blend = match semi_transparency_mode {
             0 => Some(AttachmentBlend {
-                color_op: BlendOp::Add,
-                color_source: BlendFactor::SrcAlpha,
-                color_destination: BlendFactor::OneMinusSrcAlpha,
-                alpha_op: BlendOp::Add,
-                alpha_source: BlendFactor::One,
-                alpha_destination: BlendFactor::Zero,
+                // color_op: BlendOp::Add,
+                // color_source: BlendFactor::SrcAlpha,
+                // color_destination: BlendFactor::OneMinusSrcAlpha,
+                // alpha_op: BlendOp::Add,
+                // alpha_source: BlendFactor::One,
+                // alpha_destination: BlendFactor::Zero,
+                color_blend_op: BlendOp::Add,
+                src_color_blend_factor: BlendFactor::SrcAlpha,
+                dst_color_blend_factor: BlendFactor::OneMinusSrcAlpha,
+                alpha_blend_op: BlendOp::Add,
+                src_alpha_blend_factor: BlendFactor::One,
+                dst_alpha_blend_factor: BlendFactor::Zero,
             }),
             1 => Some(AttachmentBlend {
-                color_op: BlendOp::Add,
-                color_source: BlendFactor::One,
-                color_destination: BlendFactor::SrcAlpha,
-                alpha_op: BlendOp::Add,
-                alpha_source: BlendFactor::One,
-                alpha_destination: BlendFactor::Zero,
+                color_blend_op: BlendOp::Add,
+                src_color_blend_factor: BlendFactor::One,
+                dst_color_blend_factor: BlendFactor::SrcAlpha,
+                alpha_blend_op: BlendOp::Add,
+                src_alpha_blend_factor: BlendFactor::One,
+                dst_alpha_blend_factor: BlendFactor::Zero,
             }),
             2 => Some(AttachmentBlend {
-                color_op: BlendOp::ReverseSubtract,
-                color_source: BlendFactor::One,
-                color_destination: BlendFactor::SrcAlpha,
-                alpha_op: BlendOp::Add,
-                alpha_source: BlendFactor::One,
-                alpha_destination: BlendFactor::Zero,
+                color_blend_op: BlendOp::ReverseSubtract,
+                src_color_blend_factor: BlendFactor::One,
+                dst_color_blend_factor: BlendFactor::SrcAlpha,
+                alpha_blend_op: BlendOp::Add,
+                src_alpha_blend_factor: BlendFactor::One,
+                dst_alpha_blend_factor: BlendFactor::Zero,
             }),
             3 => None,
             // NOTE: this is not a valid semi_transparency_mode, but we
@@ -936,12 +972,12 @@ impl GpuContext {
             //
             // faster path for mode 3 non-textured
             4 => Some(AttachmentBlend {
-                color_op: BlendOp::Add,
-                color_source: BlendFactor::ConstantAlpha,
-                color_destination: BlendFactor::One,
-                alpha_op: BlendOp::Add,
-                alpha_source: BlendFactor::One,
-                alpha_destination: BlendFactor::Zero,
+                color_blend_op: BlendOp::Add,
+                src_color_blend_factor: BlendFactor::ConstantAlpha,
+                dst_color_blend_factor: BlendFactor::One,
+                alpha_blend_op: BlendOp::Add,
+                src_alpha_blend_factor: BlendFactor::One,
+                dst_alpha_blend_factor: BlendFactor::Zero,
             }),
             _ => unreachable!(),
         };
@@ -950,12 +986,13 @@ impl GpuContext {
             attachments: vec![ColorBlendAttachmentState {
                 blend,
                 color_write_mask: ColorComponents::R | ColorComponents::G | ColorComponents::B,
-                color_write_enable: StateMode::Fixed(true),
+                color_write_enable: true,
             }],
             blend_constants: match semi_transparency_mode {
-                4 => StateMode::Fixed([0.0, 0.0, 0.0, 0.25]),
-                _ => StateMode::Fixed([0.0, 0.0, 0.0, 0.0]),
+                4 => [0.0, 0.0, 0.0, 0.25],
+                _ => [0.0, 0.0, 0.0, 0.0],
             },
+            ..Default::default()
         }
     }
 
@@ -1030,13 +1067,14 @@ impl GpuContext {
 
         // we create a "cloned iter" here so that we don't clone the vector
         let vertex_buffer = Buffer::from_iter(
-            &self.memory_allocator,
+            self.memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::VERTEX_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             self.buffered_draw_vertices.iter().cloned(),
@@ -1058,8 +1096,8 @@ impl GpuContext {
             drawing_size: [current_state.width, current_state.height],
         };
 
-        let subpass = match pipeline.render_pass() {
-            BeginRenderPass(subpass) => subpass.clone(),
+        let subpass = match pipeline.subpass() {
+            PipelineSubpassType::BeginRenderPass(subpass) => subpass.clone(),
             _ => unreachable!(),
         };
 
@@ -1078,20 +1116,27 @@ impl GpuContext {
             .set_viewport(
                 0,
                 [Viewport {
-                    origin: [current_state.left as f32, current_state.top as f32],
-                    dimensions: [current_state.width as f32, current_state.height as f32],
-                    depth_range: 0.0..1.0,
-                }],
+                    offset: [current_state.left as f32, current_state.top as f32],
+                    extent: [current_state.width as f32, current_state.height as f32],
+                    depth_range: 0.0..=1.0,
+                }]
+                .into_iter()
+                .collect(),
             )
+            .unwrap()
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 pipeline.layout().clone(),
                 0,
                 self.descriptor_set.clone(),
             )
+            .unwrap()
             .bind_pipeline_graphics(pipeline.clone())
+            .unwrap()
             .push_constants(pipeline.layout().clone(), 0, push_constants)
+            .unwrap()
             .bind_vertex_buffers(0, vertex_buffer)
+            .unwrap()
             .draw(vertices_len as u32, 1, 0, 0)
             .unwrap();
 
@@ -1101,12 +1146,15 @@ impl GpuContext {
                     clear_values: vec![None],
                     ..RenderPassBeginInfo::framebuffer(self.render_image_framebuffer.clone())
                 },
-                SubpassContents::SecondaryCommandBuffers,
+                SubpassBeginInfo {
+                    contents: SubpassContents::SecondaryCommandBuffers,
+                    ..Default::default()
+                },
             )
             .unwrap()
             .execute_commands(secondary_buffer.build().unwrap())
             .unwrap()
-            .end_render_pass()
+            .end_render_pass(Default::default())
             .unwrap();
 
         self.increment_command_builder_commands_and_flush();
@@ -1309,17 +1357,18 @@ impl GpuContext {
             topleft[0] = (topleft[0] * 2) / 3;
         }
 
-        let front_image = StorageImage::with_usage(
-            &self.memory_allocator,
-            ImageDimensions::Dim2d {
-                width: size[0],
-                height: size[1],
-                array_layers: 1,
+        let front_image = Image::new(
+            self.memory_allocator.clone(),
+            ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                extent: [size[0], size[1], 1],
+                format: Format::B8G8R8A8_UNORM,
+                usage: ImageUsage::TRANSFER_DST
+                    | ImageUsage::TRANSFER_SRC
+                    | ImageUsage::COLOR_ATTACHMENT,
+                ..Default::default()
             },
-            Format::B8G8R8A8_UNORM,
-            ImageUsage::TRANSFER_SRC | ImageUsage::COLOR_ATTACHMENT,
-            ImageCreateFlags::empty(),
-            Some(self.queue.queue_family_index()),
+            Default::default(),
         )
         .unwrap();
 

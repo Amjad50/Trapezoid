@@ -5,7 +5,7 @@ use vulkano::{
     command_buffer::{
         allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder,
         CommandBufferExecFuture, CommandBufferUsage, CopyBufferToImageInfo, CopyImageToBufferInfo,
-        PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassContents,
+        PrimaryAutoCommandBuffer, RenderPassBeginInfo,
     },
     descriptor_set::{
         allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
@@ -13,23 +13,30 @@ use vulkano::{
     device::{Device, Queue},
     format::Format,
     image::{
-        view::{ImageView, ImageViewCreateInfo},
-        ImageAccess, ImageCreateFlags, ImageDimensions, ImageUsage, StorageImage,
-    },
-    memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryUsage},
-    pipeline::{
-        graphics::{
-            input_assembly::{InputAssemblyState, PrimitiveTopology},
-            vertex_input::Vertex as VertexTrait,
-            viewport::{Viewport, ViewportState},
+        sampler::{
+            ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode,
+            SamplerCreateInfo, SamplerMipmapMode,
         },
-        ComputePipeline, GraphicsPipeline, Pipeline, PipelineBindPoint,
+        view::{ImageView, ImageViewCreateInfo},
+        Image, ImageCreateInfo, ImageType, ImageUsage,
+    },
+    memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter},
+    pipeline::{
+        compute::ComputePipelineCreateInfo,
+        graphics::{
+            color_blend::{ColorBlendAttachmentState, ColorBlendState},
+            input_assembly::{InputAssemblyState, PrimitiveTopology},
+            multisample::MultisampleState,
+            rasterization::RasterizationState,
+            vertex_input::{Vertex as VertexTrait, VertexDefinition},
+            viewport::{Viewport, ViewportState},
+            GraphicsPipelineCreateInfo,
+        },
+        layout::PipelineDescriptorSetLayoutCreateInfo,
+        ComputePipeline, DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint,
+        PipelineLayout, PipelineShaderStageCreateInfo,
     },
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
-    sampler::{
-        ComponentMapping, ComponentSwizzle, Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
-        SamplerMipmapMode,
-    },
     sync::GpuFuture,
 };
 
@@ -141,9 +148,9 @@ pub(super) struct FrontBlit {
     command_buffer_allocator: StandardCommandBufferAllocator,
     descriptor_set_allocator: StandardDescriptorSetAllocator,
 
-    texture_image: Arc<StorageImage>,
+    texture_image: Arc<Image>,
 
-    texture_24bit_image: Arc<StorageImage>,
+    texture_24bit_image: Arc<Image>,
     texture_24bit_in_buffer: Subbuffer<[u16]>,
     texture_24bit_out_buffer: Subbuffer<[u32]>,
     texture_24bit_desc_set: Arc<PersistentDescriptorSet>,
@@ -159,14 +166,24 @@ impl FrontBlit {
     pub fn new(
         device: Arc<Device>,
         queue: Arc<Queue>,
-        source_image: Arc<StorageImage>,
-        memory_allocator: &impl MemoryAllocator,
+        source_image: Arc<Image>,
+        memory_allocator: Arc<dyn MemoryAllocator>,
     ) -> Self {
-        let vs = vs::load(device.clone()).unwrap();
-        let fs = fs::load(device.clone()).unwrap();
-        let cs = cs::load(device.clone()).unwrap();
+        let vs = vs::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+        let fs = fs::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+        let cs = cs::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
 
-        let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone());
+        let descriptor_set_allocator =
+            StandardDescriptorSetAllocator::new(device.clone(), Default::default());
         let command_buffer_allocator =
             StandardCommandBufferAllocator::new(device.clone(), Default::default());
 
@@ -174,62 +191,96 @@ impl FrontBlit {
             device.clone(),
             attachments: {
                 color: {
-                    load: DontCare,
-                    store: Store,
                     format: Format::B8G8R8A8_UNORM,
                     samples: 1,
-                }
+                    load_op: DontCare,
+                    store_op: Store,
+                },
             },
             pass: {
                 color: [color],
-                depth_stencil: {}
-            }
+                depth_stencil: {},
+            },
         )
         .unwrap();
 
-        let g_pipeline = GraphicsPipeline::start()
-            .vertex_input_state(Vertex::per_vertex())
-            .vertex_shader(vs.entry_point("main").unwrap(), ())
-            .input_assembly_state(
-                InputAssemblyState::new().topology(PrimitiveTopology::TriangleStrip),
-            )
-            .viewport_state(ViewportState::viewport_dynamic_scissor_irrelevant())
-            .fragment_shader(fs.entry_point("main").unwrap(), ())
-            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-            .build(device.clone())
+        let vertex_input_state = Vertex::per_vertex()
+            .definition(&vs.info().input_interface)
             .unwrap();
+        let g_stages = [
+            PipelineShaderStageCreateInfo::new(vs),
+            PipelineShaderStageCreateInfo::new(fs),
+        ];
 
+        let g_layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&g_stages)
+                .into_pipeline_layout_create_info(device.clone())
+                .unwrap(),
+        )
+        .unwrap();
+
+        let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
+        let g_pipeline = GraphicsPipeline::new(
+            device.clone(),
+            None,
+            GraphicsPipelineCreateInfo {
+                stages: g_stages.iter().cloned().collect(),
+                vertex_input_state: Some(vertex_input_state),
+                input_assembly_state: Some(InputAssemblyState {
+                    topology: PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                }),
+                rasterization_state: Some(RasterizationState::default()),
+                multisample_state: Some(MultisampleState::default()),
+                viewport_state: Some(ViewportState::default()),
+                dynamic_state: [DynamicState::Viewport].into_iter().collect(),
+                color_blend_state: Some(ColorBlendState::with_attachment_states(
+                    1,
+                    ColorBlendAttachmentState::default(),
+                )),
+                subpass: Some(subpass.into()),
+                ..GraphicsPipelineCreateInfo::layout(g_layout)
+            },
+        )
+        .unwrap();
+
+        let c_stage = PipelineShaderStageCreateInfo::new(cs);
+        let c_layout = PipelineLayout::new(
+            device.clone(),
+            PipelineDescriptorSetLayoutCreateInfo::from_stages([&c_stage])
+                .into_pipeline_layout_create_info(device.clone())
+                .unwrap(),
+        )
+        .unwrap();
         let c_pipeline = ComputePipeline::new(
             device.clone(),
-            cs.entry_point("main").unwrap(),
-            &(),
             None,
-            |_| {},
+            ComputePipelineCreateInfo::stage_layout(c_stage, c_layout),
         )
         .unwrap();
 
-        let texture_24bit_image = StorageImage::with_usage(
-            memory_allocator,
-            ImageDimensions::Dim2d {
-                width: 1024,
-                height: 512,
-                array_layers: 1,
+        let texture_24bit_image = Image::new(
+            memory_allocator.clone(),
+            ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                format: Format::R8G8B8A8_UNORM,
+                usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                extent: [1024, 512, 1],
+                ..Default::default()
             },
-            Format::B8G8R8A8_UNORM,
-            ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-            ImageCreateFlags::empty(),
-            [queue.queue_family_index()],
+            AllocationCreateInfo::default(),
         )
         .unwrap();
 
         let texture_24bit_in_buffer = Buffer::new_slice::<u16>(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_DST | BufferUsage::STORAGE_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::DeviceOnly,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
             1024 * 512,
@@ -237,13 +288,13 @@ impl FrontBlit {
         .unwrap();
 
         let texture_24bit_out_buffer = Buffer::new_slice::<u32>(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_SRC | BufferUsage::STORAGE_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::DeviceOnly,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
             1024 * 512,
@@ -252,22 +303,24 @@ impl FrontBlit {
 
         let texture_24bit_desc_set = PersistentDescriptorSet::new(
             &descriptor_set_allocator,
-            c_pipeline.layout().set_layouts().get(0).unwrap().clone(),
+            c_pipeline.layout().set_layouts().first().unwrap().clone(),
             [
                 WriteDescriptorSet::buffer(0, texture_24bit_in_buffer.clone()),
                 WriteDescriptorSet::buffer(1, texture_24bit_out_buffer.clone()),
             ],
+            [],
         )
         .unwrap();
 
         let vertex_buffer = Buffer::from_iter(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::VERTEX_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             [
@@ -304,19 +357,18 @@ impl FrontBlit {
         }
     }
 
-    pub fn blit<D, IF>(
+    pub fn blit<IF>(
         &mut self,
-        dest_image: Arc<D>,
+        dest_image: Arc<Image>,
         topleft: [u32; 2],
         size: [u32; 2],
         is_24bit_color_depth: bool,
         in_future: IF,
     ) -> CommandBufferExecFuture<IF>
     where
-        D: ImageAccess + std::fmt::Debug + 'static,
         IF: GpuFuture,
     {
-        let [width, height] = dest_image.dimensions().width_height();
+        let [width, height, _] = dest_image.extent();
 
         let mut source_image = self.texture_image.clone();
 
@@ -336,12 +388,14 @@ impl FrontBlit {
                 ))
                 .unwrap()
                 .bind_pipeline_compute(self.c_pipeline.clone())
+                .unwrap()
                 .bind_descriptor_sets(
                     PipelineBindPoint::Compute,
                     self.c_pipeline.layout().clone(),
                     0,
                     self.texture_24bit_desc_set.clone(),
                 )
+                .unwrap()
                 .dispatch([
                     COMPUTE_24BIT_ROW_OPERATIONS / COMPUTE_LOCAL_SIZE_XY,
                     512 / COMPUTE_LOCAL_SIZE_XY,
@@ -369,7 +423,7 @@ impl FrontBlit {
         )
         .unwrap();
 
-        let layout = self.g_pipeline.layout().set_layouts().get(0).unwrap();
+        let layout = self.g_pipeline.layout().set_layouts().first().unwrap();
 
         let texture_image_view = ImageView::new(
             source_image.clone(),
@@ -392,6 +446,7 @@ impl FrontBlit {
                 texture_image_view,
                 sampler,
             )],
+            [],
         )
         .unwrap();
         let framebuffer = Framebuffer::new(
@@ -411,29 +466,43 @@ impl FrontBlit {
                     clear_values: vec![None],
                     ..RenderPassBeginInfo::framebuffer(framebuffer)
                 },
-                SubpassContents::Inline,
+                Default::default(),
             )
             .unwrap()
             .set_viewport(
                 0,
                 [Viewport {
-                    origin: [0.0, 0.0],
-                    dimensions: [width as f32, height as f32],
-                    depth_range: 0.0..1.0,
-                }],
+                    offset: [0.0, 0.0],
+                    extent: [width as f32, height as f32],
+                    depth_range: 0.0..=1.0,
+                }]
+                .into_iter()
+                .collect(),
             )
+            .unwrap()
             .bind_pipeline_graphics(self.g_pipeline.clone())
+            .unwrap()
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 self.g_pipeline.layout().clone(),
                 0,
-                set,
+                set.clone(),
             )
+            .unwrap()
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                self.g_pipeline.layout().clone(),
+                0,
+                set.clone(),
+            )
+            .unwrap()
             .push_constants(self.g_pipeline.layout().clone(), 0, push_constants)
+            .unwrap()
             .bind_vertex_buffers(0, self.vertex_buffer.clone())
+            .unwrap()
             .draw(4, 1, 0, 0)
             .unwrap()
-            .end_render_pass()
+            .end_render_pass(Default::default())
             .unwrap();
 
         let command_buffer = builder.build().unwrap();
