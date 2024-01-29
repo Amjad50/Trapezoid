@@ -1,4 +1,3 @@
-mod audio;
 #[cfg(feature = "debugger")]
 mod debugger;
 
@@ -8,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use audio::{AudioPlayer, BufferFlowState};
+use dynwave::{AudioPlayer, BufferSize};
 use trapezoid_core::{DigitalControllerKey, Psx, PsxConfig};
 
 use clap::Parser;
@@ -89,11 +88,11 @@ struct Fps {
 }
 
 impl Fps {
-    fn new(target_fps: u64) -> Self {
+    fn new(target_fps: f64) -> Self {
         Self {
             moving_average: MovingAverage::new(),
             last_frame: Instant::now(),
-            target_fps: target_fps as f64,
+            target_fps,
         }
     }
 
@@ -111,14 +110,7 @@ impl Fps {
 
     /// Locks the current thread to the target FPS
     /// This is useful when running on a higher FPS than 60
-    fn lock_by_audio(&mut self, audio_state: BufferFlowState) {
-        let fps_off = match audio_state {
-            BufferFlowState::Normal => 0.0,
-            BufferFlowState::Overflow => -0.02,
-            BufferFlowState::Underflow => 0.02,
-        };
-
-        self.target_fps += fps_off;
+    fn lock(&mut self) {
         let duration_per_frame = Duration::from_secs_f64(1.0 / self.target_fps);
 
         let elapsed = self.last_frame.elapsed();
@@ -153,6 +145,10 @@ enum DisplayType {
     },
     Headless,
 }
+
+// Locked FPS for audio (more important than video)
+// 60 FPS result in popping sound because of emulation speed of the SPU
+const FPS: f64 = 59.5;
 
 struct VkDisplay {
     device: Arc<Device>,
@@ -281,7 +277,7 @@ impl VkDisplay {
         Self {
             device: device.clone(),
             queue,
-            fps: Fps::new(60),
+            fps: Fps::new(FPS),
             render_time_average: MovingAverage::new(),
             display_type: DisplayType::Windowed {
                 event_loop: Some(event_loop),
@@ -351,7 +347,7 @@ impl VkDisplay {
         Self {
             device,
             queue,
-            fps: Fps::new(60),
+            fps: Fps::new(FPS),
             render_time_average: MovingAverage::new(),
             display_type: DisplayType::Headless,
         }
@@ -541,9 +537,9 @@ fn main() {
 
     let mut debugger = Debugger::new();
 
-    let mut audio_player = AudioPlayer::new(44100);
+    let mut audio_player = AudioPlayer::<f32>::new(44100, BufferSize::QuarterSecond).unwrap();
     if args.audio {
-        audio_player.play();
+        audio_player.play().unwrap();
     }
 
     display.run(move |display, event| {
@@ -603,10 +599,8 @@ fn main() {
                 _ => {}
             },
             Event::MainEventsCleared => {
-                let audio_buffer_state = audio_player.take_buffer_state();
                 // limit the frame rate to the target fps if the display support more than that
-                // use the state of the audio buffer to adjust the fps
-                display.fps.lock_by_audio(audio_buffer_state);
+                display.fps.lock();
                 display.fps.tick();
 
                 // if the debugger is enabled, we don't run the emulation

@@ -622,7 +622,7 @@ pub struct Spu {
     cpu_clock_timer: u32,
 
     /// Output audio stereo in 44100Hz 16PCM
-    out_audio_buffer: Vec<i16>,
+    out_audio_buffer: Vec<f32>,
 
     in_dma_transfer: bool,
 }
@@ -752,6 +752,10 @@ impl Spu {
                 (0, 0)
             };
 
+            // convert i16 to f32
+            let left = left as f32 / 0x8000 as f32;
+            let right = right as f32 / 0x8000 as f32;
+
             self.out_audio_buffer.push(left);
             self.out_audio_buffer.push(right);
 
@@ -773,7 +777,7 @@ impl Spu {
         self.cdrom_audio_buffer_right.extend(right);
     }
 
-    pub fn take_audio_buffer(&mut self) -> Vec<i16> {
+    pub fn take_audio_buffer(&mut self) -> Vec<f32> {
         let mut out = Vec::with_capacity(self.out_audio_buffer.len());
         out.extend_from_slice(&self.out_audio_buffer);
         self.out_audio_buffer.clear();
