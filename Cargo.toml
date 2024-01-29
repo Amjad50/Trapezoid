@@ -24,10 +24,9 @@ clap = { version = "4.2", features = ["derive"] }
 vulkano = "0.33"
 winit = "0.28"
 vulkano-win = "0.33"
-ringbuf = { version = "0.3", default-features = false, features = ["alloc"] }
-cpal = { version = "0.15", default-features = false }
 
 rustyline = { version = "13.0", default-features = false, optional = true }
+dynwave = "0.1.0"
 
 [workspace]
 members = [
