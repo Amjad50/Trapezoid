@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "trapezoid"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clap",
  "dynwave",
@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "trapezoid-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.4.2",
  "byteorder",

@@ -1,6 +1,6 @@
 [package]
 name = "trapezoid"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Amjad Alsharafi <amjadsharafi10@gmail.com>"]
 edition = "2021"
 readme = "README.md"
@@ -16,7 +16,7 @@ default = ["debugger"]
 debugger = ["trapezoid-core/debugger", "dep:rustyline"]
 
 [dependencies]
-trapezoid-core = { path = "./trapezoid-core", version = "0.1.1" }
+trapezoid-core = { path = "./trapezoid-core", version = "0.1.2" }
 env_logger = { version = "0.11", default-features = false, features = ["auto-color"] }
 log = "0.4"
 clap = { version = "4.2", features = ["derive"] }
