@@ -363,11 +363,12 @@ impl FrontBlit {
         topleft: [u32; 2],
         size: [u32; 2],
         is_24bit_color_depth: bool,
-        in_future: IF,
+        mut in_future: IF,
     ) -> CommandBufferExecFuture<IF>
     where
         IF: GpuFuture,
     {
+        in_future.cleanup_finished();
         let [width, height, _] = dest_image.extent();
 
         let mut source_image = self.texture_image.clone();

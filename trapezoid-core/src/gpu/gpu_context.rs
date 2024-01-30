@@ -1026,10 +1026,10 @@ impl GpuContext {
 
         let command_buffer = command_buffer_builder.build().unwrap();
 
+        let mut future = self.gpu_future.take().unwrap();
+        future.cleanup_finished();
         self.gpu_future = Some(
-            self.gpu_future
-                .take()
-                .unwrap()
+            future
                 .then_execute(self.queue.clone(), command_buffer)
                 .unwrap()
                 .then_signal_fence_and_flush()
