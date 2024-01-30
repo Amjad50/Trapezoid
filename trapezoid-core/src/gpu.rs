@@ -17,8 +17,7 @@ use vulkano::{
         CommandBufferUsage, PrimaryAutoCommandBuffer,
     },
     device::{Device, Queue},
-    image::{ImageAccess, StorageImage},
-    sampler::Filter,
+    image::{sampler::Filter, Image},
     sync::GpuFuture,
 };
 
@@ -225,10 +224,10 @@ pub struct Gpu {
     // backend commands channel
     gpu_backend_sender: Sender<BackendCommand>,
     // channel for front image coming from backend
-    gpu_front_image_receiver: Receiver<Arc<StorageImage>>,
+    gpu_front_image_receiver: Receiver<Arc<Image>>,
 
     first_frame: bool,
-    current_front_image: Option<Arc<StorageImage>>,
+    current_front_image: Option<Arc<Image>>,
     command_buffer_allocator: StandardCommandBufferAllocator,
 
     // shared GPUSTAT
@@ -395,15 +394,12 @@ impl Gpu {
         self.in_vblank
     }
 
-    pub fn sync_gpu_and_blit_to_front<D>(
+    pub fn sync_gpu_and_blit_to_front(
         &mut self,
-        dest_image: Arc<D>,
+        dest_image: Arc<Image>,
         full_vram: bool,
         in_future: Box<dyn GpuFuture>,
-    ) -> Box<dyn GpuFuture>
-    where
-        D: ImageAccess + 'static,
-    {
+    ) -> Box<dyn GpuFuture> {
         // if we have a previous image, then we are not in the first frame,
         // so there should be an image in the channel.
         if !self.first_frame {

@@ -16,20 +16,20 @@ use vulkano::{
         physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, Queue,
         QueueCreateInfo, QueueFlags,
     },
-    image::{ImageUsage, SwapchainImage},
-    instance::{Instance, InstanceCreateInfo, InstanceExtensions},
+    image::{Image, ImageUsage},
+    instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, InstanceExtensions},
     swapchain::{
-        self, AcquireError, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreateInfo,
-        SwapchainCreationError, SwapchainPresentInfo,
+        self, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreateInfo,
+        SwapchainPresentInfo,
     },
     sync::{self, GpuFuture},
-    VulkanLibrary,
+    Validated, VulkanError, VulkanLibrary,
 };
-use vulkano_win::VkSurfaceBuild;
 use winit::{
-    event::{ElementState, Event, VirtualKeyCode, WindowEvent},
+    event::{ElementState, Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowBuilder, WindowId},
 };
 
 #[cfg(feature = "debugger")]
@@ -137,9 +137,10 @@ impl Fps {
 enum DisplayType {
     Windowed {
         event_loop: Option<EventLoop<()>>,
+        window: Arc<Window>,
         surface: Arc<Surface>,
         swapchain: Arc<Swapchain>,
-        images: Vec<Arc<SwapchainImage>>,
+        images: Vec<Arc<Image>>,
         future: Option<Box<dyn GpuFuture>>,
         full_vram_display: bool,
     },
@@ -160,23 +161,23 @@ struct VkDisplay {
 
 impl VkDisplay {
     fn windowed(full_vram_display: bool) -> Self {
-        let event_loop = EventLoop::new();
+        let event_loop = EventLoop::new().unwrap();
 
         let vulkan_library = VulkanLibrary::new().unwrap();
-        let required_extensions = vulkano_win::required_extensions(&vulkan_library);
+        let required_extensions = Surface::required_extensions(&event_loop);
 
         let instance = Instance::new(
             vulkan_library,
             InstanceCreateInfo {
+                flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
                 enabled_extensions: required_extensions,
                 ..Default::default()
             },
         )
         .unwrap();
 
-        let surface = WindowBuilder::new()
-            .build_vk_surface(&event_loop, instance.clone())
-            .unwrap();
+        let window = Arc::new(WindowBuilder::new().build(&event_loop).unwrap());
+        let surface = Surface::from_window(instance.clone(), window.clone()).unwrap();
 
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
@@ -235,18 +236,16 @@ impl VkDisplay {
                 .surface_capabilities(&surface, Default::default())
                 .unwrap();
 
-            let format = Some(
-                device
-                    .physical_device()
-                    .surface_formats(&surface, Default::default())
-                    .unwrap()[0]
-                    .0,
-            );
+            let format = device
+                .physical_device()
+                .surface_formats(&surface, Default::default())
+                .unwrap()[0]
+                .0;
             let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
 
             let present_mode = device
                 .physical_device()
-                .surface_present_modes(&surface)
+                .surface_present_modes(&surface, Default::default())
                 .unwrap()
                 .min_by_key(|&m| match m {
                     PresentMode::Mailbox => 0,
@@ -281,6 +280,7 @@ impl VkDisplay {
             render_time_average: MovingAverage::new(),
             display_type: DisplayType::Windowed {
                 event_loop: Some(event_loop),
+                window,
                 surface,
                 swapchain,
                 images,
@@ -363,14 +363,12 @@ impl VkDisplay {
             } => {
                 let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
                 let dimensions: [u32; 2] = window.inner_size().into();
-                let (new_swapchain, new_images) = match swapchain.recreate(SwapchainCreateInfo {
-                    image_extent: dimensions,
-                    ..swapchain.create_info()
-                }) {
-                    Ok(r) => r,
-                    Err(SwapchainCreationError::ImageExtentNotSupported { .. }) => return,
-                    Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
-                };
+                let (new_swapchain, new_images) = swapchain
+                    .recreate(SwapchainCreateInfo {
+                        image_extent: dimensions,
+                        ..swapchain.create_info()
+                    })
+                    .expect("failed to recreate swapchain");
 
                 *swapchain = new_swapchain;
                 *images = new_images;
@@ -402,9 +400,11 @@ impl VkDisplay {
                 ));
 
                 let (image_num, suboptimal, acquire_future) =
-                    match swapchain::acquire_next_image(swapchain.clone(), None) {
+                    match swapchain::acquire_next_image(swapchain.clone(), None)
+                        .map_err(Validated::unwrap)
+                    {
                         Ok(r) => r,
-                        Err(AcquireError::OutOfDate) => {
+                        Err(VulkanError::OutOfDate) => {
                             panic!("recreate swapchain");
                         }
                         Err(e) => panic!("Failed to acquire next image: {:?}", e),
@@ -462,21 +462,45 @@ impl VkDisplay {
 
     fn run<F>(mut self, mut f: F)
     where
-        F: 'static + FnMut(&mut VkDisplay, Event<'_, ()>) -> ControlFlow,
+        F: 'static + FnMut(&mut VkDisplay, Event<()>) -> Option<ControlFlow>,
     {
         match self.display_type {
             DisplayType::Windowed {
-                ref mut event_loop, ..
+                ref mut event_loop,
+                ref window,
+                ..
             } => {
                 let event_loop = event_loop.take().unwrap();
-                event_loop.run(move |event, _target, control_flow| {
-                    *control_flow = f(&mut self, event);
-                });
+                let window = window.clone();
+                event_loop
+                    .run(|event, target| match event {
+                        Event::AboutToWait => {
+                            window.request_redraw();
+                        }
+                        _ => {
+                            let r = f(&mut self, event);
+                            if let Some(r) = r {
+                                target.set_control_flow(r);
+                            } else {
+                                target.exit();
+                            }
+                        }
+                    })
+                    .unwrap();
             }
             DisplayType::Headless => loop {
                 // TODO: support keyboard input and such
                 // NOTE: MainEventCleared is used here to run the emulator
-                let _ = f(&mut self, Event::MainEventsCleared);
+                let r = f(
+                    &mut self,
+                    Event::WindowEvent {
+                        window_id: unsafe { WindowId::dummy() },
+                        event: WindowEvent::RedrawRequested,
+                    },
+                );
+                if r.is_none() {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(1));
             },
         }
@@ -543,52 +567,51 @@ fn main() {
     }
 
     display.run(move |display, event| {
-        match event {
-            Event::WindowEvent { event, .. } => match event {
+        if let Event::WindowEvent { event, .. } = event {
+            match event {
                 WindowEvent::CloseRequested => {
-                    return ControlFlow::Exit;
+                    return None;
                 }
                 WindowEvent::Resized(_) => {
                     display.window_resize();
                 }
-                WindowEvent::KeyboardInput { input, .. } => {
+                WindowEvent::KeyboardInput { event: input, .. } => {
                     let pressed = input.state == ElementState::Pressed;
 
-                    let digital_key = match input.virtual_keycode {
-                        Some(VirtualKeyCode::Return) => Some(DigitalControllerKey::Start),
-                        Some(VirtualKeyCode::Back) => Some(DigitalControllerKey::Select),
+                    let digital_key = match input.physical_key {
+                        PhysicalKey::Code(KeyCode::Enter) => Some(DigitalControllerKey::Start),
+                        PhysicalKey::Code(KeyCode::Backspace) => Some(DigitalControllerKey::Select),
 
-                        Some(VirtualKeyCode::Key1) => Some(DigitalControllerKey::L1),
-                        Some(VirtualKeyCode::Key2) => Some(DigitalControllerKey::L2),
-                        Some(VirtualKeyCode::Key3) => Some(DigitalControllerKey::L3),
-                        Some(VirtualKeyCode::Key0) => Some(DigitalControllerKey::R1),
-                        Some(VirtualKeyCode::Key9) => Some(DigitalControllerKey::R2),
-                        Some(VirtualKeyCode::Key8) => Some(DigitalControllerKey::R3),
+                        PhysicalKey::Code(KeyCode::Digit1) => Some(DigitalControllerKey::L1),
+                        PhysicalKey::Code(KeyCode::Digit2) => Some(DigitalControllerKey::L2),
+                        PhysicalKey::Code(KeyCode::Digit3) => Some(DigitalControllerKey::L3),
+                        PhysicalKey::Code(KeyCode::Digit0) => Some(DigitalControllerKey::R1),
+                        PhysicalKey::Code(KeyCode::Digit9) => Some(DigitalControllerKey::R2),
+                        PhysicalKey::Code(KeyCode::Digit8) => Some(DigitalControllerKey::R3),
 
-                        Some(VirtualKeyCode::W) => Some(DigitalControllerKey::Up),
-                        Some(VirtualKeyCode::S) => Some(DigitalControllerKey::Down),
-                        Some(VirtualKeyCode::D) => Some(DigitalControllerKey::Right),
-                        Some(VirtualKeyCode::A) => Some(DigitalControllerKey::Left),
+                        PhysicalKey::Code(KeyCode::KeyW) => Some(DigitalControllerKey::Up),
+                        PhysicalKey::Code(KeyCode::KeyS) => Some(DigitalControllerKey::Down),
+                        PhysicalKey::Code(KeyCode::KeyD) => Some(DigitalControllerKey::Right),
+                        PhysicalKey::Code(KeyCode::KeyA) => Some(DigitalControllerKey::Left),
 
-                        Some(VirtualKeyCode::I) => Some(DigitalControllerKey::Triangle),
-                        Some(VirtualKeyCode::K) => Some(DigitalControllerKey::X),
-                        Some(VirtualKeyCode::L) => Some(DigitalControllerKey::Circle),
-                        Some(VirtualKeyCode::J) => Some(DigitalControllerKey::Square),
-
+                        PhysicalKey::Code(KeyCode::KeyI) => Some(DigitalControllerKey::Triangle),
+                        PhysicalKey::Code(KeyCode::KeyK) => Some(DigitalControllerKey::X),
+                        PhysicalKey::Code(KeyCode::KeyL) => Some(DigitalControllerKey::Circle),
+                        PhysicalKey::Code(KeyCode::KeyJ) => Some(DigitalControllerKey::Square),
                         _ => None,
                     };
                     if let Some(k) = digital_key {
                         psx.change_controller_key_state(k, pressed);
                     } else if pressed {
-                        match input.virtual_keycode {
+                        match input.physical_key {
                             #[cfg(feature = "debugger")]
                             // Pause CPU and enable debug
-                            Some(VirtualKeyCode::Slash) => {
+                            PhysicalKey::Code(KeyCode::Slash) => {
                                 println!("{:?}", psx.cpu().registers());
                                 debugger.set_enabled(true);
                             }
-                            Some(VirtualKeyCode::V) => display.toggle_full_vram_display(),
-                            Some(VirtualKeyCode::RBracket) => {
+                            PhysicalKey::Code(KeyCode::KeyV) => display.toggle_full_vram_display(),
+                            PhysicalKey::Code(KeyCode::BracketRight) => {
                                 shell_state_open = !shell_state_open;
                                 psx.change_cdrom_shell_open_state(shell_state_open);
                             }
@@ -596,36 +619,34 @@ fn main() {
                         }
                     }
                 }
-                _ => {}
-            },
-            Event::MainEventsCleared => {
-                // limit the frame rate to the target fps if the display support more than that
-                display.fps.lock();
-                display.fps.tick();
+                WindowEvent::RedrawRequested => {
+                    // limit the frame rate to the target fps if the display support more than that
+                    display.fps.lock();
+                    display.fps.tick();
 
-                // if the debugger is enabled, we don't run the emulation
-                if !debugger.enabled() {
-                    let cpu_state = psx.clock_full_video_frame();
-                    debugger.handle_cpu_state(&mut psx, cpu_state);
+                    // if the debugger is enabled, we don't run the emulation
+                    if !debugger.enabled() {
+                        let cpu_state = psx.clock_full_video_frame();
+                        debugger.handle_cpu_state(&mut psx, cpu_state);
 
-                    let audio_buffer = psx.take_audio_buffer();
-                    if args.audio {
-                        audio_player.queue(&audio_buffer);
+                        let audio_buffer = psx.take_audio_buffer();
+                        if args.audio {
+                            audio_player.queue(&audio_buffer);
+                        }
                     }
+                    // keep rendering even when debugger is  running so that
+                    // we don't hang the display
+                    display.render_frame(&mut psx);
                 }
-                // keep rendering even when debugger is  running so that
-                // we don't hang the display
-                display.render_frame(&mut psx);
+                _ => {}
             }
-            _ => {}
         }
-
         // this is placed outside the emulation event, so that it reacts faster
         // to user input
         if debugger.enabled() {
             debugger.run(&mut psx);
         }
 
-        ControlFlow::Poll
+        Some(ControlFlow::Poll)
     });
 }
