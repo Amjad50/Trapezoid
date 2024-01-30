@@ -2,11 +2,10 @@ use crossbeam::channel::Sender;
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     command_buffer::{
-        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-        AutoCommandBufferBuilder, BufferImageCopy, ClearAttachment, ClearColorImageInfo, ClearRect,
-        CommandBufferInheritanceInfo, CommandBufferUsage, CopyBufferToImageInfo, CopyImageInfo,
-        CopyImageToBufferInfo, ImageCopy, PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract,
-        RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
+        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, BufferImageCopy,
+        ClearAttachment, ClearColorImageInfo, ClearRect, CommandBufferUsage, CopyBufferToImageInfo,
+        CopyImageInfo, CopyImageToBufferInfo, ImageCopy, PrimaryAutoCommandBuffer,
+        PrimaryCommandBufferAbstract, RenderPassBeginInfo,
     },
     descriptor_set::{
         allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
@@ -31,7 +30,6 @@ use vulkano::{
             input_assembly::{InputAssemblyState, PrimitiveTopology},
             multisample::MultisampleState,
             rasterization::RasterizationState,
-            subpass::PipelineSubpassType,
             vertex_input::{Vertex, VertexDefinition},
             viewport::{Viewport, ViewportState},
             GraphicsPipelineCreateInfo,
@@ -322,13 +320,8 @@ impl GpuContext {
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
         let descriptor_set_allocator =
             StandardDescriptorSetAllocator::new(device.clone(), Default::default());
-        let command_buffer_allocator = StandardCommandBufferAllocator::new(
-            device.clone(),
-            StandardCommandBufferAllocatorCreateInfo {
-                secondary_buffer_count: 20,
-                ..Default::default()
-            },
-        );
+        let command_buffer_allocator =
+            StandardCommandBufferAllocator::new(device.clone(), Default::default());
 
         let render_image = Image::new(
             memory_allocator.clone(),
@@ -1096,23 +1089,15 @@ impl GpuContext {
             drawing_size: [current_state.width, current_state.height],
         };
 
-        let subpass = match pipeline.subpass() {
-            PipelineSubpassType::BeginRenderPass(subpass) => subpass.clone(),
-            _ => unreachable!(),
-        };
-
-        let mut secondary_buffer = AutoCommandBufferBuilder::secondary(
-            &self.command_buffer_allocator,
-            self.queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-            CommandBufferInheritanceInfo {
-                render_pass: Some(subpass.into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        secondary_buffer
+        self.command_builder
+            .begin_render_pass(
+                RenderPassBeginInfo {
+                    clear_values: vec![None],
+                    ..RenderPassBeginInfo::framebuffer(self.render_image_framebuffer.clone())
+                },
+                Default::default(),
+            )
+            .unwrap()
             .set_viewport(
                 0,
                 [Viewport {
@@ -1138,21 +1123,6 @@ impl GpuContext {
             .bind_vertex_buffers(0, vertex_buffer)
             .unwrap()
             .draw(vertices_len as u32, 1, 0, 0)
-            .unwrap();
-
-        self.command_builder
-            .begin_render_pass(
-                RenderPassBeginInfo {
-                    clear_values: vec![None],
-                    ..RenderPassBeginInfo::framebuffer(self.render_image_framebuffer.clone())
-                },
-                SubpassBeginInfo {
-                    contents: SubpassContents::SecondaryCommandBuffers,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .execute_commands(secondary_buffer.build().unwrap())
             .unwrap()
             .end_render_pass(Default::default())
             .unwrap();
