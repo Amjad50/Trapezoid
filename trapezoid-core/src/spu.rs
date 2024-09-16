@@ -380,7 +380,8 @@ impl Voice {
         let loop_start = flags & 4 == 4;
 
         if loop_start {
-            self.adpcm_repeat_address = (self.i_adpcm_current_address / 4) as u16;
+            // make sure we use the `current` value, not the `next` value
+            self.adpcm_repeat_address = ((self.i_adpcm_current_address - 8) / 4) as u16;
         }
         if loop_end {
             self.i_adpcm_current_address = self.adpcm_repeat_address as usize * 4;
