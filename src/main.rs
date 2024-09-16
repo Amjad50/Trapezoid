@@ -610,6 +610,11 @@ fn main() {
                                 println!("{:?}", psx.cpu().registers());
                                 debugger.set_enabled(true);
                             }
+                            #[cfg(feature = "debugger")]
+                            // Resume CPU if paused
+                            PhysicalKey::Code(KeyCode::KeyC) => {
+                                debugger.set_enabled(false);
+                            }
                             PhysicalKey::Code(KeyCode::KeyV) => display.toggle_full_vram_display(),
                             PhysicalKey::Code(KeyCode::BracketRight) => {
                                 shell_state_open = !shell_state_open;

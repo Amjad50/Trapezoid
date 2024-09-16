@@ -167,12 +167,14 @@ impl Debugger {
                     }
                     // flush all outputs
                     std::io::stdout().flush().unwrap();
-                    match editor.as_mut().unwrap().readline("CPU> ") {
-                        Ok(line) => {
-                            stdin_tx.send(line).unwrap();
+                    if let Some(editor) = &mut editor {
+                        match editor.readline("CPU> ") {
+                            Ok(line) => {
+                                stdin_tx.send(line).unwrap();
+                            }
+                            Err(ReadlineError::Interrupted) => process::exit(0),
+                            _ => {}
                         }
-                        Err(ReadlineError::Interrupted) => process::exit(0),
-                        _ => {}
                     }
                 }
             }
