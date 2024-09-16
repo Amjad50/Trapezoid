@@ -167,12 +167,14 @@ impl Debugger {
                     }
                     // flush all outputs
                     std::io::stdout().flush().unwrap();
-                    match editor.as_mut().unwrap().readline("CPU> ") {
-                        Ok(line) => {
-                            stdin_tx.send(line).unwrap();
+                    if let Some(editor) = &mut editor {
+                        match editor.readline("CPU> ") {
+                            Ok(line) => {
+                                stdin_tx.send(line).unwrap();
+                            }
+                            Err(ReadlineError::Interrupted) => process::exit(0),
+                            _ => {}
                         }
-                        Err(ReadlineError::Interrupted) => process::exit(0),
-                        _ => {}
                     }
                 }
             }
@@ -231,21 +233,16 @@ impl Debugger {
     }
 
     fn handle_command(&mut self, psx: &mut Psx, cmd: &str) {
-        let (mut cmd, arg) = match cmd.trim().split_once(' ') {
-            Some((c, a)) => (c, Some(a)),
-            None => (cmd, None),
-        };
-        let modifier = cmd.split_once('/').map(|(s1, s2)| {
-            cmd = s1;
-            s2
-        });
-        let addr = arg.and_then(|a| {
+        fn parse_register_name(name: &str) -> Option<RegisterType> {
+            CPU_REGISTERS.get(name).copied().or_else(|| {
+                println!("Invalid CPU register name: {}", name);
+                None
+            })
+        }
+
+        fn parse_address(a: &str, psx: &mut Psx) -> Option<u32> {
             if let Some(register_name) = a.strip_prefix('$') {
-                let reg_ty = CPU_REGISTERS.get(register_name).copied().or_else(|| {
-                    println!("Invalid CPU register name: {}", register_name);
-                    None
-                });
-                // read register
+                let reg_ty = parse_register_name(register_name);
                 reg_ty.map(|r| psx.cpu().registers().read(r))
             } else if let Some(hw_register_name) = a.strip_prefix('@') {
                 HW_REGISTERS.get(hw_register_name).copied().or_else(|| {
@@ -259,11 +256,28 @@ impl Debugger {
                     Err(_) => None,
                 }
             }
+        }
+
+        let (mut cmd, arg) = match cmd.trim().split_once(' ') {
+            Some((c, a)) => (c, Some(a)),
+            None => (cmd, None),
+        };
+        let modifier = cmd.split_once('/').map(|(s1, s2)| {
+            cmd = s1;
+            s2
+        });
+        let addr = arg.and_then(|a| {
+            if cmd != "set" {
+                parse_address(a, psx)
+            } else {
+                None
+            }
         });
 
         match cmd {
             "h" => {
                 println!("h - help");
+                println!("reset - reset the game and reboot");
                 println!("r - print registers");
                 println!("c - continue");
                 println!("s - step");
@@ -281,14 +295,21 @@ impl Debugger {
                 println!("rbr <addr> - remove read breakpoint");
                 println!("lb - list breakpoints");
                 println!("m[32/16/8] <addr> - print content of memory (default u32)");
+                println!("md/[n] <addr> - memory dump ([n] argument will print the next multiple of 16 after n)");
                 println!("p <addr>/<$reg> - print address or register value");
+                println!("set <$reg> <value> - set register value (if it can be modified)");
                 println!("i/[n] [addr] - disassemble instructions");
+                println!("spu - print SPU state");
                 println!("hook_add <cmd[;cmd]> - add hook/s commands");
                 println!("hook_clear - clear all hooks");
                 println!("hook_list - list all hooks");
                 println!(
                     "hook_setting [<break_type>[=true/false]] - change when the hooks are executed"
                 );
+            }
+            "reset" => {
+                psx.reset();
+                println!("Reset");
             }
             "r" => println!("{:?}", psx.cpu().registers()),
             "c" => {
@@ -417,6 +438,25 @@ impl Debugger {
                     println!("Read Breakpoint: 0x{:08X}", bp);
                 }
             }
+            "md" => {
+                let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
+                let addr = addr.unwrap_or(psx.cpu().registers().read(RegisterType::Pc));
+                let rows = (count + 15) / 16;
+                // print in hex dump
+                for i in 0..rows {
+                    let addr = addr + i * 16;
+                    let mut line = format!("{:08X}: ", addr);
+                    for j in 0..16 {
+                        let val = psx.bus_read_u8(addr + j);
+                        if let Ok(val) = val {
+                            line.push_str(&format!("{:02X} ", val));
+                        } else {
+                            line.push_str("?? ");
+                        }
+                    }
+                    println!("{}", line);
+                }
+            }
             "m" | "m32" => {
                 let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
                 if let Some(addr) = addr {
@@ -470,6 +510,33 @@ impl Debugger {
                     println!("Usage: p <address>");
                 }
             }
+            "set" => {
+                let Some(arg) = arg else {
+                    println!("Usage: set <$reg> <value>");
+                    return;
+                };
+
+                let Some((reg, value)) = arg.split_once(' ') else {
+                    println!("Usage: set <$reg> <value>");
+                    return;
+                };
+
+                let Some(register_name) = reg.strip_prefix('$') else {
+                    println!("Invalid register name: {}", reg);
+                    return;
+                };
+                let Some(reg_ty) = parse_register_name(register_name) else {
+                    println!("Invalid register name: {}", register_name);
+                    return;
+                };
+                let Some(value) = parse_address(value, psx) else {
+                    println!("Invalid value: {}", value);
+                    return;
+                };
+
+                println!("Set register {} to 0x{:08X}", reg_ty, value);
+                psx.cpu().registers_mut().write(reg_ty, value);
+            }
             "i" | "i/" => {
                 let count = modifier.and_then(|m| m.parse::<u32>().ok()).unwrap_or(1);
                 let addr = addr.unwrap_or(psx.cpu().registers().read(RegisterType::Pc));
@@ -494,6 +561,9 @@ impl Debugger {
                 } else {
                     println!("Error reading u32 {:08X}: {:?}", addr - 4, previous_instr_d);
                 }
+            }
+            "spu" => {
+                psx.print_spu_state();
             }
             "hook_add" => {
                 if let Some(arg) = arg {

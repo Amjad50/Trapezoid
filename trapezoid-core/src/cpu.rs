@@ -152,11 +152,21 @@ impl Cpu {
         }
     }
 
+    pub fn reset(&mut self) {
+        self.regs = Registers::new();
+        self.cop0 = SystemControlCoprocessor::default();
+        self.cop2 = Gte::default();
+        self.jump_dest_next = None;
+        self.elapsed_cycles = 0;
+        self.shell_reached = false;
+        self.current_instr_pc = 0;
+    }
+
     pub fn registers(&self) -> &Registers {
         &self.regs
     }
 
-    pub(crate) fn registers_mut(&mut self) -> &mut Registers {
+    pub fn registers_mut(&mut self) -> &mut Registers {
         &mut self.regs
     }
 

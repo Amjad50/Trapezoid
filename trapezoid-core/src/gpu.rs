@@ -211,6 +211,7 @@ enum BackendCommand {
 pub struct Gpu {
     // used for blitting to frontend
     queue: Arc<Queue>,
+    device: Arc<Device>,
 
     // handle the backend gpu thread
     _gpu_backend_thread_handle: JoinHandle<()>,
@@ -284,6 +285,7 @@ impl Gpu {
 
         Self {
             queue,
+            device: device.clone(),
 
             _gpu_backend_thread_handle,
 
@@ -309,6 +311,10 @@ impl Gpu {
             in_vblank: false,
             cpu_cycles_counter: 0,
         }
+    }
+
+    pub fn reset(&mut self) {
+        let _ = std::mem::replace(self, Self::new(self.device.clone(), self.queue.clone()));
     }
 
     /// returns the number of `dot_clocks`, and if `hblank_clock` occurres

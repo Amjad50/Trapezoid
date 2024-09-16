@@ -459,6 +459,14 @@ impl Default for Cdrom {
 
 // file reading and handling
 impl Cdrom {
+    pub fn reset(&mut self) {
+        let cue_file = self.cue_file.take();
+        let _ = std::mem::take(self);
+        if let Some(cue_file) = cue_file {
+            let _ = self.set_cue_file(cue_file);
+        }
+    }
+
     pub fn set_cue_file<P: AsRef<Path>>(&mut self, cue_file: P) -> Result<(), PsxError> {
         let a = cue_file.as_ref().to_path_buf();
         self.load_cue_file(&a)?;

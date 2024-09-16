@@ -209,6 +209,7 @@ pub struct CpuBus {
     dma_bus: DmaBus,
 
     scratchpad: Scratchpad,
+    config: PsxConfig,
 }
 
 impl CpuBus {
@@ -242,6 +243,7 @@ impl CpuBus {
             },
 
             scratchpad: Scratchpad::default(),
+            config,
         };
 
         // TODO: handle errors in loading
@@ -266,6 +268,28 @@ impl CpuBus {
         Ok(s)
     }
 
+    pub fn reset(&mut self) {
+        self.mem_ctrl_1 = MemoryControl1::default();
+        self.mem_ctrl_2 = MemoryControl2::default();
+        self.cache_control = CacheControl::default();
+        self.interrupts = Interrupts::default();
+        self.controller_mem_card = ControllerAndMemoryCard::default();
+
+        self.expansion_region_1 = ExpansionRegion1::default();
+        self.expansion_region_2 = ExpansionRegion2::new(self.config);
+        self.dma = Dma::default();
+
+        self.timers = Timers::default();
+
+        self.dma_bus.cdrom.reset();
+        self.dma_bus.gpu.reset();
+        self.dma_bus.main_ram = MainRam::default();
+        self.dma_bus.mdec = Mdec::default();
+        self.dma_bus.spu = Spu::default();
+
+        self.scratchpad = Scratchpad::default();
+    }
+
     pub fn gpu(&self) -> &Gpu {
         &self.dma_bus.gpu
     }
@@ -276,6 +300,10 @@ impl CpuBus {
 
     pub fn controller_mem_card_mut(&mut self) -> &mut ControllerAndMemoryCard {
         &mut self.controller_mem_card
+    }
+
+    pub fn spu(&self) -> &Spu {
+        &self.dma_bus.spu
     }
 
     pub fn spu_mut(&mut self) -> &mut Spu {
