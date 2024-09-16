@@ -23,5 +23,5 @@ bitflags = "2.1"
 vulkano = "0.34"
 vulkano-shaders = "0.34"
 
-crossbeam = "0.8.1"
+crossbeam = { version = "0.8.1", default-features = false, features = ["std", "crossbeam-channel"] }
 phf = { version = "0.11.1", default-features = false, features = ["macros"] }
