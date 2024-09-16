@@ -156,7 +156,7 @@ impl Cpu {
         &self.regs
     }
 
-    pub(crate) fn registers_mut(&mut self) -> &mut Registers {
+    pub fn registers_mut(&mut self) -> &mut Registers {
         &mut self.regs
     }
 

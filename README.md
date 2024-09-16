@@ -109,7 +109,9 @@ br <addr> - set read breakpoint
 rbr <addr> - remove read breakpoint
 lb - list breakpoints
 m[32/16/8] <addr> - print content of memory (default u32)
+md/[n] <addr> - memory dump ([n] argument will print the next multiple of 16 after n)
 p <addr>/<$reg> - print address or register value
+set <$reg> <value> - set register value (if it can be modified)
 i/[n] [addr] - disassemble instructions
 hook_add <cmd[;cmd]> - add hook/s commands
 hook_clear - clear all hooks
@@ -317,6 +319,15 @@ CPU> m @GPU_STAT        ; reading gpu status register easily
 0x1F801814: 0x5404220A
 ```
 
+##### `md`
+Memory dump, this will print the memory content in a hex dump format, you can specify the number of bytes to print, and it will
+print rows fulfilling at least the number of bytes specified.
+```txt
+CPU> md/20 801FFD18
+801FFD18: 8C 01 00 00 00 00 01 80 80 00 00 00 00 00 00 00 
+801FFD28: 00 00 00 00 20 7B C0 BF 00 00 00 00 00 00 00 00
+```
+
 ##### `p`
 Print the value of a register or memory address
 
@@ -328,6 +339,13 @@ CPU> p @GPU_STAT
 0x1F801814
 CPU> p 12345678
 0x12345678
+```
+
+##### `set`
+Set the value of a register, this is only useful for writable registers
+```txt
+CPU> set $t0 0x12345678
+Set register t0 to 0x12345678
 ```
 
 ##### `i`
