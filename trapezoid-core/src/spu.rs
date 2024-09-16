@@ -783,6 +783,65 @@ impl Spu {
         self.out_audio_buffer.clear();
         out
     }
+
+    pub fn print_state(&self) {
+        println!("SPU State:");
+        println!(
+            "  Main Volume: Left: {:04X}, Right: {:04X}",
+            self.main_vol_left, self.main_vol_right
+        );
+        println!(
+            "  Reverb Volume: Left: {:04X}, Right: {:04X}",
+            self.reverb_out_vol_left, self.reverb_out_vol_right
+        );
+        println!(
+            "  CD Volume: Left: {:04X}, Right: {:04X}",
+            self.cd_vol_left, self.cd_vol_right
+        );
+        println!(
+            "  External Volume: Left: {:04X}, Right: {:04X}",
+            self.external_vol_left, self.external_vol_right
+        );
+        println!(
+            "  RAM Transfer Control: {:04X}, Address: {:04X}",
+            self.ram_transfer_control, self.ram_transfer_address
+        );
+        println!("  Control: {:X}, Stat: {:X}", self.control, self.stat);
+        println!("  Reverb Config: {:02X?}", self.reverb_config);
+        println!(
+            "  IRQ Address: {:X}, IRQ Flag: {}",
+            self.spu_ram.irq_address / 4,
+            self.spu_ram.irq_flag.get()
+        );
+        println!();
+        println!("  | {:^2} | {:^6} | {:^7} | {:^9} | {:^10} | {:^11} | {:^5} | {:^8} | {:^9} | {:^11} | {:^10} | {:^11} | {:^12} | {:^11} | {:^10} | {:^10} | {:^12} | {:^13} |", 
+             "V#", "Key On", "Key Off", "Pitch Mod", "Noise Mode", "Reverb Mode", "Endx", 
+             "Vol Left", "Vol Right", "Sample Rate", "Start Addr", "Repeat Addr", "Current Addr", "ADSR Config", 
+             "ADSR Vol", "ADSR State", "Sample Index", "Pitch Counter");
+
+        for i in 0..24 {
+            println!("  | {:^2} | {:^6?} | {:^7?} | {:^9?} | {:^10?} | {:^11?} | {:^5?} | {:^8X} | {:^9X} | {:^11X} | {:^10X} | {:^11X} | {:^12X} | {:^11X} | {:^10X} | {:^10} | {:^12} | {:^13X} |", 
+                i,
+                self.key_on_flag.get(i),
+                self.key_off_flag.get(i),
+                self.pitch_mod_channel_flag.get(i),
+                self.noise_channel_mode_flag.get(i),
+                self.reverb_channel_mode_flag.get(i),
+                self.endx_flag.get(i),
+                self.voices[i].volume_left,
+                self.voices[i].volume_right,
+                self.voices[i].adpcm_sample_rate,
+                self.voices[i].adpcm_start_address,
+                self.voices[i].adpcm_repeat_address,
+                self.voices[i].i_adpcm_current_address / 4,
+                self.voices[i].adsr_config,
+                self.voices[i].adsr_current_vol,
+                format!("{:?}", self.voices[i].i_adsr_state), // fixes the alignment, idk why
+                                                              // aligning with debug wasn't working
+                self.voices[i].i_cached_sample_index,
+                self.voices[i].i_adpcm_pitch_counter);
+        }
+    }
 }
 
 // DMA transfer

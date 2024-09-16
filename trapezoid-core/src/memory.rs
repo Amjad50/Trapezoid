@@ -302,6 +302,10 @@ impl CpuBus {
         &mut self.controller_mem_card
     }
 
+    pub fn spu(&self) -> &Spu {
+        &self.dma_bus.spu
+    }
+
     pub fn spu_mut(&mut self) -> &mut Spu {
         &mut self.dma_bus.spu
     }

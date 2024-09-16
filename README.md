@@ -114,6 +114,7 @@ md/[n] <addr> - memory dump ([n] argument will print the next multiple of 16 aft
 p <addr>/<$reg> - print address or register value
 set <$reg> <value> - set register value (if it can be modified)
 i/[n] [addr] - disassemble instructions
+spu - print SPU state
 hook_add <cmd[;cmd]> - add hook/s commands
 hook_clear - clear all hooks
 hook_list - list all hooks
@@ -406,6 +407,25 @@ Hooks will be executed on the following breakpoints:
   write_breakpoint: false
 ```
 This will enable hooks on `step` and `instruction_breakpoint` events, and disable them on `step_out` event, and leave the rest as is.
+
+##### `spu`
+Print SPU state
+```txt
+CPU> spu
+SPU State:
+  Main Volume: Left: 3FFF, Right: 3FFF
+  Reverb Volume: Left: 7FFE, Right: 7FFE
+  CD Volume: Left: 3FFF, Right: 3FFF
+  External Volume: Left: 0000, Right: 0000
+  RAM Transfer Control: 0004, Address: 49D0
+  Control: C0C1, Stat: 1
+  Reverb Config: [B1, 7F, 70F0, 4FA8, BCE0, 4510, BEF0, B4C0, 5280, 4EC0, 904, 76B, 824, 65F, 7A2, 616, 76C, 5ED, 5EC, 42E, 50F, 305, 462, 2B7, 42F, 265, 264, 1B2, 100, 80, 8000, 8000]
+  IRQ Address: 3ED1, IRQ Flag: false
+
+  | V# | Key On | Key Off | Pitch Mod | Noise Mode | Reverb Mode | Endx  | Vol Left | Vol Right | Sample Rate | Start Addr | Repeat Addr | Current Addr | ADSR Config |  ADSR Vol  | ADSR State | Sample Index | Pitch Counter |
+  | 0  |  true  |  true   |   false   |   false    |    false    | true  |   3FFF   |     0     |     800     |    3ED0    |    3ED2     |     435E     |    6000F    |    7FFF    |  Sustain   |      3       |     3864      |
+  ...
+```
 
 ##### `hook_add`
 We can add hooks by `hook_add`, which will be executed when the event is triggered.

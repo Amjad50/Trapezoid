@@ -297,6 +297,7 @@ impl Debugger {
                 println!("p <addr>/<$reg> - print address or register value");
                 println!("set <$reg> <value> - set register value (if it can be modified)");
                 println!("i/[n] [addr] - disassemble instructions");
+                println!("spu - print SPU state");
                 println!("hook_add <cmd[;cmd]> - add hook/s commands");
                 println!("hook_clear - clear all hooks");
                 println!("hook_list - list all hooks");
@@ -558,6 +559,9 @@ impl Debugger {
                 } else {
                     println!("Error reading u32 {:08X}: {:?}", addr - 4, previous_instr_d);
                 }
+            }
+            "spu" => {
+                psx.print_spu_state();
             }
             "hook_add" => {
                 if let Some(arg) = arg {
