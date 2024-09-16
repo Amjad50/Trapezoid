@@ -92,6 +92,7 @@ Prints the help message
 ```txt
 CPU> h
 h - help
+reset - reset the game and reboot
 r - print registers
 c - continue
 s - step
@@ -117,6 +118,13 @@ hook_add <cmd[;cmd]> - add hook/s commands
 hook_clear - clear all hooks
 hook_list - list all hooks
 hook_setting [<break_type>[=true/false]] - change when the hooks are executed
+```
+
+##### `reset`
+Resets the game and reboots the emulator
+```txt
+CPU> reset
+Reset
 ```
 
 ##### `r`

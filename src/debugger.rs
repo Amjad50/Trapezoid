@@ -275,6 +275,7 @@ impl Debugger {
         match cmd {
             "h" => {
                 println!("h - help");
+                println!("reset - reset the game and reboot");
                 println!("r - print registers");
                 println!("c - continue");
                 println!("s - step");
@@ -302,6 +303,10 @@ impl Debugger {
                 println!(
                     "hook_setting [<break_type>[=true/false]] - change when the hooks are executed"
                 );
+            }
+            "reset" => {
+                psx.reset();
+                println!("Reset");
             }
             "r" => println!("{:?}", psx.cpu().registers()),
             "c" => {

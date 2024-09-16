@@ -115,6 +115,11 @@ impl Psx {
         })
     }
 
+    pub fn reset(&mut self) {
+        self.cpu.reset();
+        self.bus.reset();
+    }
+
     #[inline(always)]
     fn common_clock(&mut self) -> (u32, cpu::CpuState) {
         let mut cpu_state = cpu::CpuState::Normal;
