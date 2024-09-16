@@ -188,9 +188,9 @@ impl Gte {
     /// updates orgb register on any write/change to ir 1,2,3
     /// orgb also acts as irgb mirror
     fn update_orgb_irgb(&mut self) {
-        let r = (self.ir[1] >> 7).max(0).min(0x1F) as u16;
-        let g = (self.ir[2] >> 7).max(0).min(0x1F) as u16;
-        let b = (self.ir[3] >> 7).max(0).min(0x1F) as u16;
+        let r = (self.ir[1] >> 7).clamp(0, 0x1F) as u16;
+        let g = (self.ir[2] >> 7).clamp(0, 0x1F) as u16;
+        let b = (self.ir[3] >> 7).clamp(0, 0x1F) as u16;
 
         self.orgb = b << 10 | g << 5 | r;
         self.irgb = self.orgb;
