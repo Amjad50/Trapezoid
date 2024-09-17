@@ -330,6 +330,9 @@ impl Voice {
             if direction_decrease {
                 adsr_step = (adsr_step as i32 * self.adsr_current_vol as i32 / 0x8000)
                     .clamp(-0x8000, 0x7FFF) as i16;
+                if adsr_step == 0 {
+                    adsr_step = -1;
+                }
             } else if self.adsr_current_vol > 0x6000 {
                 adsr_cycles *= 4;
             }
