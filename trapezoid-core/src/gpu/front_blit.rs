@@ -264,7 +264,7 @@ impl FrontBlit {
             memory_allocator.clone(),
             ImageCreateInfo {
                 image_type: ImageType::Dim2d,
-                format: Format::R8G8B8A8_UNORM,
+                format: Format::B8G8R8A8_UNORM,
                 usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
                 extent: [1024, 512, 1],
                 ..Default::default()
