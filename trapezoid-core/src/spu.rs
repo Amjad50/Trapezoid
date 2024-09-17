@@ -167,6 +167,50 @@ bitflags::bitflags! {
     }
 }
 
+impl std::fmt::Debug for ADSRConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const STEPS_POS: &[i16; 4] = &[7, 6, 5, 4];
+        const STEPS_NEG: &[i16; 4] = &[-8, -7, -6, -5];
+
+        let attack_mode_exp = self.contains(ADSRConfig::ATTACK_MODE);
+        let attack_shift = ((self.bits() >> 10) & 0b11111) as u8;
+        let step_i = (self.bits() >> 8) & 0b11;
+        let attack_step = STEPS_POS[step_i as usize];
+
+        let decay_shift = ((self.bits() >> 4) & 0b1111) as u8;
+
+        let sustain_level_mul = (self.bits() & 0b1111) as u16 + 1;
+        let sustain_level = (sustain_level_mul * 0x800).max(0x7FFF);
+
+        let sustain_mode_exp = self.contains(ADSRConfig::SUSTAIN_MODE);
+        let sustain_direction_dec = self.contains(ADSRConfig::SUSTAIN_DIRECTION);
+        let sustain_shift = ((self.bits() >> 24) & 0b11111) as u8;
+
+        let step_i = (self.bits() >> 22) & 0b11;
+        let sustain_step = if sustain_direction_dec {
+            STEPS_NEG[step_i as usize]
+        } else {
+            STEPS_POS[step_i as usize]
+        };
+        let release_mode_exp = self.contains(ADSRConfig::RELEASE_MODE);
+        let release_shift = ((self.bits() >> 16) & 0b11111) as u8;
+
+        f.debug_struct("ADSRConfig")
+            .field("attack_mode_exp", &attack_mode_exp)
+            .field("attack_shift", &attack_shift)
+            .field("attack_step", &attack_step)
+            .field("decay_shift", &decay_shift)
+            .field("sustain_level", &sustain_level)
+            .field("sustain_mode_exp", &sustain_mode_exp)
+            .field("sustain_direction_dec", &sustain_direction_dec)
+            .field("sustain_shift", &sustain_shift)
+            .field("sustain_step", &sustain_step)
+            .field("release_mode_exp", &release_mode_exp)
+            .field("release_shift", &release_shift)
+            .finish()
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum ADSRState {
     Attack,
