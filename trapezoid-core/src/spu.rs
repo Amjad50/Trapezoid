@@ -167,13 +167,14 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum ADSRState {
     Attack,
     Decay,
     Sustain,
-    #[default]
     Release,
+    #[default]
+    Stopped,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -220,6 +221,9 @@ struct Voice {
     i_cached_sample_index: usize,
 
     i_adsr_cycle_counter: u32,
+
+    is_on: bool,
+    is_off: bool,
 }
 
 impl Voice {
@@ -231,10 +235,13 @@ impl Voice {
         self.adpcm_repeat_address = self.adpcm_start_address;
         self.set_adsr_state(ADSRState::Attack);
         self.adsr_current_vol = 0;
+        self.is_on = true;
+        self.is_off = false;
     }
 
     fn key_off(&mut self) {
         self.set_adsr_state(ADSRState::Release);
+        self.is_off = true;
     }
 
     fn set_adsr_state(&mut self, state: ADSRState) {
@@ -298,6 +305,13 @@ impl Voice {
                 step = -8; // always -8
                 target_level = 0; // until 0
             }
+            ADSRState::Stopped => {
+                mode = false;
+                direction = true;
+                shift = 0;
+                step = 0;
+                target_level = 0;
+            }
         }
 
         (mode, direction, shift, step, target_level)
@@ -322,8 +336,13 @@ impl Voice {
         let (mode_exponential, direction_decrease, shift, step, target_level) =
             self.get_adsr_current_info();
 
-        let mut adsr_cycles = 1 << shift.saturating_sub(11) as u32;
-        let mut adsr_step = step << (11u8).saturating_sub(shift) as u32;
+        if self.i_adsr_state == ADSRState::Stopped {
+            self.is_on = false;
+            return;
+        }
+
+        let mut adsr_cycles = 1 << shift.saturating_sub(11);
+        let mut adsr_step = step << (11u8).saturating_sub(shift);
 
         // fake exponential
         if mode_exponential {
@@ -334,10 +353,18 @@ impl Voice {
                     adsr_step = -1;
                 }
             } else if self.adsr_current_vol > 0x6000 {
-                adsr_cycles *= 4;
+                if shift < 10 {
+                    adsr_step /= 4;
+                } else if shift >= 11 {
+                    adsr_cycles *= 4;
+                } else {
+                    adsr_step /= 4;
+                    adsr_cycles *= 4;
+                }
             }
         }
-        self.i_adsr_cycle_counter = adsr_cycles;
+
+        self.i_adsr_cycle_counter = adsr_cycles.max(1);
 
         // should wait here
         self.adsr_current_vol =
@@ -357,6 +384,9 @@ impl Voice {
                     // do nothing
                 }
                 ADSRState::Release => {
+                    self.i_adsr_state = ADSRState::Stopped;
+                }
+                ADSRState::Stopped => {
                     // do nothing
                 }
             }
@@ -827,8 +857,8 @@ impl Spu {
         for i in 0..24 {
             println!("  | {:^2} | {:^6?} | {:^7?} | {:^9?} | {:^10?} | {:^11?} | {:^5?} | {:^8X} | {:^9X} | {:^11X} | {:^10X} | {:^11X} | {:^12X} | {:^11X} | {:^8X} | {:^10} | {:^12} | {:^13X} |", 
                 i,
-                self.key_on_flag.get(i),
-                self.key_off_flag.get(i),
+                self.voices[i].is_on,
+                self.voices[i].is_off,
                 self.pitch_mod_channel_flag.get(i),
                 self.noise_channel_mode_flag.get(i),
                 self.reverb_channel_mode_flag.get(i),
