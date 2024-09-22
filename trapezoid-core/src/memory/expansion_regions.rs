@@ -169,4 +169,28 @@ impl BusLine for ExpansionRegion2 {
         self.data[addr as usize] = data;
         Ok(())
     }
+
+    fn read_u16(&mut self, addr: u32) -> Result<u16> {
+        let low = self.read_u8(addr)? as u16;
+        let high = self.read_u8(addr + 1)? as u16;
+
+        Ok(low | (high << 8))
+    }
+
+    fn write_u16(&mut self, addr: u32, data: u16) -> Result<()> {
+        self.write_u8(addr, data as u8)?;
+        self.write_u8(addr + 1, (data >> 8) as u8)
+    }
+
+    fn read_u32(&mut self, addr: u32) -> Result<u32> {
+        let low = self.read_u16(addr)? as u32;
+        let high = self.read_u16(addr + 2)? as u32;
+
+        Ok(low | (high << 16))
+    }
+
+    fn write_u32(&mut self, addr: u32, data: u32) -> Result<()> {
+        self.write_u16(addr, data as u16)?;
+        self.write_u16(addr + 2, (data >> 16) as u16)
+    }
 }
