@@ -433,7 +433,7 @@ impl BusLine for CpuBus {
             0x1F801810..=0x1F801814 => self.dma_bus.gpu.read_u32(addr & 0xF),
             0x1F801820..=0x1F801824 => self.dma_bus.mdec.read_u32(addr & 0xF),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.read_u32(addr & 0x3FF),
-            0x1F802000..=0x1F80207f => self.expansion_region_2.read_u32(addr & 0xFF),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.read_u32(addr & 0xFF),
             0xFFFE0130 => self.cache_control.read_u32(addr),
             _ => Err(format!("MainBus: u32 read from {:08X}", addr)),
         }
@@ -454,7 +454,7 @@ impl BusLine for CpuBus {
             0x1F801810..=0x1F801814 => self.dma_bus.gpu.write_u32(addr & 0xF, data),
             0x1F801820..=0x1F801824 => self.dma_bus.mdec.write_u32(addr & 0xF, data),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.write_u32(addr & 0x3FF, data),
-            0x1F802000..=0x1F80207f => self.expansion_region_2.write_u32(addr & 0xFF, data),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.write_u32(addr & 0xFF, data),
             0xFFFE0130 => self.cache_control.write_u32(addr, data),
             _ => Err(format!("MainBus: u32 write to {:08X}", addr)),
         }
@@ -472,7 +472,7 @@ impl BusLine for CpuBus {
             0x1F801100..=0x1F80112F => self.timers.read_u16(addr & 0xFF),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.read_u16(addr & 0x3FF),
             0x1FC00000..=0x1FC80000 => self.bios.read_u16(addr),
-            0x1F802000..=0x1F80207f => self.expansion_region_2.read_u16(addr & 0xFF),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.read_u16(addr & 0xFF),
             _ => Err(format!("u16 read from {:08X}", addr)),
         }
     }
@@ -488,7 +488,7 @@ impl BusLine for CpuBus {
             0x1F801070..=0x1F801077 => self.interrupts.write_u16(addr & 0xF, data),
             0x1F801100..=0x1F80112F => self.timers.write_u16(addr & 0xFF, data),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.write_u16(addr & 0x3FF, data),
-            0x1F802000..=0x1F80207f => self.expansion_region_2.write_u16(addr & 0xFF, data),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.write_u16(addr & 0xFF, data),
             _ => Err(format!("u16 write to {:08X}", addr)),
         }
     }
@@ -502,7 +502,7 @@ impl BusLine for CpuBus {
             0x1F000000..=0x1F080000 => self.expansion_region_1.read_u8(addr & 0xFFFFF),
             0x1F801080..=0x1F8010FF => self.dma.read_u8(addr & 0xFF),
             0x1F801800..=0x1F801803 => self.dma_bus.cdrom.read_u8(addr & 3),
-            0x1F802000..=0x1F80207f => self.expansion_region_2.read_u8(addr & 0xFF),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.read_u8(addr & 0xFF),
             0x1FC00000..=0x1FC80000 => self.bios.read_u8(addr),
             _ => Err(format!("u8 read from {:08X}", addr)),
         }
@@ -518,7 +518,7 @@ impl BusLine for CpuBus {
             0x1F000000..=0x1F080000 => self.expansion_region_1.write_u8(addr & 0xFFFFF, data),
             0x1F801080..=0x1F8010FF => self.dma.write_u8(addr & 0xFF, data),
             0x1F801800..=0x1F801803 => self.dma_bus.cdrom.write_u8(addr & 3, data),
-            0x1F802000..=0x1F80207f => self.expansion_region_2.write_u8(addr & 0xFF, data),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.write_u8(addr & 0xFF, data),
             _ => Err(format!("u8 write to {:08X}", addr)),
         }
     }

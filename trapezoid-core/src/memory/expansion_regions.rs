@@ -128,14 +128,16 @@ impl DuartTTY {
 }
 
 pub struct ExpansionRegion2 {
-    data: [u8; 0x80],
+    // the original size is 0x80, but pcsx-redux uses some of the space after it
+    // for its own purposes, we don't support it, but at least no reason to give exceptions
+    data: [u8; 0x90],
     tty_duart: DuartTTY,
 }
 
 impl ExpansionRegion2 {
     pub fn new(config: PsxConfig) -> Self {
         Self {
-            data: [0; 0x80],
+            data: [0; 0x90],
             tty_duart: DuartTTY::new(config),
         }
     }
