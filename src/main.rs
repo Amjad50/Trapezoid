@@ -561,10 +561,22 @@ fn main() {
 
     let mut debugger = Debugger::new();
 
-    let mut audio_player = AudioPlayer::<f32>::new(44100, BufferSize::QuarterSecond).unwrap();
-    if args.audio {
-        audio_player.play().unwrap();
-    }
+    let mut audio_player = if args.audio {
+        let audio_player = AudioPlayer::<f32>::new(44100, BufferSize::QuarterSecond);
+
+        match audio_player {
+            Ok(p) => {
+                p.play().expect("Audio device to play");
+                Some(p)
+            }
+            Err(e) => {
+                log::error!("Failed to initialize audio player: {:?}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     display.run(move |display, event| {
         if let Event::WindowEvent { event, .. } = event {
@@ -635,7 +647,7 @@ fn main() {
                         debugger.handle_cpu_state(&mut psx, cpu_state);
 
                         let audio_buffer = psx.take_audio_buffer();
-                        if args.audio {
+                        if let Some(audio_player) = &mut audio_player {
                             audio_player.queue(&audio_buffer);
                         }
                     }
