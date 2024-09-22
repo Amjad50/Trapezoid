@@ -50,7 +50,7 @@ impl Debugger {
 
     fn run(&mut self, _psx: &mut Psx) {}
 
-    fn handle_cpu_state(&mut self, _psx: &mut Psx, _cpu_state: psx_core::cpu::CpuState) {}
+    fn handle_cpu_state(&mut self, _psx: &mut Psx, _cpu_state: trapezoid_core::cpu::CpuState) {}
 }
 
 struct MovingAverage {
