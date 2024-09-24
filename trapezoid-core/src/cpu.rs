@@ -232,6 +232,7 @@ impl Cpu {
                 }
 
                 self.execute_instruction(&instruction, bus);
+                self.regs.handle_delayed_load();
 
                 if self.debugger.paused() {
                     break;
@@ -315,6 +316,7 @@ impl Cpu {
 
         self.cop0.write_epc(target_pc);
         self.regs.pc = jmp_vector;
+        self.regs.flush_delayed_load();
     }
 
     fn check_and_execute_interrupt(&mut self, pending_interrupts: bool) {
@@ -391,7 +393,7 @@ impl Cpu {
         let computed_addr = rs.wrapping_add(Self::sign_extend_16(instruction.imm16()));
 
         if let Some(data) = handler(self, computed_addr) {
-            self.regs.write_general(instruction.rt_raw, data);
+            self.regs.write_delayed(instruction.rt_raw, data);
         }
     }
 
@@ -458,10 +460,10 @@ impl Cpu {
                 result <<= shift;
 
                 let mask = !((0xFFFFFFFF >> shift) << shift);
-                let original_rt = self.regs.read_general(instruction.rt_raw);
+                let original_rt = self.regs.read_general_latest(instruction.rt_raw);
                 let result = (original_rt & mask) | result;
 
-                self.regs.write_general(instruction.rt_raw, result);
+                self.regs.write_delayed(instruction.rt_raw, result);
             }
             Opcode::Lwr => {
                 let rs = self.regs.read_general(instruction.rs_raw);
@@ -481,10 +483,10 @@ impl Cpu {
                 let shift = offset * 8;
 
                 let mask = !(0xFFFFFFFF >> shift);
-                let original_rt = self.regs.read_general(instruction.rt_raw);
+                let original_rt = self.regs.read_general_latest(instruction.rt_raw);
                 let result = (original_rt & mask) | result;
 
-                self.regs.write_general(instruction.rt_raw, result);
+                self.regs.write_delayed(instruction.rt_raw, result);
             }
             Opcode::Sb => {
                 self.execute_store(instruction, |s, computed_addr, data| {

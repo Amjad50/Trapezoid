@@ -1,7 +1,7 @@
 use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
 use bitflags::bitflags;
 
-use std::{collections::VecDeque, fmt::Write, fs};
+use std::collections::VecDeque;
 
 #[derive(Clone, Copy)]
 pub enum DigitalControllerKey {
@@ -123,642 +123,674 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ControllerMode {
-    ReadButtons,
-    Config,
-    SetLed,
-    GetLed,
-    SetRumble,
-    GetWhateverValues,
-    GetVariableResponseA,
-    GetVariableResponseB,
+mod controller {
+    #[derive(Debug, Clone, Copy)]
+    pub enum ControllerMode {
+        ReadButtons,
+        Config,
+        SetLed,
+        GetLed,
+        SetRumble,
+        GetWhateverValues,
+        GetVariableResponseA,
+        GetVariableResponseB,
 
-    /// Unknown that will always return 6 zeros
-    Unknown60,
-    /// Unknown that will return 4 zeros, one, then zero
-    Unknown4010,
-}
-
-/// Emulate Digital pad controller communication
-struct Controller {
-    state: u8,
-    device_id: u16,
-    digital_switches: u16,
-    connected: bool,
-    current_mode: ControllerMode,
-    in_config: bool,
-
-    led: bool,
-    rumble_config: [u8; 6],
-
-    /// Internal value with many purposes in the input state flow
-    /// Used to store a value that may be used later in the flow
-    cache_value: u8,
-}
-
-impl Controller {
-    fn new(connected: bool) -> Self {
-        Self {
-            state: 0,
-            in_config: false,
-            current_mode: ControllerMode::ReadButtons,
-            device_id: 0x5A41,        // digital controller
-            digital_switches: 0xFFFF, // all released
-            connected,
-
-            led: false,
-            rumble_config: [0xFF; 6],
-            cache_value: 0,
-        }
+        /// Unknown that will always return 6 zeros
+        Unknown60,
+        /// Unknown that will return 4 zeros, one, then zero
+        Unknown4010,
     }
 
-    fn change_key_state(&mut self, key: DigitalControllerKey, pressed: bool) {
-        let mask = key.mask();
+    /// Emulate Digital pad controller communication
+    pub struct Controller {
+        state: u8,
+        device_id: u16,
+        digital_switches: u16,
+        connected: bool,
+        current_mode: ControllerMode,
+        in_config: bool,
 
-        if pressed {
-            self.digital_switches &= !mask;
-        } else {
-            self.digital_switches |= mask;
-        }
+        led: bool,
+        rumble_config: [u8; 6],
+
+        /// Internal value with many purposes in the input state flow
+        /// Used to store a value that may be used later in the flow
+        cache_value: u8,
     }
 
-    fn start_access(&mut self) -> u8 {
-        if self.connected {
-            self.state = 1;
-            0
-        } else {
-            0xFF
-        }
-    }
+    impl Controller {
+        pub fn new(connected: bool) -> Self {
+            Self {
+                state: 0,
+                in_config: false,
+                current_mode: ControllerMode::ReadButtons,
+                device_id: 0x5A41,        // digital controller
+                digital_switches: 0xFFFF, // all released
+                connected,
 
-    fn exchange_bytes_normal(&mut self, inp: u8) -> (u8, bool) {
-        match self.state {
-            1 => {
-                self.current_mode = match inp {
-                    0x42 => ControllerMode::ReadButtons,
-                    0x43 => ControllerMode::Config,
-                    _ => todo!("Controller first input {:02X} is not supported", inp),
-                };
-
-                self.state = 2;
-                ((self.device_id & 0xFF) as u8, false)
+                led: false,
+                rumble_config: [0xFF; 6],
+                cache_value: 0,
             }
-            2 => {
-                // if `inp == 1`, then `multitap` is enabled
-                // but this is not a multitap controller, so will return
-                // the normal `device id`
-                assert!(inp == 0 || inp == 1);
-                self.state = 3;
-                (((self.device_id >> 8) & 0xFF) as u8, false)
+        }
+
+        pub fn change_key_state(&mut self, key: super::DigitalControllerKey, pressed: bool) {
+            let mask = key.mask();
+
+            if pressed {
+                self.digital_switches &= !mask;
+            } else {
+                self.digital_switches |= mask;
             }
-            3 => {
-                match self.current_mode {
-                    ControllerMode::ReadButtons => {
-                        // TODO: handle rumble
-                    }
-                    ControllerMode::Config => {
-                        assert!(inp == 1 || inp == 0);
-                        self.cache_value = inp;
-                    }
-                    _ => unreachable!(),
+        }
+
+        pub fn start_access(&mut self) -> u8 {
+            if self.connected {
+                self.state = 1;
+                0
+            } else {
+                0xFF
+            }
+        }
+
+        fn exchange_bytes_normal(&mut self, inp: u8) -> (u8, bool) {
+            match self.state {
+                1 => {
+                    self.current_mode = match inp {
+                        0x42 => ControllerMode::ReadButtons,
+                        0x43 => ControllerMode::Config,
+                        _ => todo!("Controller first input {:02X} is not supported", inp),
+                    };
+
+                    self.state = 2;
+                    ((self.device_id & 0xFF) as u8, false)
                 }
-                self.state = 4;
-                ((self.digital_switches & 0xFF) as u8, false)
-            }
-            4 => {
-                match self.current_mode {
-                    ControllerMode::ReadButtons => {
-                        // TODO: handle rumble
-                    }
-                    ControllerMode::Config => {
-                        assert_eq!(inp, 0);
-                        self.in_config = self.cache_value == 1;
-                    }
-                    _ => unreachable!(),
+                2 => {
+                    // if `inp == 1`, then `multitap` is enabled
+                    // but this is not a multitap controller, so will return
+                    // the normal `device id`
+                    assert!(inp == 0 || inp == 1);
+                    self.state = 3;
+                    (((self.device_id >> 8) & 0xFF) as u8, false)
                 }
-                self.state = 0;
-                (((self.digital_switches >> 8) & 0xFF) as u8, true)
+                3 => {
+                    match self.current_mode {
+                        ControllerMode::ReadButtons => {
+                            // TODO: handle rumble
+                        }
+                        ControllerMode::Config => {
+                            assert!(inp == 1 || inp == 0);
+                            self.cache_value = inp;
+                        }
+                        _ => unreachable!(),
+                    }
+                    self.state = 4;
+                    ((self.digital_switches & 0xFF) as u8, false)
+                }
+                4 => {
+                    match self.current_mode {
+                        ControllerMode::ReadButtons => {
+                            // TODO: handle rumble
+                        }
+                        ControllerMode::Config => {
+                            assert_eq!(inp, 0);
+                            self.in_config = self.cache_value == 1;
+                        }
+                        _ => unreachable!(),
+                    }
+                    self.state = 0;
+                    (((self.digital_switches >> 8) & 0xFF) as u8, true)
+                }
+                // TODO: handle for analog input
+                _ => unreachable!(),
             }
-            // TODO: handle for analog input
-            _ => unreachable!(),
         }
-    }
 
-    fn exchange_bytes_config(&mut self, inp: u8) -> (u8, bool) {
-        match self.state {
-            1 => {
-                self.current_mode = match inp {
-                    0x40 | 0x41 | 0x49 | 0x4A | 0x4B | 0x4E | 0x4F => ControllerMode::Unknown60,
-                    0x42 => ControllerMode::ReadButtons,
-                    0x43 => ControllerMode::Config,
-                    0x44 => ControllerMode::SetLed,
-                    0x45 => ControllerMode::GetLed,
-                    0x46 => ControllerMode::GetVariableResponseA,
-                    0x47 => ControllerMode::GetWhateverValues,
-                    0x48 => ControllerMode::Unknown4010,
-                    0x4C => ControllerMode::GetVariableResponseB,
-                    0x4D => ControllerMode::SetRumble,
-                    _ => todo!("unknown controller mode: {:02X}", inp),
-                };
+        fn exchange_bytes_config(&mut self, inp: u8) -> (u8, bool) {
+            match self.state {
+                1 => {
+                    self.current_mode = match inp {
+                        0x40 | 0x41 | 0x49 | 0x4A | 0x4B | 0x4E | 0x4F => ControllerMode::Unknown60,
+                        0x42 => ControllerMode::ReadButtons,
+                        0x43 => ControllerMode::Config,
+                        0x44 => ControllerMode::SetLed,
+                        0x45 => ControllerMode::GetLed,
+                        0x46 => ControllerMode::GetVariableResponseA,
+                        0x47 => ControllerMode::GetWhateverValues,
+                        0x48 => ControllerMode::Unknown4010,
+                        0x4C => ControllerMode::GetVariableResponseB,
+                        0x4D => ControllerMode::SetRumble,
+                        _ => todo!("unknown controller mode: {:02X}", inp),
+                    };
 
-                self.state = 2;
-                (0xF3, false)
-            }
-            2 => {
-                // if `inp == 1`, then `multitap` is enabled
-                // but this is not a multitap controller, so will return
-                // the normal `device id`
-                assert!(inp == 0 || inp == 1);
-                self.state = 3;
-                (0x5A, false)
-            }
-            3 => {
-                let ret = match self.current_mode {
-                    ControllerMode::ReadButtons => {
-                        // TODO: handle rumble
-                        (self.digital_switches & 0xFF) as u8
-                    }
-                    ControllerMode::Config => {
-                        assert!(inp == 1 || inp == 0);
-                        self.cache_value = inp;
-                        0
-                    }
-                    ControllerMode::SetLed => {
-                        assert!(inp == 1 || inp == 0);
-                        self.cache_value = inp;
-                        0
-                    }
-                    ControllerMode::GetLed => {
-                        assert!(inp == 0);
-                        1
-                    }
-                    ControllerMode::GetVariableResponseA => {
-                        self.cache_value = inp;
-                        0
-                    }
-                    ControllerMode::GetVariableResponseB => {
-                        // used to identify dual shock controllers
-                        self.cache_value = match inp {
-                            0 => 4,
-                            1 => 7,
+                    self.state = 2;
+                    (0xF3, false)
+                }
+                2 => {
+                    // if `inp == 1`, then `multitap` is enabled
+                    // but this is not a multitap controller, so will return
+                    // the normal `device id`
+                    assert!(inp == 0 || inp == 1);
+                    self.state = 3;
+                    (0x5A, false)
+                }
+                3 => {
+                    let ret = match self.current_mode {
+                        ControllerMode::ReadButtons => {
+                            // TODO: handle rumble
+                            (self.digital_switches & 0xFF) as u8
+                        }
+                        ControllerMode::Config => {
+                            assert!(inp == 1 || inp == 0);
+                            self.cache_value = inp;
+                            0
+                        }
+                        ControllerMode::SetLed => {
+                            assert!(inp == 1 || inp == 0);
+                            self.cache_value = inp;
+                            0
+                        }
+                        ControllerMode::GetLed => {
+                            assert!(inp == 0);
+                            1
+                        }
+                        ControllerMode::GetVariableResponseA => {
+                            self.cache_value = inp;
+                            0
+                        }
+                        ControllerMode::GetVariableResponseB => {
+                            // used to identify dual shock controllers
+                            self.cache_value = match inp {
+                                0 => 4,
+                                1 => 7,
+                                _ => 0,
+                            };
+                            0
+                        }
+                        ControllerMode::GetWhateverValues
+                        | ControllerMode::Unknown60
+                        | ControllerMode::Unknown4010 => {
+                            assert!(inp == 0);
+                            0
+                        }
+                        ControllerMode::SetRumble => {
+                            let ret = self.rumble_config[0];
+                            self.rumble_config[0] = inp;
+                            ret
+                        }
+                    };
+                    self.state = 4;
+                    (ret, false)
+                }
+                4 => {
+                    let ret = match self.current_mode {
+                        ControllerMode::ReadButtons => {
+                            // TODO: handle rumble
+                            ((self.digital_switches >> 8) & 0xFF) as u8
+                        }
+                        ControllerMode::Config => {
+                            assert_eq!(inp, 0);
+                            0
+                        }
+                        ControllerMode::SetLed => {
+                            // only apply LED if `inp == 2`
+                            if inp == 2 {
+                                self.led = self.cache_value == 1;
+                            }
+                            // Side effect reset rumble to 0xFF
+                            self.rumble_config = [0xFF; 6];
+                            0
+                        }
+                        ControllerMode::GetLed => {
+                            assert!(inp == 0);
+                            2
+                        }
+                        ControllerMode::GetVariableResponseA
+                        | ControllerMode::GetVariableResponseB
+                        | ControllerMode::GetWhateverValues
+                        | ControllerMode::Unknown60
+                        | ControllerMode::Unknown4010 => {
+                            assert!(inp == 0);
+                            0
+                        }
+                        ControllerMode::SetRumble => {
+                            let ret = self.rumble_config[1];
+                            self.rumble_config[1] = inp;
+                            ret
+                        }
+                    };
+                    self.state = 5;
+                    (ret, false)
+                }
+                5 => {
+                    let ret = match self.current_mode {
+                        ControllerMode::GetLed => self.led as u8,
+                        ControllerMode::GetWhateverValues => 2,
+                        ControllerMode::GetVariableResponseA => match self.cache_value {
+                            0 | 1 => 1,
                             _ => 0,
-                        };
-                        0
-                    }
-                    ControllerMode::GetWhateverValues
-                    | ControllerMode::Unknown60
-                    | ControllerMode::Unknown4010 => {
-                        assert!(inp == 0);
-                        0
-                    }
-                    ControllerMode::SetRumble => {
-                        let ret = self.rumble_config[0];
-                        self.rumble_config[0] = inp;
-                        ret
-                    }
-                };
-                self.state = 4;
-                (ret, false)
-            }
-            4 => {
-                let ret = match self.current_mode {
-                    ControllerMode::ReadButtons => {
-                        // TODO: handle rumble
-                        ((self.digital_switches >> 8) & 0xFF) as u8
-                    }
-                    ControllerMode::Config => {
-                        assert_eq!(inp, 0);
-                        0
-                    }
-                    ControllerMode::SetLed => {
-                        // only apply LED if `inp == 2`
-                        if inp == 2 {
-                            self.led = self.cache_value == 1;
-                        }
-                        // Side effect reset rumble to 0xFF
-                        self.rumble_config = [0xFF; 6];
-                        0
-                    }
-                    ControllerMode::GetLed => {
-                        assert!(inp == 0);
-                        2
-                    }
-                    ControllerMode::GetVariableResponseA
-                    | ControllerMode::GetVariableResponseB
-                    | ControllerMode::GetWhateverValues
-                    | ControllerMode::Unknown60
-                    | ControllerMode::Unknown4010 => {
-                        assert!(inp == 0);
-                        0
-                    }
-                    ControllerMode::SetRumble => {
-                        let ret = self.rumble_config[1];
-                        self.rumble_config[1] = inp;
-                        ret
-                    }
-                };
-                self.state = 5;
-                (ret, false)
-            }
-            5 => {
-                let ret = match self.current_mode {
-                    ControllerMode::GetLed => self.led as u8,
-                    ControllerMode::GetWhateverValues => 2,
-                    ControllerMode::GetVariableResponseA => match self.cache_value {
-                        0 | 1 => 1,
-                        _ => 0,
-                    },
-                    ControllerMode::SetRumble => {
-                        let ret = self.rumble_config[2];
-                        self.rumble_config[2] = inp;
-                        ret
-                    }
-                    _ => 0,
-                };
-                self.state = 6;
-                (ret, false)
-            }
-            6 => {
-                let ret = match self.current_mode {
-                    ControllerMode::GetLed => 2,
-                    ControllerMode::GetVariableResponseA => match self.cache_value {
-                        0 => 2,
-                        1 => 1,
-                        _ => 0,
-                    },
-                    ControllerMode::GetVariableResponseB => self.cache_value,
-                    ControllerMode::SetRumble => {
-                        let ret = self.rumble_config[3];
-                        self.rumble_config[3] = inp;
-                        ret
-                    }
-                    _ => 0,
-                };
-                self.state = 7;
-                (ret, false)
-            }
-            7 => {
-                let ret = match self.current_mode {
-                    ControllerMode::GetLed => 1,
-                    ControllerMode::GetWhateverValues => 1,
-                    ControllerMode::GetVariableResponseA => match self.cache_value {
-                        1 => 1,
-                        _ => 0,
-                    },
-                    ControllerMode::SetRumble => {
-                        let ret = self.rumble_config[4];
-                        self.rumble_config[4] = inp;
-                        ret
-                    }
-                    ControllerMode::Unknown4010 => 1,
-                    _ => 0,
-                };
-                self.state = 8;
-                (ret, false)
-            }
-            8 => {
-                let ret = match self.current_mode {
-                    ControllerMode::GetVariableResponseA => match self.cache_value {
-                        0 => 0x0a,
-                        1 => 0x14,
-                        _ => 0,
-                    },
-                    ControllerMode::SetRumble => {
-                        let ret = self.rumble_config[5];
-                        self.rumble_config[5] = inp;
-                        ret
-                    }
-                    ControllerMode::Config => {
-                        self.in_config = self.cache_value == 1;
-                        0
-                    }
-                    _ => 0,
-                };
-                self.state = 0;
-                (ret, true)
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    fn exchange_bytes(&mut self, inp: u8) -> (u8, bool) {
-        if self.in_config {
-            self.exchange_bytes_config(inp)
-        } else {
-            self.exchange_bytes_normal(inp)
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum CardReadStage {
-    Command,
-    MemoryCardId1,
-    MemoryCardId2,
-    SendAddressMsb,
-    SendAddressLsb,
-    ConfirmAddressMsb,
-    ConfirmAddressLsb,
-    Data,
-    Checksum,
-    CommandAck1,
-    CommandAck2,
-    End,
-
-    CmdIdEnd1,
-    CmdIdEnd2,
-    CmdIdEnd3,
-    CmdIdEnd4,
-}
-
-enum CardCmd {
-    Read,
-    Write,
-    Id,
-    Invalid,
-}
-
-struct MemoryCard {
-    id: u8,
-    stage: CardReadStage,
-    cmd: CardCmd,
-    flag: u8,
-    address: u16,
-    read_pointer: u8,
-    checksum: u8,
-    status: u8,
-    previous: u8,
-    data: Box<[u8; 0x400 * 128]>,
-}
-
-impl MemoryCard {
-    fn new(id: u8) -> Self {
-        let mut data = Box::new([0; 0x400 * 128]);
-
-        let block0 = &mut data[0..0x400 * 8];
-
-        block0[0] = b'M';
-        block0[1] = b'C';
-        block0[0x7F] = 0xE;
-
-        // TODO: move to managed folder with resources
-        fs::read(format!("memcard{}.mcd", id))
-            .map(|m| {
-                if m.len() == 0x400 * 128 {
-                    println!("Loaded memory card {}", id);
-                    data.copy_from_slice(&m);
-                }
-            })
-            .ok();
-
-        Self {
-            id,
-            stage: CardReadStage::Command,
-            cmd: CardCmd::Read, // anything for now, will be overridden on cmd start
-            flag: 0x08,         // flag must start with 8 when powering up and after formatting
-            read_pointer: 0,
-            address: 0,
-            checksum: 0,
-            status: 0,
-            previous: 0,
-            data,
-        }
-    }
-
-    fn start_access(&mut self) -> u8 {
-        self.stage = CardReadStage::Command;
-        self.read_pointer = 0;
-        self.address = 0;
-        self.checksum = 0;
-        self.status = 0;
-        self.previous = 0;
-        0
-    }
-
-    fn exchange_bytes(&mut self, inp: u8) -> (u8, bool) {
-        match self.stage {
-            CardReadStage::Command => {
-                self.cmd = match inp {
-                    0x52 => CardCmd::Read,
-                    0x57 => CardCmd::Write,
-                    0x53 => CardCmd::Id,
-                    _ => CardCmd::Invalid, // will abort after next byte
-                };
-                self.stage = CardReadStage::MemoryCardId1;
-                (self.flag, false)
-            }
-            CardReadStage::MemoryCardId1 => {
-                assert_eq!(inp, 0);
-                self.stage = CardReadStage::MemoryCardId2;
-                // In case of invalid command, the communication is aborted
-                // with 0xFF
-                match self.cmd {
-                    CardCmd::Invalid => {
-                        self.stage = CardReadStage::Command;
-                        (0xFF, true)
-                    }
-                    _ => (0x5A, false),
-                }
-            }
-            CardReadStage::MemoryCardId2 => {
-                assert_eq!(inp, 0);
-                match self.cmd {
-                    CardCmd::Read | CardCmd::Write => {
-                        self.stage = CardReadStage::SendAddressMsb;
-                    }
-                    CardCmd::Id => {
-                        self.stage = CardReadStage::CommandAck1;
-                    }
-                    CardCmd::Invalid => unreachable!(),
-                }
-
-                (0x5D, false)
-            }
-            CardReadStage::SendAddressMsb => {
-                // start of checksum
-                self.checksum = inp;
-                self.previous = inp;
-                self.address = (inp as u16) << 8;
-                self.stage = CardReadStage::SendAddressLsb;
-                (self.previous, false)
-            }
-            CardReadStage::SendAddressLsb => {
-                self.checksum ^= inp;
-                self.address |= inp as u16;
-                match self.cmd {
-                    CardCmd::Read => {
-                        self.stage = CardReadStage::CommandAck1;
-                    }
-                    CardCmd::Write => {
-                        self.stage = CardReadStage::Data;
-                    }
-                    _ => unreachable!("Id command cannot send Address"),
-                }
-
-                // invalid address
-                if (self.address & !0x3FF) != 0 {
-                    self.status = 0xFF;
-                }
-
-                (self.previous, false)
-            }
-            CardReadStage::ConfirmAddressMsb => {
-                assert_eq!(inp, 0);
-
-                self.stage = CardReadStage::ConfirmAddressLsb;
-                // invalid address
-                if self.status == 0xFF {
-                    (0xFF, false)
-                } else {
-                    ((self.address >> 8) as u8, false)
-                }
-            }
-            CardReadStage::ConfirmAddressLsb => {
-                assert_eq!(inp, 0);
-                // invalid address
-                if self.status == 0xFF {
-                    self.stage = CardReadStage::Command;
-                    // abort transfer for Read commands
-                    (0xFF, true)
-                } else {
-                    self.stage = CardReadStage::Data;
-                    (self.address as u8, false)
-                }
-            }
-            CardReadStage::Data => {
-                let r = match self.cmd {
-                    CardCmd::Read => {
-                        assert_eq!(inp, 0);
-                        let addr = self.address as usize * 128 + self.read_pointer as usize;
-                        let data = self.data[addr];
-                        self.checksum ^= data;
-                        data
-                    }
-                    CardCmd::Write => {
-                        if self.read_pointer == 0 {
-                            // reset flag on write
-                            self.flag = 0x00;
-                        }
-                        // valid address
-                        if self.status != 0xFF {
-                            self.checksum ^= inp;
-                            let addr = self.address as usize * 128 + self.read_pointer as usize;
-                            self.data[addr] = inp;
-                        }
-                        // return previous and set it
-                        std::mem::replace(&mut self.previous, inp)
-                    }
-                    _ => unreachable!("Id command cannot send/recv Data"),
-                };
-
-                self.read_pointer += 1;
-
-                // for debugging
-                if self.read_pointer == 128 {
-                    let mut buf = String::new();
-                    for i in 0..128 {
-                        let addr = self.address as usize * 128 + i as usize;
-                        let data = self.data[addr];
-                        write!(buf, "{:02X} ", data).unwrap();
-                    }
-                    log::info!(
-                        "[{}]: address: 0x{:04X}\n {}",
-                        if let CardCmd::Read = self.cmd {
-                            'R'
-                        } else {
-                            'W'
                         },
-                        self.address,
-                        buf
-                    );
-                    self.stage = CardReadStage::Checksum;
-                }
-
-                (r, false)
-            }
-            CardReadStage::Checksum => match self.cmd {
-                CardCmd::Read => {
-                    assert_eq!(inp, 0);
-                    self.stage = CardReadStage::End;
-                    self.status = 0x47; // Good
-                    (self.checksum, false)
-                }
-                CardCmd::Write => {
-                    if self.status == 0 {
-                        if self.checksum == inp {
-                            self.status = 0x47; // Good
-                        } else {
-                            self.status = 0x4E; // Bad checksum
+                        ControllerMode::SetRumble => {
+                            let ret = self.rumble_config[2];
+                            self.rumble_config[2] = inp;
+                            ret
                         }
-                    } else {
-                        self.status = 0xFF;
+                        _ => 0,
+                    };
+                    self.state = 6;
+                    (ret, false)
+                }
+                6 => {
+                    let ret = match self.current_mode {
+                        ControllerMode::GetLed => 2,
+                        ControllerMode::GetVariableResponseA => match self.cache_value {
+                            0 => 2,
+                            1 => 1,
+                            _ => 0,
+                        },
+                        ControllerMode::GetVariableResponseB => self.cache_value,
+                        ControllerMode::SetRumble => {
+                            let ret = self.rumble_config[3];
+                            self.rumble_config[3] = inp;
+                            ret
+                        }
+                        _ => 0,
+                    };
+                    self.state = 7;
+                    (ret, false)
+                }
+                7 => {
+                    let ret = match self.current_mode {
+                        ControllerMode::GetLed => 1,
+                        ControllerMode::GetWhateverValues => 1,
+                        ControllerMode::GetVariableResponseA => match self.cache_value {
+                            1 => 1,
+                            _ => 0,
+                        },
+                        ControllerMode::SetRumble => {
+                            let ret = self.rumble_config[4];
+                            self.rumble_config[4] = inp;
+                            ret
+                        }
+                        ControllerMode::Unknown4010 => 1,
+                        _ => 0,
+                    };
+                    self.state = 8;
+                    (ret, false)
+                }
+                8 => {
+                    let ret = match self.current_mode {
+                        ControllerMode::GetVariableResponseA => match self.cache_value {
+                            0 => 0x0a,
+                            1 => 0x14,
+                            _ => 0,
+                        },
+                        ControllerMode::SetRumble => {
+                            let ret = self.rumble_config[5];
+                            self.rumble_config[5] = inp;
+                            ret
+                        }
+                        ControllerMode::Config => {
+                            self.in_config = self.cache_value == 1;
+                            0
+                        }
+                        _ => 0,
+                    };
+                    self.state = 0;
+                    (ret, true)
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        pub fn exchange_bytes(&mut self, inp: u8) -> (u8, bool) {
+            let state = self.state;
+            if self.in_config {
+                let r = self.exchange_bytes_config(inp);
+                log::trace!(
+                    "C Config: State {state:?}: {:02X} -> ({:02X}, {})",
+                    inp,
+                    r.0,
+                    r.1
+                );
+                r
+            } else {
+                let r = self.exchange_bytes_normal(inp);
+                log::trace!(
+                    "C Normal: State {state:?}: {:02X} -> ({:02X}, {})",
+                    inp,
+                    r.0,
+                    r.1
+                );
+                r
+            }
+        }
+    }
+}
+
+mod memcard {
+    use std::{fmt::Write, fs};
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum CardReadStage {
+        Command,
+        MemoryCardId1,
+        MemoryCardId2,
+        SendAddressMsb,
+        SendAddressLsb,
+        ConfirmAddressMsb,
+        ConfirmAddressLsb,
+        Data,
+        Checksum,
+        CommandAck1,
+        CommandAck2,
+        End,
+
+        CmdIdEnd1,
+        CmdIdEnd2,
+        CmdIdEnd3,
+        CmdIdEnd4,
+    }
+
+    pub enum CardCmd {
+        Read,
+        Write,
+        Id,
+        Invalid,
+    }
+
+    pub struct MemoryCard {
+        id: u8,
+        stage: CardReadStage,
+        cmd: CardCmd,
+        flag: u8,
+        address: u16,
+        read_pointer: u8,
+        checksum: u8,
+        status: u8,
+        previous: u8,
+        data: Box<[u8; 0x400 * 128]>,
+    }
+
+    impl MemoryCard {
+        pub fn new(id: u8) -> Self {
+            let mut data = Box::new([0; 0x400 * 128]);
+
+            let block0 = &mut data[0..0x400 * 8];
+
+            block0[0] = b'M';
+            block0[1] = b'C';
+            block0[0x7F] = 0xE;
+
+            // TODO: move to managed folder with resources
+            fs::read(format!("memcard{}.mcd", id))
+                .map(|m| {
+                    if m.len() == 0x400 * 128 {
+                        println!("Loaded memory card {}", id);
+                        data.copy_from_slice(&m);
                     }
-                    self.stage = CardReadStage::CommandAck1;
+                })
+                .ok();
+
+            Self {
+                id,
+                stage: CardReadStage::Command,
+                cmd: CardCmd::Read, // anything for now, will be overridden on cmd start
+                flag: 0x08,
+                read_pointer: 0,
+                address: 0,
+                checksum: 0,
+                status: 0,
+                previous: 0,
+                data,
+            }
+        }
+
+        pub fn start_access(&mut self) -> u8 {
+            log::trace!("Memory card {} started access", self.id);
+            self.stage = CardReadStage::Command;
+            self.read_pointer = 0;
+            self.address = 0;
+            self.checksum = 0;
+            self.status = 0;
+            self.previous = 0;
+            0
+        }
+
+        pub fn exchange_bytes(&mut self, inp: u8) -> (u8, bool) {
+            let r = match self.stage {
+                CardReadStage::Command => {
+                    self.cmd = match inp {
+                        b'R' => CardCmd::Read,
+                        b'W' => CardCmd::Write,
+                        b'S' => CardCmd::Id,
+                        _ => CardCmd::Invalid, // will abort after next byte
+                    };
+                    self.stage = CardReadStage::MemoryCardId1;
+                    (self.flag, false)
+                }
+                CardReadStage::MemoryCardId1 => {
+                    assert_eq!(inp, 0);
+                    self.stage = CardReadStage::MemoryCardId2;
+                    // In case of invalid command, the communication is aborted
+                    // with 0xFF
+                    match self.cmd {
+                        CardCmd::Invalid => {
+                            self.stage = CardReadStage::Command;
+                            (0xFF, true)
+                        }
+                        _ => (0x5A, false),
+                    }
+                }
+                CardReadStage::MemoryCardId2 => {
+                    assert_eq!(inp, 0);
+                    match self.cmd {
+                        CardCmd::Read | CardCmd::Write => {
+                            self.stage = CardReadStage::SendAddressMsb;
+                        }
+                        CardCmd::Id => {
+                            self.stage = CardReadStage::CommandAck1;
+                        }
+                        CardCmd::Invalid => unreachable!(),
+                    }
+
+                    (0x5D, false)
+                }
+                CardReadStage::SendAddressMsb => {
+                    // start of checksum
+                    self.checksum = inp;
+                    self.previous = inp;
+                    self.address = (inp as u16) << 8;
+                    self.stage = CardReadStage::SendAddressLsb;
                     (self.previous, false)
                 }
-                _ => unreachable!("Id command cannot send/recv Checksum"),
-            },
-            CardReadStage::CommandAck1 => {
-                assert_eq!(inp, 0);
-                // late /ACK after this byte-pair on Read command
-                self.stage = CardReadStage::CommandAck2;
-                (0x5C, false)
-            }
-            CardReadStage::CommandAck2 => {
-                assert_eq!(inp, 0);
-                match self.cmd {
+                CardReadStage::SendAddressLsb => {
+                    self.checksum ^= inp;
+                    self.address |= inp as u16;
+                    match self.cmd {
+                        CardCmd::Read => {
+                            self.stage = CardReadStage::CommandAck1;
+                        }
+                        CardCmd::Write => {
+                            self.stage = CardReadStage::Data;
+                        }
+                        _ => unreachable!("Id command cannot send Address"),
+                    }
+
+                    // invalid address
+                    if (self.address & !0x3FF) != 0 {
+                        self.status = 0xFF;
+                    }
+
+                    (self.previous, false)
+                }
+                CardReadStage::ConfirmAddressMsb => {
+                    assert_eq!(inp, 0);
+
+                    self.stage = CardReadStage::ConfirmAddressLsb;
+                    // invalid address
+                    if self.status == 0xFF {
+                        (0xFF, false)
+                    } else {
+                        ((self.address >> 8) as u8, false)
+                    }
+                }
+                CardReadStage::ConfirmAddressLsb => {
+                    assert_eq!(inp, 0);
+                    // invalid address
+                    if self.status == 0xFF {
+                        self.stage = CardReadStage::Command;
+                        // abort transfer for Read commands
+                        (0xFF, true)
+                    } else {
+                        self.stage = CardReadStage::Data;
+                        (self.address as u8, false)
+                    }
+                }
+                CardReadStage::Data => {
+                    let r = match self.cmd {
+                        CardCmd::Read => {
+                            assert_eq!(inp, 0);
+                            let addr = self.address as usize * 128 + self.read_pointer as usize;
+                            let data = self.data[addr];
+                            self.checksum ^= data;
+                            data
+                        }
+                        CardCmd::Write => {
+                            if self.read_pointer == 0 {
+                                // reset flag on write
+                                self.flag = 0x00;
+                            }
+                            // valid address
+                            if self.status != 0xFF {
+                                self.checksum ^= inp;
+                                let addr = self.address as usize * 128 + self.read_pointer as usize;
+                                self.data[addr] = inp;
+                            }
+                            // return previous and set it
+                            std::mem::replace(&mut self.previous, inp)
+                        }
+                        _ => unreachable!("Id command cannot send/recv Data"),
+                    };
+
+                    self.read_pointer += 1;
+
+                    // for debugging
+                    if self.read_pointer == 128 {
+                        let mut buf = String::new();
+                        for i in 0..128 {
+                            let addr = self.address as usize * 128 + i as usize;
+                            let data = self.data[addr];
+                            write!(buf, "{:02X} ", data).unwrap();
+                        }
+                        log::info!(
+                            "[{}]: address: 0x{:04X}\n {}",
+                            if let CardCmd::Read = self.cmd {
+                                'R'
+                            } else {
+                                'W'
+                            },
+                            self.address,
+                            buf
+                        );
+                        self.stage = CardReadStage::Checksum;
+                    }
+
+                    (r, false)
+                }
+                CardReadStage::Checksum => match self.cmd {
                     CardCmd::Read => {
-                        self.stage = CardReadStage::ConfirmAddressMsb;
+                        assert_eq!(inp, 0);
+                        self.stage = CardReadStage::End;
+                        self.status = 0x47; // Good
+                        (self.checksum, false)
                     }
                     CardCmd::Write => {
-                        self.stage = CardReadStage::End;
+                        if self.status == 0 {
+                            if self.checksum == inp {
+                                self.status = 0x47; // Good
+                            } else {
+                                self.status = 0x4E; // Bad checksum
+                            }
+                        } else {
+                            self.status = 0xFF;
+                        }
+                        self.stage = CardReadStage::CommandAck1;
+                        (self.previous, false)
                     }
-                    CardCmd::Id => {
-                        self.stage = CardReadStage::CmdIdEnd1;
+                    _ => unreachable!("Id command cannot send/recv Checksum"),
+                },
+                CardReadStage::CommandAck1 => {
+                    assert_eq!(inp, 0);
+                    // late /ACK after this byte-pair on Read command
+                    self.stage = CardReadStage::CommandAck2;
+                    (0x5C, false)
+                }
+                CardReadStage::CommandAck2 => {
+                    assert_eq!(inp, 0);
+                    match self.cmd {
+                        CardCmd::Read => {
+                            self.stage = CardReadStage::ConfirmAddressMsb;
+                        }
+                        CardCmd::Write => {
+                            self.stage = CardReadStage::End;
+                        }
+                        CardCmd::Id => {
+                            self.stage = CardReadStage::CmdIdEnd1;
+                        }
+                        CardCmd::Invalid => unreachable!(),
                     }
-                    CardCmd::Invalid => unreachable!(),
+
+                    (0x5D, false)
                 }
+                CardReadStage::End => {
+                    assert_eq!(inp, 0);
 
-                (0x5D, false)
-            }
-            CardReadStage::End => {
-                assert_eq!(inp, 0);
+                    // if we finished a write command successfully, flush it to disk.
+                    if let CardCmd::Write = self.cmd {
+                        self.flush();
+                    }
 
-                // if we finished a write command successfully, flush it to disk.
-                if let CardCmd::Write = self.cmd {
-                    self.flush();
+                    self.stage = CardReadStage::Command;
+                    (0x4 | self.status, true)
                 }
+                CardReadStage::CmdIdEnd1 => {
+                    assert_eq!(inp, 0);
+                    self.stage = CardReadStage::CmdIdEnd2;
+                    (0x04, false)
+                }
+                CardReadStage::CmdIdEnd2 => {
+                    assert_eq!(inp, 0);
+                    self.stage = CardReadStage::CmdIdEnd3;
+                    (0x00, false)
+                }
+                CardReadStage::CmdIdEnd3 => {
+                    assert_eq!(inp, 0);
+                    self.stage = CardReadStage::CmdIdEnd4;
+                    (0x00, false)
+                }
+                CardReadStage::CmdIdEnd4 => {
+                    assert_eq!(inp, 0);
+                    self.stage = CardReadStage::Command;
+                    (0x80, true)
+                }
+            };
 
-                self.stage = CardReadStage::Command;
-                (0x4 | self.status, true)
-            }
-            CardReadStage::CmdIdEnd1 => {
-                assert_eq!(inp, 0);
-                self.stage = CardReadStage::CmdIdEnd2;
-                (0x04, false)
-            }
-            CardReadStage::CmdIdEnd2 => {
-                assert_eq!(inp, 0);
-                self.stage = CardReadStage::CmdIdEnd3;
-                (0x00, false)
-            }
-            CardReadStage::CmdIdEnd3 => {
-                assert_eq!(inp, 0);
-                self.stage = CardReadStage::CmdIdEnd4;
-                (0x00, false)
-            }
-            CardReadStage::CmdIdEnd4 => {
-                assert_eq!(inp, 0);
-                self.stage = CardReadStage::Command;
-                (0x80, true)
-            }
+            log::trace!(
+                "M{}: Stage {:?}: {:02X} -> ({:02X}, {})",
+                self.id,
+                self.stage,
+                inp,
+                r.0,
+                r.1
+            );
+            r
         }
-    }
 
-    /// Saves the data to disk
-    fn flush(&mut self) {
-        fs::write(format!("memcard{}.mcd", self.id), &self.data[..]).unwrap();
+        /// Saves the data to disk
+        fn flush(&mut self) {
+            fs::write(format!("memcard{}.mcd", self.id), &self.data[..]).unwrap();
+        }
     }
 }
 
@@ -766,8 +798,8 @@ impl MemoryCard {
 struct CommunicationHandler {
     /// which component we are communicating with now
     state: u8,
-    controller: Controller,
-    memory_card: MemoryCard,
+    controller: controller::Controller,
+    memory_card: memcard::MemoryCard,
 }
 
 impl CommunicationHandler {
@@ -775,8 +807,8 @@ impl CommunicationHandler {
     fn new(id: u8, controller_connected: bool) -> Self {
         Self {
             state: 0,
-            controller: Controller::new(controller_connected),
-            memory_card: MemoryCard::new(id),
+            controller: controller::Controller::new(controller_connected),
+            memory_card: memcard::MemoryCard::new(id),
         }
     }
 }

@@ -457,11 +457,17 @@ impl Gpu {
 
 impl Gpu {
     fn read_gpu_stat(&self) -> u32 {
+        let interlace_bit = (self.drawing_odd && !self.in_vblank) as u32;
+        // set by GP1(0x8)
+        let interlace_field = if self.gpu_stat.load().intersects(GpuStat::INTERLACE_FIELD) {
+            1 // always on
+        } else {
+            interlace_bit ^ 1
+        };
+
         // Ready to receive Cmd Word
         // Ready to receive DMA Block
-        let out =
-            self.gpu_stat.load().bits() | (((self.drawing_odd && !self.in_vblank) as u32) << 31);
-
+        let out = self.gpu_stat.load().bits() | (interlace_bit << 31) | (interlace_field << 13);
         log::trace!("GPUSTAT = {:08X}", out);
         log::trace!("GPUSTAT = {:?}", self.gpu_stat);
         out

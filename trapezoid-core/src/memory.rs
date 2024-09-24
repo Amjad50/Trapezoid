@@ -383,18 +383,46 @@ impl CpuBus {
         // interrupts for the timers
         self.timers.handle_interrupts(&mut self.interrupts);
     }
+
+    // implement the PSX memory map
+    // Note that `addr >= 0xFFFE0000` point to the cache control registers and isn't changed
+    fn map_address(&self, addr: u32) -> Result<u32> {
+        let region = addr >> 29;
+        const MASK_512M: u32 = 0x1FFFFFFF;
+
+        match region {
+            // KUSEG mirror of KSEG0/KSEG1
+            0 => Ok(addr & MASK_512M),
+            1..=3 => Err(String::from("Accessing bottom 1.5G of KUSEG")),
+            // KSEG0
+            4 => Ok(addr & MASK_512M),
+            // KSEG1
+            5 => {
+                if (0xBF800000..0xBF801000).contains(&addr) {
+                    Err(String::from("Cannot access scratchpad from KSEG1"))
+                } else {
+                    Ok(addr & MASK_512M)
+                }
+            }
+            // KSEG2
+            7 if addr >= 0xFFFE0000 => Ok(addr), // no change
+            6 | 7 => Err(String::from(
+                "KSEG2 has only the cache control registers at 0xFFFE0000",
+            )),
+            _ => unreachable!(),
+        }
+    }
 }
 
 impl BusLine for CpuBus {
     fn read_u32(&mut self, addr: u32) -> Result<u32> {
         assert!(addr % 4 == 0, "unalligned u32 read");
+        let addr = self.map_address(addr)?;
+
         match addr {
             // TODO: implement I-cache isolation properly
             0x00000000..=0x007FFFFF => self.dma_bus.main_ram.read_u32(addr & 0x1FFFFF),
-            // TODO: implement mirroring in a better way (with cache as well maybe)
-            0x80000000..=0x807FFFFF => self.dma_bus.main_ram.read_u32(addr & 0x1FFFFF),
-            0xA0000000..=0xA07FFFFF => self.dma_bus.main_ram.read_u32(addr & 0x1FFFFF),
-            0xBFC00000..=0xBFC80000 => self.bios.read_u32(addr),
+            0x1FC00000..=0x1FC80000 => self.bios.read_u32(addr),
             0x1F800000..=0x1F8003FF => self.scratchpad.read_u32(addr & 0x3FF),
             0x1F801000..=0x1F801020 => self.mem_ctrl_1.read_u32(addr),
             0x1F801044..=0x1F80104F => self.controller_mem_card.read_u32(addr & 0xF),
@@ -405,6 +433,7 @@ impl BusLine for CpuBus {
             0x1F801810..=0x1F801814 => self.dma_bus.gpu.read_u32(addr & 0xF),
             0x1F801820..=0x1F801824 => self.dma_bus.mdec.read_u32(addr & 0xF),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.read_u32(addr & 0x3FF),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.read_u32(addr & 0xFF),
             0xFFFE0130 => self.cache_control.read_u32(addr),
             _ => Err(format!("MainBus: u32 read from {:08X}", addr)),
         }
@@ -412,11 +441,10 @@ impl BusLine for CpuBus {
 
     fn write_u32(&mut self, addr: u32, data: u32) -> Result<()> {
         assert!(addr % 4 == 0, "unalligned u32 write");
+        let addr = self.map_address(addr)?;
 
         match addr {
             0x00000000..=0x007FFFFF => self.dma_bus.main_ram.write_u32(addr & 0x1FFFFF, data),
-            0x80000000..=0x807FFFFF => self.dma_bus.main_ram.write_u32(addr & 0x1FFFFF, data),
-            0xA0000000..=0xA07FFFFF => self.dma_bus.main_ram.write_u32(addr & 0x1FFFFF, data),
             0x1F800000..=0x1F8003FF => self.scratchpad.write_u32(addr & 0x3FF, data),
             0x1F801000..=0x1F801020 => self.mem_ctrl_1.write_u32(addr, data),
             0x1F801060 => self.mem_ctrl_2.write_u32(addr, data),
@@ -426,6 +454,7 @@ impl BusLine for CpuBus {
             0x1F801810..=0x1F801814 => self.dma_bus.gpu.write_u32(addr & 0xF, data),
             0x1F801820..=0x1F801824 => self.dma_bus.mdec.write_u32(addr & 0xF, data),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.write_u32(addr & 0x3FF, data),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.write_u32(addr & 0xFF, data),
             0xFFFE0130 => self.cache_control.write_u32(addr, data),
             _ => Err(format!("MainBus: u32 write to {:08X}", addr)),
         }
@@ -433,67 +462,63 @@ impl BusLine for CpuBus {
 
     fn read_u16(&mut self, addr: u32) -> Result<u16> {
         assert!(addr % 2 == 0, "unalligned u16 read");
+        let addr = self.map_address(addr)?;
 
         match addr {
             0x00000000..=0x007FFFFF => self.dma_bus.main_ram.read_u16(addr & 0x1FFFFF),
-            0x80000000..=0x807FFFFF => self.dma_bus.main_ram.read_u16(addr & 0x1FFFFF),
-            0xA0000000..=0xA07FFFFF => self.dma_bus.main_ram.read_u16(addr & 0x1FFFFF),
-
             0x1F800000..=0x1F8003FF => self.scratchpad.read_u16(addr & 0x3FF),
             0x1F801044..=0x1F80104F => self.controller_mem_card.read_u16(addr & 0xF),
             0x1F801070..=0x1F801077 => self.interrupts.read_u16(addr & 0xF),
             0x1F801100..=0x1F80112F => self.timers.read_u16(addr & 0xFF),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.read_u16(addr & 0x3FF),
-            0xBFC00000..=0xBFC80000 => self.bios.read_u16(addr),
+            0x1FC00000..=0x1FC80000 => self.bios.read_u16(addr),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.read_u16(addr & 0xFF),
             _ => Err(format!("u16 read from {:08X}", addr)),
         }
     }
 
     fn write_u16(&mut self, addr: u32, data: u16) -> Result<()> {
         assert!(addr % 2 == 0, "unalligned u16 write");
+        let addr = self.map_address(addr)?;
 
         match addr {
             0x00000000..=0x007FFFFF => self.dma_bus.main_ram.write_u16(addr & 0x1FFFFF, data),
-            0x80000000..=0x807FFFFF => self.dma_bus.main_ram.write_u16(addr & 0x1FFFFF, data),
-            0xA0000000..=0xA07FFFFF => self.dma_bus.main_ram.write_u16(addr & 0x1FFFFF, data),
-
             0x1F800000..=0x1F8003FF => self.scratchpad.write_u16(addr & 0x3FF, data),
             0x1F801048..=0x1F80104F => self.controller_mem_card.write_u16(addr & 0xF, data),
             0x1F801070..=0x1F801077 => self.interrupts.write_u16(addr & 0xF, data),
             0x1F801100..=0x1F80112F => self.timers.write_u16(addr & 0xFF, data),
             0x1F801C00..=0x1F801FFC => self.dma_bus.spu.write_u16(addr & 0x3FF, data),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.write_u16(addr & 0xFF, data),
             _ => Err(format!("u16 write to {:08X}", addr)),
         }
     }
     fn read_u8(&mut self, addr: u32) -> Result<u8> {
+        let addr = self.map_address(addr)?;
+
         match addr {
             0x00000000..=0x007FFFFF => self.dma_bus.main_ram.read_u8(addr & 0x1FFFFF),
-            0x80000000..=0x807FFFFF => self.dma_bus.main_ram.read_u8(addr & 0x1FFFFF),
-            0xA0000000..=0xA07FFFFF => self.dma_bus.main_ram.read_u8(addr & 0x1FFFFF),
-
             0x1F800000..=0x1F8003FF => self.scratchpad.read_u8(addr & 0x3FF),
             0x1F801040 => self.controller_mem_card.read_u8(addr & 0xF),
             0x1F000000..=0x1F080000 => self.expansion_region_1.read_u8(addr & 0xFFFFF),
             0x1F801080..=0x1F8010FF => self.dma.read_u8(addr & 0xFF),
             0x1F801800..=0x1F801803 => self.dma_bus.cdrom.read_u8(addr & 3),
-            0x1F802000..=0x1F802080 => self.expansion_region_2.read_u8(addr & 0xFF),
-            0xBFC00000..=0xBFC80000 => self.bios.read_u8(addr),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.read_u8(addr & 0xFF),
+            0x1FC00000..=0x1FC80000 => self.bios.read_u8(addr),
             _ => Err(format!("u8 read from {:08X}", addr)),
         }
     }
 
     fn write_u8(&mut self, addr: u32, data: u8) -> Result<()> {
+        let addr = self.map_address(addr)?;
+
         match addr {
             0x00000000..=0x007FFFFF => self.dma_bus.main_ram.write_u8(addr & 0x1FFFFF, data),
-            0x80000000..=0x807FFFFF => self.dma_bus.main_ram.write_u8(addr & 0x1FFFFF, data),
-            0xA0000000..=0xA07FFFFF => self.dma_bus.main_ram.write_u8(addr & 0x1FFFFF, data),
-
             0x1F800000..=0x1F8003FF => self.scratchpad.write_u8(addr & 0x3FF, data),
             0x1F801040 => self.controller_mem_card.write_u8(addr & 0xF, data),
             0x1F000000..=0x1F080000 => self.expansion_region_1.write_u8(addr & 0xFFFFF, data),
             0x1F801080..=0x1F8010FF => self.dma.write_u8(addr & 0xFF, data),
             0x1F801800..=0x1F801803 => self.dma_bus.cdrom.write_u8(addr & 3, data),
-            0x1F802000..=0x1F802080 => self.expansion_region_2.write_u8(addr & 0xFF, data),
+            0x1F802000..=0x1F80208F => self.expansion_region_2.write_u8(addr & 0xFF, data),
             _ => Err(format!("u8 write to {:08X}", addr)),
         }
     }
