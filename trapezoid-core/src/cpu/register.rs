@@ -136,16 +136,24 @@ impl fmt::Display for RegisterType {
 
 pub struct Registers {
     pub(crate) general_regs: [u32; 32],
-
     pub(crate) pc: u32,
     pub(crate) hi: u32,
     pub(crate) lo: u32,
+
+    /// load delay slots
+    /// When executing a `load` instruction, the data will be here during the execution
+    load_delay_slot_running: Option<(u8, u32)>,
+    /// When the instruction is done, the slot is moved here
+    /// which is committed to the next cycle
+    load_delay_slot_committing: Option<(u8, u32)>,
 }
 
 impl Registers {
     pub(crate) fn new() -> Self {
         Self {
             general_regs: [0; 32],
+            load_delay_slot_running: None,
+            load_delay_slot_committing: None,
 
             pc: 0xBFC00000,
             hi: 0,
@@ -178,6 +186,27 @@ impl Registers {
     #[inline]
     pub(crate) fn read_general(&self, idx: u8) -> u32 {
         assert!(idx < 32);
+        if let Some((i, _)) = self.load_delay_slot_committing {
+            if idx == i {
+                log::warn!(
+                    "Reg `{}` is still in the load delay slot, reading old value, could be a bug",
+                    REG_TYPES[idx as usize]
+                );
+            }
+        }
+        self.general_regs[idx as usize]
+    }
+
+    /// Used by Lwl and Lwr to accumulate the delay but work correctly
+    /// for same register access
+    #[inline]
+    pub(crate) fn read_general_latest(&self, idx: u8) -> u32 {
+        assert!(idx < 32);
+        if let Some((i, d)) = self.load_delay_slot_committing {
+            if idx == i {
+                return d;
+            }
+        }
         self.general_regs[idx as usize]
     }
 
@@ -186,13 +215,49 @@ impl Registers {
         assert!(idx < 32);
         self.general_regs[idx as usize] = data;
         self.general_regs[0] = 0;
+
+        // cancel the load, otherwise it will overwrite what we are writing now
+        // and we don't want that
+        if let Some((i, _)) = self.load_delay_slot_committing {
+            if i == idx {
+                self.load_delay_slot_committing = None;
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn write_delayed(&mut self, idx: u8, data: u32) {
+        assert!(idx < 32);
+        assert!(self.load_delay_slot_running.is_none());
+        // if we are about to commit the same register, ignore that
+        if let Some((i, _)) = self.load_delay_slot_committing {
+            if i == idx {
+                self.load_delay_slot_committing = None;
+            }
+        }
+        self.load_delay_slot_running = Some((idx, data));
+    }
+
+    #[inline]
+    pub(crate) fn handle_delayed_load(&mut self) {
+        if let Some((idx, data)) = self.load_delay_slot_committing.take() {
+            self.write_general(idx, data);
+        }
+        self.load_delay_slot_committing = self.load_delay_slot_running.take();
+    }
+
+    #[inline]
+    pub(crate) fn flush_delayed_load(&mut self) {
+        self.handle_delayed_load();
+        self.handle_delayed_load();
     }
 
     // special function, since the cpu is writing to ra directly on function calls
     // and returns
     #[inline]
     pub(crate) fn write_ra(&mut self, data: u32) {
-        self.general_regs[RegisterType::Ra as usize] = data;
+        // go through the normal write function to handle the load delay slot
+        self.write_general(RegisterType::Ra as u8, data);
     }
 }
 
