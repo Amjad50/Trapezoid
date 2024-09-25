@@ -46,6 +46,8 @@ impl Debugger {
     ) {
     }
 
+    pub fn trace_exception(&mut self, _addr: u32) {}
+
     #[inline]
     pub fn trace_instruction(
         &mut self,
@@ -317,6 +319,7 @@ impl Cpu {
         self.cop0.write_epc(target_pc);
         self.regs.pc = jmp_vector;
         self.regs.flush_delayed_load();
+        self.debugger.trace_exception(target_pc);
     }
 
     fn check_and_execute_interrupt(&mut self, pending_interrupts: bool) {

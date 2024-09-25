@@ -118,6 +118,10 @@ impl Debugger {
         }
     }
 
+    pub(crate) fn trace_exception(&mut self, return_addr: u32) {
+        self.call_stack.push(return_addr);
+    }
+
     pub(crate) fn trace_instruction(
         &mut self,
         regs: &Registers,
