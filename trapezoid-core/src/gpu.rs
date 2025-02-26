@@ -7,10 +7,10 @@ pub mod vulkan;
 #[cfg(feature="vulkan")]
 pub use vulkan as backend;
 
-#[cfg(feature="dummy_render")]
+#[cfg(not(feature="vulkan"))]
 pub mod dummy_render;
 
-#[cfg(feature="dummy_render")]
+#[cfg(not(feature="vulkan"))]
 pub use dummy_render as backend;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
@@ -404,7 +404,7 @@ impl Gpu {
         self.in_vblank
     }
 
-    #[cfg(feature="dummy_render")]
+    #[cfg(not(feature="vulkan"))]
     pub fn sync_gpu_and_blit_to_front(
         &mut self,
         _dest_image: Arc<Image>,

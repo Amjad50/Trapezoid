@@ -16,7 +16,6 @@ categories = ["emulators", "games-and-graphics"]
 default = ["vulkan"]
 vulkan = ["vulkano", "vulkano-shaders"]
 debugger = []
-dummy_render = []
 
 [dependencies]
 byteorder = "1.4.2"
