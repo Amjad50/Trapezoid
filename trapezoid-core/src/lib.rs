@@ -21,11 +21,8 @@ pub use memory::hw_registers::HW_REGISTERS;
 use memory::{Bios, BusLine, CpuBus, Result};
 
 pub use controller_mem_card::DigitalControllerKey;
-use vulkano::{
-    device::{Device, Queue},
-    image::Image,
-    sync::GpuFuture,
-};
+
+use crate::gpu::{Device, Queue, Image, GpuFuture};
 
 const MAX_CPU_CYCLES_TO_CLOCK: u32 = 2000;
 
