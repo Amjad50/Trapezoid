@@ -2,6 +2,7 @@ mod cdrom;
 mod controller_mem_card;
 mod coprocessor;
 pub mod cpu;
+#[cfg(feature="vulkan")]
 mod gpu;
 mod mdec;
 mod memory;
