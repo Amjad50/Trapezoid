@@ -12,7 +12,6 @@ impl Queue {
 }
 
 pub struct Image;
-pub struct GpuContext;
 pub struct StandardCommandBufferAllocator;
 
 impl StandardCommandBufferAllocator {
@@ -70,8 +69,6 @@ impl BlitImageInfo {
     }
 }
 
-pub struct ImageBlit;
-
 pub enum Filter {
     Nearest,
 }
@@ -88,11 +85,3 @@ use crossbeam::{
     channel::{Receiver, Sender},
 };
 use std::sync::Arc;
-
-pub struct GpuBackend {
-    gpu_context: GpuContext,
-    gpu_stat: Arc<AtomicCell<GpuStat>>,
-
-    gpu_read_sender: Sender<u32>,
-    gpu_backend_receiver: Receiver<BackendCommand>,
-}

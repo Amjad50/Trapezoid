@@ -14,7 +14,6 @@ pub mod dummy_render;
 pub use dummy_render as backend;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
-use backend::GpuBackend;
 use backend::StandardCommandBufferAllocator;
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 
@@ -31,7 +30,7 @@ pub use backend::{Device, GpuFuture, Image, Queue};
 
 #[cfg(feature = "vulkan")]
 pub use backend::{
-    AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter, GpuFuture, Image, Queue,
+    AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter,
 };
 
 bitflags::bitflags! {
@@ -285,7 +284,7 @@ impl Gpu {
         };
 
         #[cfg(feature = "vulkan")]
-        let _gpu_backend_thread_handle = GpuBackend::start(
+        let _gpu_backend_thread_handle = backend::GpuBackend::start(
             device.clone(),
             queue.clone(),
             gpu_stat.clone(),
@@ -448,7 +447,7 @@ impl Gpu {
             .unwrap();
 
         if let Some(img) = self.current_front_image.as_ref() {
-            let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
+            let mut builder: AutoCommandBufferBuilder<crate::gpu::vulkan::PrimaryAutoCommandBuffer> =
                 AutoCommandBufferBuilder::primary(
                     &self.command_buffer_allocator,
                     self.queue.queue_family_index(),
