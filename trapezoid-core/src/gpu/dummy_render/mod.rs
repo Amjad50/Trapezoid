@@ -98,19 +98,6 @@ pub struct GpuBackend {
 }
 
 impl GpuBackend {
-    pub(super) fn start(
-        _device: Arc<Device>,
-        _queue: Arc<Queue>,
-        _gpu_stat: Arc<AtomicCell<GpuStat>>,
-        _gpu_read_sender: Sender<u32>,
-        _gpu_backend_receiver: Receiver<BackendCommand>,
-        _gpu_front_image_sender: Sender<Arc<Image>>,
-    ) -> std::thread::JoinHandle<()> {
-        // TODO: We need to return a JoinHandle<()>, but we don't actually need to do spawn any
-        // threads. Is there a way to not spawn this stupid do nothing thread?
-        std::thread::spawn(|| {})
-    }
-
     #[allow(unused_mut)]
     fn run(mut self) {}
 }

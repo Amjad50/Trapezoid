@@ -221,6 +221,7 @@ pub struct Gpu {
     device: Arc<Device>,
 
     // handle the backend gpu thread
+    #[cfg(feature = "vulkan")]
     _gpu_backend_thread_handle: JoinHandle<()>,
 
     /// holds commands that needs extra parameter and complex, like sending
@@ -281,6 +282,7 @@ impl Gpu {
             display_vertical_range: (0, 0),
         };
 
+        #[cfg(feature = "vulkan")]
         let _gpu_backend_thread_handle = GpuBackend::start(
             device.clone(),
             queue.clone(),
@@ -294,6 +296,7 @@ impl Gpu {
             queue,
             device: device.clone(),
 
+            #[cfg(feature = "vulkan")]
             _gpu_backend_thread_handle,
 
             current_command: None,
