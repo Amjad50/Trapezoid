@@ -1,6 +1,7 @@
 use crate::gpu::GpuStat;
+use crate::gpu::BackendCommand;
 
-use super::{gpu_context::GpuContext, BackendCommand};
+use super::gpu_context::GpuContext;
 use crossbeam::{
     atomic::AtomicCell,
     channel::{Receiver, Sender},
@@ -23,7 +24,7 @@ pub struct GpuBackend {
 }
 
 impl GpuBackend {
-    pub(super) fn start(
+    pub(crate) fn start(
         device: Arc<Device>,
         queue: Arc<Queue>,
         gpu_stat: Arc<AtomicCell<GpuStat>>,

@@ -9,6 +9,11 @@ pub struct DrawingVertex {
 
 impl DrawingVertex {
     #[inline]
+    pub fn color(&self) -> [f32; 3] {
+        self.color
+    }
+
+    #[inline]
     pub fn position(&self) -> [f32; 2] {
         self.position
     }
@@ -19,7 +24,7 @@ impl DrawingVertex {
     }
 
     #[inline]
-    pub fn tex_coord(&mut self) -> [i32; 2] {
+    pub fn tex_coord(&self) -> [i32; 2] {
         self.tex_coord
     }
 

@@ -43,7 +43,9 @@ pub use vulkano::{
 };
 
 use super::front_blit::FrontBlit;
-use super::GpuStateSnapshot;
+use crate::gpu::GpuStateSnapshot;
+use crate::gpu::DrawingVertex;
+use crate::gpu::DrawingTextureParams;
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -51,14 +53,14 @@ use std::sync::Arc;
 mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
-        path: "src/gpu/shaders/vertex.glsl",
+        path: "src/gpu/vulkan/gpu/shaders/vertex.glsl",
     }
 }
 
 mod fs {
     vulkano_shaders::shader! {
         ty: "fragment",
-        path: "src/gpu/shaders/fragment.glsl"
+        path: "src/gpu/vulkan/gpu/shaders/fragment.glsl"
     }
 }
 
@@ -122,9 +124,9 @@ impl DrawingVertexFull {
             | (textured as u32) << 2
             | (texture_blending as u32) << 3;
         Self {
-            position: v.position,
-            color: v.color,
-            tex_coord: v.tex_coord,
+            position: v.position(),
+            color: v.color(),
+            tex_coord: v.tex_coord(),
             tex_info: [
                 texture_params.clut_base[0],
                 texture_params.clut_base[1],
