@@ -1,7 +1,6 @@
 //! A rendering backend that does nothing. No attempts at rendering anything here. It just stubs
 //! out what parts of vulkano are needed to compile the rest of the code.
 
-use crate::gpu::BackendCommand;
 pub struct Device;
 pub struct Queue;
 
@@ -78,10 +77,4 @@ pub enum CommandBufferUsage {
     OneTimeSubmit,
 }
 
-use crate::gpu::GpuStat;
-
-use crossbeam::{
-    atomic::AtomicCell,
-    channel::{Receiver, Sender},
-};
 use std::sync::Arc;

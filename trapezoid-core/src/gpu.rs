@@ -22,7 +22,10 @@ use crossbeam::{
     channel::{Receiver, Sender},
 };
 
-use std::{ops::Range, sync::Arc, thread::JoinHandle};
+#[cfg(feature = "vulkan")]
+use std::thread::JoinHandle;
+
+use std::{ops::Range, sync::Arc};
 
 use common::{DrawingTextureParams, DrawingVertex};
 
