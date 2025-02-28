@@ -1,4 +1,3 @@
-
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(C)]
 pub struct DrawingVertex {
@@ -100,7 +99,6 @@ impl DrawingTextureParams {
         self.clut_base = [x * 16, y];
     }
 }
-
 
 #[inline]
 pub fn vertex_position_from_u32(position: u32) -> [f32; 2] {

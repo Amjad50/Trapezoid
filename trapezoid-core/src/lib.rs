@@ -22,7 +22,7 @@ use memory::{Bios, BusLine, CpuBus, Result};
 
 pub use controller_mem_card::DigitalControllerKey;
 
-use crate::gpu::{Device, Queue, Image, GpuFuture};
+use crate::gpu::{Device, GpuFuture, Image, Queue};
 
 const MAX_CPU_CYCLES_TO_CLOCK: u32 = 2000;
 

@@ -1,22 +1,22 @@
 mod command;
 mod common;
 
-#[cfg(feature="vulkan")]
+#[cfg(feature = "vulkan")]
 pub mod vulkan;
 
-#[cfg(feature="vulkan")]
+#[cfg(feature = "vulkan")]
 pub use vulkan as backend;
 
-#[cfg(not(feature="vulkan"))]
+#[cfg(not(feature = "vulkan"))]
 pub mod dummy_render;
 
-#[cfg(not(feature="vulkan"))]
+#[cfg(not(feature = "vulkan"))]
 pub use dummy_render as backend;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
-use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 use backend::GpuBackend;
 use backend::StandardCommandBufferAllocator;
+use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 
 use crossbeam::{
     atomic::AtomicCell,
@@ -27,7 +27,10 @@ use std::{ops::Range, sync::Arc, thread::JoinHandle};
 
 use common::{DrawingTextureParams, DrawingVertex};
 
-pub use backend::{Device, Queue, Image, GpuFuture, AutoCommandBufferBuilder, PrimaryAutoCommandBuffer, BlitImageInfo, Filter, CommandBufferUsage};
+pub use backend::{
+    AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Device, Filter, GpuFuture, Image,
+    PrimaryAutoCommandBuffer, Queue,
+};
 
 bitflags::bitflags! {
     #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -404,7 +407,7 @@ impl Gpu {
         self.in_vblank
     }
 
-    #[cfg(not(feature="vulkan"))]
+    #[cfg(not(feature = "vulkan"))]
     pub fn sync_gpu_and_blit_to_front(
         &mut self,
         _dest_image: Arc<Image>,
@@ -414,7 +417,7 @@ impl Gpu {
         in_future
     }
 
-    #[cfg(feature="vulkan")]
+    #[cfg(feature = "vulkan")]
     pub fn sync_gpu_and_blit_to_front(
         &mut self,
         dest_image: Arc<Image>,

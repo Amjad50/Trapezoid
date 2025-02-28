@@ -1,5 +1,5 @@
-use crate::gpu::GpuStat;
 use crate::gpu::BackendCommand;
+use crate::gpu::GpuStat;
 
 use super::gpu_context::GpuContext;
 use crossbeam::{

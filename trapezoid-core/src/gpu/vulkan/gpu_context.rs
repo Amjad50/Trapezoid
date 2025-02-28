@@ -43,9 +43,9 @@ pub use vulkano::{
 };
 
 use super::front_blit::FrontBlit;
-use crate::gpu::GpuStateSnapshot;
-use crate::gpu::DrawingVertex;
 use crate::gpu::DrawingTextureParams;
+use crate::gpu::DrawingVertex;
+use crate::gpu::GpuStateSnapshot;
 
 use std::ops::Range;
 use std::sync::Arc;
