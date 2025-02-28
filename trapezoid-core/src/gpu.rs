@@ -32,9 +32,7 @@ use common::{DrawingTextureParams, DrawingVertex};
 pub use backend::{Device, GpuFuture, Image, Queue};
 
 #[cfg(feature = "vulkan")]
-pub use backend::{
-    AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter,
-};
+pub use backend::{AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter};
 
 bitflags::bitflags! {
     #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -450,13 +448,14 @@ impl Gpu {
             .unwrap();
 
         if let Some(img) = self.current_front_image.as_ref() {
-            let mut builder: AutoCommandBufferBuilder<crate::gpu::vulkan::PrimaryAutoCommandBuffer> =
-                AutoCommandBufferBuilder::primary(
-                    &self.command_buffer_allocator,
-                    self.queue.queue_family_index(),
-                    CommandBufferUsage::OneTimeSubmit,
-                )
-                .unwrap();
+            let mut builder: AutoCommandBufferBuilder<
+                crate::gpu::vulkan::PrimaryAutoCommandBuffer,
+            > = AutoCommandBufferBuilder::primary(
+                &self.command_buffer_allocator,
+                self.queue.queue_family_index(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
 
             builder
                 .blit_image(BlitImageInfo {
