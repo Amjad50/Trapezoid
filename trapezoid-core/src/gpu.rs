@@ -27,9 +27,11 @@ use std::{ops::Range, sync::Arc, thread::JoinHandle};
 
 use common::{DrawingTextureParams, DrawingVertex};
 
+pub use backend::{Device, GpuFuture, Image, Queue};
+
+#[cfg(feature = "vulkan")]
 pub use backend::{
-    AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Device, Filter, GpuFuture, Image,
-    PrimaryAutoCommandBuffer, Queue,
+    AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter, GpuFuture, Image, Queue,
 };
 
 bitflags::bitflags! {
