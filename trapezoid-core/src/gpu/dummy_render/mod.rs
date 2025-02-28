@@ -96,8 +96,3 @@ pub struct GpuBackend {
     gpu_read_sender: Sender<u32>,
     gpu_backend_receiver: Receiver<BackendCommand>,
 }
-
-impl GpuBackend {
-    #[allow(unused_mut)]
-    fn run(mut self) {}
-}
