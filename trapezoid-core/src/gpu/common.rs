@@ -7,6 +7,7 @@ pub struct DrawingVertex {
 }
 
 impl DrawingVertex {
+    #[allow(dead_code)]
     #[inline]
     pub fn color(&self) -> [f32; 3] {
         self.color

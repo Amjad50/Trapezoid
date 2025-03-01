@@ -8,7 +8,7 @@ use crate::coprocessor::{Gte, SystemControlCoprocessor};
 use crate::memory::BusLine;
 
 pub use instruction::{Instruction, Opcode};
-pub use register::{RegisterType, Registers, CPU_REGISTERS};
+pub use register::{RegisterType, Registers};
 
 #[cfg(feature = "debugger")]
 pub use self::debugger::Debugger;

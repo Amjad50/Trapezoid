@@ -1,4 +1,3 @@
-use crossbeam::channel::Sender;
 pub use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     command_buffer::{
@@ -47,8 +46,8 @@ use crate::gpu::DrawingTextureParams;
 use crate::gpu::DrawingVertex;
 use crate::gpu::GpuStateSnapshot;
 
-use std::ops::Range;
 use std::sync::Arc;
+use std::{ops::Range, sync::mpsc};
 
 mod vs {
     vulkano_shaders::shader! {
@@ -177,7 +176,7 @@ struct BufferedDrawsState {
 }
 
 pub struct GpuContext {
-    pub(super) gpu_front_image_sender: Sender<Arc<Image>>,
+    pub(super) gpu_front_image_sender: mpsc::Sender<Arc<Image>>,
 
     pub(super) device: Arc<Device>,
     queue: Arc<Queue>,
@@ -209,7 +208,7 @@ impl GpuContext {
     pub(super) fn new(
         device: Arc<Device>,
         queue: Arc<Queue>,
-        gpu_front_image_sender: Sender<Arc<Image>>,
+        gpu_front_image_sender: mpsc::Sender<Arc<Image>>,
     ) -> Self {
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
         let descriptor_set_allocator =
