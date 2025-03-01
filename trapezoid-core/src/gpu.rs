@@ -1,29 +1,38 @@
 mod command;
-mod front_blit;
-mod gpu_backend;
-mod gpu_context;
+mod common;
+
+#[cfg(feature = "vulkan")]
+pub mod vulkan;
+
+#[cfg(feature = "vulkan")]
+pub use vulkan as backend;
+
+#[cfg(not(feature = "vulkan"))]
+pub mod dummy_render;
+
+#[cfg(not(feature = "vulkan"))]
+pub use dummy_render as backend;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
+use backend::StandardCommandBufferAllocator;
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
-use gpu_backend::GpuBackend;
 
 use crossbeam::{
     atomic::AtomicCell,
     channel::{Receiver, Sender},
 };
-use vulkano::{
-    command_buffer::{
-        allocator::StandardCommandBufferAllocator, AutoCommandBufferBuilder, BlitImageInfo,
-        CommandBufferUsage, PrimaryAutoCommandBuffer,
-    },
-    device::{Device, Queue},
-    image::{sampler::Filter, Image},
-    sync::GpuFuture,
-};
 
-use std::{ops::Range, sync::Arc, thread::JoinHandle};
+#[cfg(feature = "vulkan")]
+use std::thread::JoinHandle;
 
-use self::gpu_context::{DrawingTextureParams, DrawingVertex};
+use std::{ops::Range, sync::Arc};
+
+use common::{DrawingTextureParams, DrawingVertex};
+
+pub use backend::{Device, GpuFuture, Image, Queue};
+
+#[cfg(feature = "vulkan")]
+pub use backend::{AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter};
 
 bitflags::bitflags! {
     #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,6 +223,7 @@ pub struct Gpu {
     device: Arc<Device>,
 
     // handle the backend gpu thread
+    #[cfg(feature = "vulkan")]
     _gpu_backend_thread_handle: JoinHandle<()>,
 
     /// holds commands that needs extra parameter and complex, like sending
@@ -274,7 +284,8 @@ impl Gpu {
             display_vertical_range: (0, 0),
         };
 
-        let _gpu_backend_thread_handle = GpuBackend::start(
+        #[cfg(feature = "vulkan")]
+        let _gpu_backend_thread_handle = backend::GpuBackend::start(
             device.clone(),
             queue.clone(),
             gpu_stat.clone(),
@@ -287,6 +298,7 @@ impl Gpu {
             queue,
             device: device.clone(),
 
+            #[cfg(feature = "vulkan")]
             _gpu_backend_thread_handle,
 
             current_command: None,
@@ -400,6 +412,17 @@ impl Gpu {
         self.in_vblank
     }
 
+    #[cfg(not(feature = "vulkan"))]
+    pub fn sync_gpu_and_blit_to_front(
+        &mut self,
+        _dest_image: Arc<Image>,
+        _full_vram: bool,
+        in_future: Box<dyn GpuFuture>,
+    ) -> Box<dyn GpuFuture> {
+        in_future
+    }
+
+    #[cfg(feature = "vulkan")]
     pub fn sync_gpu_and_blit_to_front(
         &mut self,
         dest_image: Arc<Image>,
@@ -425,13 +448,14 @@ impl Gpu {
             .unwrap();
 
         if let Some(img) = self.current_front_image.as_ref() {
-            let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
-                AutoCommandBufferBuilder::primary(
-                    &self.command_buffer_allocator,
-                    self.queue.queue_family_index(),
-                    CommandBufferUsage::OneTimeSubmit,
-                )
-                .unwrap();
+            let mut builder: AutoCommandBufferBuilder<
+                crate::gpu::vulkan::PrimaryAutoCommandBuffer,
+            > = AutoCommandBufferBuilder::primary(
+                &self.command_buffer_allocator,
+                self.queue.queue_family_index(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
 
             builder
                 .blit_image(BlitImageInfo {

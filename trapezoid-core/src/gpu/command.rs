@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crossbeam::atomic::AtomicCell;
 
-use super::gpu_context::{vertex_position_from_u32, DrawingTextureParams, DrawingVertex};
 use super::{BackendCommand, GpuStat, GpuStateSnapshot};
+use crate::gpu::common::{vertex_position_from_u32, DrawingTextureParams, DrawingVertex};
 
 #[derive(Debug)]
 pub enum Gp0CmdType {

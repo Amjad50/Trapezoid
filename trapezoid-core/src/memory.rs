@@ -10,8 +10,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::gpu::{Device, Queue};
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
-use vulkano::device::{Device, Queue};
 
 use crate::cdrom::Cdrom;
 use crate::controller_mem_card::ControllerAndMemoryCard;
