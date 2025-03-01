@@ -1,11 +1,4 @@
-use crate::gpu::BackendCommand;
-use crate::gpu::GpuStat;
-
-use super::gpu_context::GpuContext;
-use crossbeam::{
-    atomic::AtomicCell,
-    channel::{Receiver, Sender},
-};
+use crossbeam::channel::{Receiver, Sender};
 use std::{
     sync::Arc,
     thread::{self, JoinHandle},
@@ -15,9 +8,12 @@ use vulkano::{
     image::Image,
 };
 
+use super::gpu_context::GpuContext;
+use crate::gpu::{AtomicGpuStat, BackendCommand, GpuStat};
+
 pub struct GpuBackend {
     gpu_context: GpuContext,
-    gpu_stat: Arc<AtomicCell<GpuStat>>,
+    gpu_stat: Arc<AtomicGpuStat>,
 
     gpu_read_sender: Sender<u32>,
     gpu_backend_receiver: Receiver<BackendCommand>,
@@ -27,7 +23,7 @@ impl GpuBackend {
     pub(crate) fn start(
         device: Arc<Device>,
         queue: Arc<Queue>,
-        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        gpu_stat: Arc<AtomicGpuStat>,
         gpu_read_sender: Sender<u32>,
         gpu_backend_receiver: Receiver<BackendCommand>,
         gpu_front_image_sender: Sender<Arc<Image>>,

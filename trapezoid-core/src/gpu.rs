@@ -17,15 +17,19 @@ use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
 use backend::StandardCommandBufferAllocator;
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 
-use crossbeam::{
-    atomic::AtomicCell,
-    channel::{Receiver, Sender},
-};
+use crossbeam::channel::{Receiver, Sender};
 
+use core::fmt;
 #[cfg(feature = "vulkan")]
 use std::thread::JoinHandle;
 
-use std::{ops::Range, sync::Arc};
+use std::{
+    ops::Range,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
+};
 
 use common::{DrawingTextureParams, DrawingVertex};
 
@@ -153,6 +157,44 @@ impl GpuStat {
     }
 }
 
+struct AtomicGpuStat {
+    stat: AtomicU32,
+}
+
+impl AtomicGpuStat {
+    fn new(stat: GpuStat) -> Self {
+        Self {
+            stat: AtomicU32::new(stat.bits()),
+        }
+    }
+
+    fn load(&self) -> GpuStat {
+        GpuStat::from_bits(self.stat.load(Ordering::Relaxed)).unwrap()
+    }
+
+    fn store(&self, stat: GpuStat) {
+        self.stat.store(stat.bits(), Ordering::Relaxed);
+    }
+
+    fn fetch_update<F>(&self, mut f: F) -> Result<GpuStat, GpuStat>
+    where
+        F: FnMut(GpuStat) -> Option<GpuStat>,
+    {
+        self.stat
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                Some(f(GpuStat::from_bits(old).unwrap())?.bits())
+            })
+            .map(|old| GpuStat::from_bits(old).unwrap())
+            .map_err(|e| GpuStat::from_bits(e).unwrap())
+    }
+}
+
+impl fmt::Debug for AtomicGpuStat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.load())
+    }
+}
+
 /// The state of the gpu at the execution of the command in the rendering thread
 /// Because the state can chanage after setting the command but before execution,
 /// we need to send the current state and keep it unmodified until the command is executed.
@@ -242,7 +284,7 @@ pub struct Gpu {
     command_buffer_allocator: StandardCommandBufferAllocator,
 
     // shared GPUSTAT
-    gpu_stat: Arc<AtomicCell<GpuStat>>,
+    gpu_stat: Arc<AtomicGpuStat>,
     state_snapshot: GpuStateSnapshot,
 
     scanline: u32,
@@ -259,7 +301,7 @@ impl Gpu {
         let (gpu_backend_sender, gpu_backend_receiver) = crossbeam::channel::unbounded();
         let (gpu_front_image_sender, gpu_front_image_receiver) = crossbeam::channel::unbounded();
 
-        let gpu_stat = Arc::new(AtomicCell::new(
+        let gpu_stat = Arc::new(AtomicGpuStat::new(
             GpuStat::READY_FOR_CMD_RECV | GpuStat::READY_FOR_DMA_RECV,
         ));
 
