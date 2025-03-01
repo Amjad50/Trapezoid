@@ -24,8 +24,8 @@ clap = { version = "4.2", features = ["derive"] }
 vulkano = "0.34"
 winit = { version = "0.29", features = ["rwh_05"]}
 
-rustyline = { version = "14.0", default-features = false, optional = true }
-dynwave = "0.1.0"
+rustyline = { version = "15.0", default-features = false, optional = true }
+dynwave = "0.2"
 
 phf = { version = "0.11", default-features = false, features = ["macros"], optional = true }
 
