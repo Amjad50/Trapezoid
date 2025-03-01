@@ -1,6 +1,5 @@
-use crossbeam::channel::{Receiver, Sender};
 use std::{
-    sync::Arc,
+    sync::{mpsc, Arc},
     thread::{self, JoinHandle},
 };
 use vulkano::{
@@ -15,8 +14,8 @@ pub struct GpuBackend {
     gpu_context: GpuContext,
     gpu_stat: Arc<AtomicGpuStat>,
 
-    gpu_read_sender: Sender<u32>,
-    gpu_backend_receiver: Receiver<BackendCommand>,
+    gpu_read_sender: mpsc::Sender<u32>,
+    gpu_backend_receiver: mpsc::Receiver<BackendCommand>,
 }
 
 impl GpuBackend {
@@ -24,9 +23,9 @@ impl GpuBackend {
         device: Arc<Device>,
         queue: Arc<Queue>,
         gpu_stat: Arc<AtomicGpuStat>,
-        gpu_read_sender: Sender<u32>,
-        gpu_backend_receiver: Receiver<BackendCommand>,
-        gpu_front_image_sender: Sender<Arc<Image>>,
+        gpu_read_sender: mpsc::Sender<u32>,
+        gpu_backend_receiver: mpsc::Receiver<BackendCommand>,
+        gpu_front_image_sender: mpsc::Sender<Arc<Image>>,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
             let b = GpuBackend {

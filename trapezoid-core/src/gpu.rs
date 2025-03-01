@@ -1,9 +1,11 @@
 mod command;
 mod common;
 
+mod utils;
 #[cfg(feature = "vulkan")]
 pub mod vulkan;
 
+use utils::PeekableReceiver;
 #[cfg(feature = "vulkan")]
 pub use vulkan as backend;
 
@@ -17,8 +19,6 @@ use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
 use backend::StandardCommandBufferAllocator;
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 
-use crossbeam::channel::{Receiver, Sender};
-
 use core::fmt;
 #[cfg(feature = "vulkan")]
 use std::thread::JoinHandle;
@@ -27,7 +27,7 @@ use std::{
     ops::Range,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc,
+        mpsc, Arc,
     },
 };
 
@@ -272,12 +272,12 @@ pub struct Gpu {
     /// to/from VRAM, and rendering
     current_command: Option<Box<dyn Gp0Command>>,
     // GPUREAD channel
-    gpu_read_sender: Sender<u32>,
-    gpu_read_receiver: Receiver<u32>,
+    gpu_read_sender: mpsc::Sender<u32>,
+    gpu_read_receiver: PeekableReceiver<u32>,
     // backend commands channel
-    gpu_backend_sender: Sender<BackendCommand>,
+    gpu_backend_sender: mpsc::Sender<BackendCommand>,
     // channel for front image coming from backend
-    gpu_front_image_receiver: Receiver<Arc<Image>>,
+    gpu_front_image_receiver: mpsc::Receiver<Arc<Image>>,
 
     first_frame: bool,
     current_front_image: Option<Arc<Image>>,
@@ -297,9 +297,9 @@ pub struct Gpu {
 
 impl Gpu {
     pub fn new(device: Arc<Device>, queue: Arc<Queue>) -> Self {
-        let (gpu_read_sender, gpu_read_receiver) = crossbeam::channel::unbounded();
-        let (gpu_backend_sender, gpu_backend_receiver) = crossbeam::channel::unbounded();
-        let (gpu_front_image_sender, gpu_front_image_receiver) = crossbeam::channel::unbounded();
+        let (gpu_read_sender, gpu_read_receiver) = mpsc::channel();
+        let (gpu_backend_sender, gpu_backend_receiver) = mpsc::channel();
+        let (gpu_front_image_sender, gpu_front_image_receiver) = mpsc::channel();
 
         let gpu_stat = Arc::new(AtomicGpuStat::new(
             GpuStat::READY_FOR_CMD_RECV | GpuStat::READY_FOR_DMA_RECV,
@@ -345,7 +345,7 @@ impl Gpu {
 
             current_command: None,
             gpu_read_sender,
-            gpu_read_receiver,
+            gpu_read_receiver: PeekableReceiver::new(gpu_read_receiver),
             gpu_backend_sender,
             gpu_front_image_receiver,
 
