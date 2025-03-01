@@ -16,7 +16,6 @@ pub mod dummy_render;
 pub use dummy_render as backend;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
-use backend::StandardCommandBufferAllocator;
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 
 use core::fmt;
@@ -33,7 +32,7 @@ use std::{
 
 use common::{DrawingTextureParams, DrawingVertex};
 
-pub use backend::{Device, GpuFuture, Image, Queue};
+pub use backend::{Device, GpuFuture, Image, Queue, StandardCommandBufferAllocator};
 
 #[cfg(feature = "vulkan")]
 pub use backend::{AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter};
@@ -69,6 +68,7 @@ bitflags::bitflags! {
     }
 }
 
+#[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
 impl GpuStat {
     fn _texture_page_coords(&self) -> (u32, u32) {
         let x = (self.bits() & Self::TEXTURE_PAGE_X_BASE.bits()) * 64;
@@ -157,7 +157,7 @@ impl GpuStat {
     }
 }
 
-struct AtomicGpuStat {
+pub(crate) struct AtomicGpuStat {
     stat: AtomicU32,
 }
 
@@ -199,7 +199,7 @@ impl fmt::Debug for AtomicGpuStat {
 /// Because the state can chanage after setting the command but before execution,
 /// we need to send the current state and keep it unmodified until the command is executed.
 #[derive(Clone, Default)]
-struct GpuStateSnapshot {
+pub(crate) struct GpuStateSnapshot {
     gpu_stat: GpuStat,
 
     allow_texture_disable: bool,
@@ -223,7 +223,8 @@ struct GpuStateSnapshot {
     cached_gp0_e5: u32,
 }
 
-enum BackendCommand {
+#[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
+pub(crate) enum BackendCommand {
     BlitFront {
         full_vram: bool,
         state_snapshot: GpuStateSnapshot,
@@ -259,6 +260,7 @@ enum BackendCommand {
     },
 }
 
+#[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
 pub struct Gpu {
     // used for blitting to frontend
     queue: Arc<Queue>,
@@ -298,7 +300,9 @@ pub struct Gpu {
 impl Gpu {
     pub fn new(device: Arc<Device>, queue: Arc<Queue>) -> Self {
         let (gpu_read_sender, gpu_read_receiver) = mpsc::channel();
+        #[allow(unused_variables)]
         let (gpu_backend_sender, gpu_backend_receiver) = mpsc::channel();
+        #[allow(unused_variables)]
         let (gpu_front_image_sender, gpu_front_image_receiver) = mpsc::channel();
 
         let gpu_stat = Arc::new(AtomicGpuStat::new(
