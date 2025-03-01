@@ -3,17 +3,17 @@ mod common;
 
 mod utils;
 #[cfg(feature = "vulkan")]
-pub mod vulkan;
+mod vulkan;
 
 use utils::PeekableReceiver;
 #[cfg(feature = "vulkan")]
-pub use vulkan as backend;
+use vulkan as backend;
 
 #[cfg(not(feature = "vulkan"))]
-pub mod dummy_render;
+mod dummy_render;
 
 #[cfg(not(feature = "vulkan"))]
-pub use dummy_render as backend;
+use dummy_render as backend;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
@@ -32,10 +32,11 @@ use std::{
 
 use common::{DrawingTextureParams, DrawingVertex};
 
-pub use backend::{Device, GpuFuture, Image, Queue, StandardCommandBufferAllocator};
+use backend::StandardCommandBufferAllocator;
+pub use backend::{Device, GpuFuture, Image, Queue};
 
 #[cfg(feature = "vulkan")]
-pub use backend::{AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter};
+use backend::{AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter};
 
 bitflags::bitflags! {
     #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,7 +262,7 @@ pub(crate) enum BackendCommand {
 }
 
 #[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
-pub struct Gpu {
+pub(crate) struct Gpu {
     // used for blitting to frontend
     queue: Arc<Queue>,
     device: Arc<Device>,
