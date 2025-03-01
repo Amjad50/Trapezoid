@@ -1,6 +1,5 @@
 mod dma;
 mod expansion_regions;
-pub(crate) mod hw_registers;
 pub(crate) mod interrupts;
 mod memory_control;
 mod ram;

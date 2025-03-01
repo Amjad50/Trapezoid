@@ -17,7 +17,6 @@ use std::{
 };
 
 use cpu::RegisterType;
-pub use memory::hw_registers::HW_REGISTERS;
 use memory::{Bios, BusLine, CpuBus, Result};
 
 pub use controller_mem_card::DigitalControllerKey;
