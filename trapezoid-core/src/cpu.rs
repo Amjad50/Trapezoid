@@ -1,6 +1,6 @@
 #[cfg(feature = "debugger")]
 mod debugger;
-mod instruction;
+pub mod instruction;
 mod instructions_table;
 mod register;
 
