@@ -13,11 +13,11 @@ use trapezoid_core::{DigitalControllerKey, Psx, PsxConfig};
 use clap::Parser;
 use vulkano::{
     device::{
-        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, Queue,
-        QueueCreateInfo, QueueFlags,
+        physical::{PhysicalDevice, PhysicalDeviceType},
+        Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
     },
     image::{Image, ImageUsage},
-    instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, InstanceExtensions},
+    instance::{Instance, InstanceCreateInfo, InstanceExtensions},
     swapchain::{
         self, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreateInfo,
         SwapchainPresentInfo,
@@ -26,10 +26,11 @@ use vulkano::{
     Validated, VulkanError, VulkanLibrary,
 };
 use winit::{
-    event::{ElementState, Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    application::ApplicationHandler,
+    event::{ElementState, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowBuilder, WindowId},
+    window::{Window, WindowId},
 };
 
 #[cfg(feature = "debugger")]
@@ -134,53 +135,87 @@ impl Fps {
     }
 }
 
+struct RenderContext {
+    window: Arc<Window>,
+    swapchain: Arc<Swapchain>,
+    images: Vec<Arc<Image>>,
+    recreate_swapchain: bool,
+}
+
 enum DisplayType {
     Windowed {
-        event_loop: Option<EventLoop<()>>,
-        window: Arc<Window>,
-        surface: Arc<Surface>,
-        swapchain: Arc<Swapchain>,
-        images: Vec<Arc<Image>>,
         future: Option<Box<dyn GpuFuture>>,
         full_vram_display: bool,
+        render_context: Option<RenderContext>,
+        event_loop: Option<EventLoop<()>>, // will be taken during `run`
     },
     Headless,
+}
+impl DisplayType {
+    fn is_supported(&self, p: &PhysicalDevice, i: u32) -> bool {
+        match self {
+            DisplayType::Windowed {
+                event_loop: Some(event_loop),
+                ..
+            } => p.presentation_support(i, &event_loop).unwrap_or(false),
+            DisplayType::Windowed {
+                event_loop: None, ..
+            } => panic!("Event loop is not set"),
+            DisplayType::Headless => true, // anything is supported
+        }
+    }
 }
 
 // Locked FPS for audio (more important than video)
 // 60 FPS result in popping sound because of emulation speed of the SPU
 const FPS: f64 = 59.5;
 
-struct VkDisplay {
+struct WinitApp {
+    instance: Arc<Instance>,
     device: Arc<Device>,
     queue: Arc<Queue>,
     display_type: DisplayType,
     fps: Fps,
     render_time_average: MovingAverage,
+
+    psx: Psx,
+    shell_state_open: bool,
+    debugger: Debugger,
+    audio_player: Option<AudioPlayer<f32>>,
 }
 
-impl VkDisplay {
-    fn windowed(full_vram_display: bool) -> Self {
-        let event_loop = EventLoop::new().unwrap();
+impl WinitApp {
+    pub fn new(args: &PsxEmuArgs) -> Self {
+        let (display_type, instance_create_info) = if args.headless {
+            (
+                DisplayType::Headless,
+                InstanceCreateInfo {
+                    enabled_extensions: InstanceExtensions::empty(),
+                    ..Default::default()
+                },
+            )
+        } else {
+            let event_loop = EventLoop::new().unwrap();
+            let required_extensions = Surface::required_extensions(&event_loop).unwrap();
+            (
+                DisplayType::Windowed {
+                    render_context: None,
+                    future: None,
+                    full_vram_display: args.vram,
+                    event_loop: Some(event_loop),
+                },
+                InstanceCreateInfo {
+                    enabled_extensions: required_extensions,
+                    ..Default::default()
+                },
+            )
+        };
 
         let vulkan_library = VulkanLibrary::new().unwrap();
-        let required_extensions = Surface::required_extensions(&event_loop);
-
-        let instance = Instance::new(
-            vulkan_library,
-            InstanceCreateInfo {
-                flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
-                enabled_extensions: required_extensions,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let window = Arc::new(WindowBuilder::new().build(&event_loop).unwrap());
-        let surface = Surface::from_window(instance.clone(), window.clone()).unwrap();
+        let instance = Instance::new(vulkan_library, instance_create_info).unwrap();
 
         let device_extensions = DeviceExtensions {
-            khr_swapchain: true,
+            khr_swapchain: !args.headless, // only enable swapchain if we have a window
             ..DeviceExtensions::empty()
         };
 
@@ -195,7 +230,7 @@ impl VkDisplay {
                     .position(|(i, q)| {
                         q.queue_flags
                             .contains(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
-                            && p.surface_support(i as u32, &surface).unwrap_or(false)
+                            && display_type.is_supported(&p, i as u32)
                     })
                     .map(|i| (p, i as u32))
             })
@@ -227,177 +262,95 @@ impl VkDisplay {
             },
         )
         .unwrap();
-
         let queue = queues.next().unwrap();
 
-        let (swapchain, images) = {
-            let caps = device
-                .physical_device()
-                .surface_capabilities(&surface, Default::default())
-                .unwrap();
+        let psx = Psx::new(
+            &args.bios,
+            args.disk_file.clone(),
+            PsxConfig {
+                stdout_debug: args.debug,
+                fast_boot: args.fast_boot,
+            },
+            device.clone(),
+            queue.clone(),
+        )
+        .unwrap();
+        let audio_player = if args.audio {
+            let audio_player = AudioPlayer::<f32>::new(44100, BufferSize::QuarterSecond);
 
-            let format = device
-                .physical_device()
-                .surface_formats(&surface, Default::default())
-                .unwrap()[0]
-                .0;
-            let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
-
-            let present_mode = device
-                .physical_device()
-                .surface_present_modes(&surface, Default::default())
-                .unwrap()
-                .min_by_key(|&m| match m {
-                    PresentMode::Mailbox => 0,
-                    PresentMode::Immediate => 1,
-                    PresentMode::Fifo => 2,
-                    PresentMode::FifoRelaxed => 3,
-                    _ => 4,
-                })
-                .unwrap();
-
-            let dimensions: [u32; 2] = window.inner_size().into();
-            Swapchain::new(
-                device.clone(),
-                surface.clone(),
-                SwapchainCreateInfo {
-                    min_image_count: caps.min_image_count,
-                    image_format: format,
-                    image_extent: dimensions,
-                    image_usage: ImageUsage::TRANSFER_DST,
-                    composite_alpha: CompositeAlpha::Opaque,
-                    present_mode,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
+            match audio_player {
+                Ok(p) => {
+                    p.play().expect("Audio device to play");
+                    Some(p)
+                }
+                Err(e) => {
+                    log::error!("Failed to initialize audio player: {:?}", e);
+                    None
+                }
+            }
+        } else {
+            None
         };
 
         Self {
+            instance,
             device: device.clone(),
-            queue,
+            queue: queue.clone(),
+            display_type,
             fps: Fps::new(FPS),
             render_time_average: MovingAverage::new(),
-            display_type: DisplayType::Windowed {
-                event_loop: Some(event_loop),
-                window,
-                surface,
-                swapchain,
-                images,
-                full_vram_display,
-                future: Some(sync::now(device).boxed()),
-            },
+
+            psx,
+
+            shell_state_open: false,
+            debugger: Debugger::new(),
+            audio_player,
         }
     }
 
-    fn headless() -> Self {
-        let vulkan_library = VulkanLibrary::new().unwrap();
-
-        let instance = Instance::new(
-            vulkan_library,
-            InstanceCreateInfo {
-                enabled_extensions: InstanceExtensions::empty(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let (physical_device, queue_family_index) = instance
-            .enumerate_physical_devices()
-            .unwrap()
-            .filter_map(|p| {
-                p.queue_family_properties()
-                    .iter()
-                    .position(|q| {
-                        q.queue_flags
-                            .contains(QueueFlags::GRAPHICS | QueueFlags::COMPUTE)
-                    })
-                    .map(|i| (p, i as u32))
-            })
-            .min_by_key(|(p, _)| match p.properties().device_type {
-                PhysicalDeviceType::DiscreteGpu => 0,
-                PhysicalDeviceType::IntegratedGpu => 1,
-                PhysicalDeviceType::VirtualGpu => 2,
-                PhysicalDeviceType::Cpu => 3,
-                PhysicalDeviceType::Other => 4,
-                _ => 5,
-            })
-            .unwrap();
-
-        println!(
-            "Using device: {} (type: {:?})",
-            physical_device.properties().device_name,
-            physical_device.properties().device_type,
-        );
-
-        let (device, mut queues) = Device::new(
-            physical_device,
-            DeviceCreateInfo {
-                queue_create_infos: vec![QueueCreateInfo {
-                    queue_family_index,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let queue = queues.next().unwrap();
-
-        Self {
-            device,
-            queue,
-            fps: Fps::new(FPS),
-            render_time_average: MovingAverage::new(),
-            display_type: DisplayType::Headless,
-        }
-    }
-
-    fn window_resize(&mut self) {
+    fn render_frame(&mut self) {
         match &mut self.display_type {
             DisplayType::Windowed {
-                surface,
-                swapchain,
-                images,
+                render_context: None,
                 ..
             } => {
-                let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
-                let dimensions: [u32; 2] = window.inner_size().into();
-                let (new_swapchain, new_images) = swapchain
-                    .recreate(SwapchainCreateInfo {
-                        image_extent: dimensions,
-                        ..swapchain.create_info()
-                    })
-                    .expect("failed to recreate swapchain");
-
-                *swapchain = new_swapchain;
-                *images = new_images;
+                log::error!("No render context");
             }
-            DisplayType::Headless => {}
-        }
-    }
-
-    fn render_frame(&mut self, psx: &mut Psx) {
-        let mut recreate_swapchain = false;
-        match &mut self.display_type {
             DisplayType::Windowed {
-                swapchain,
-                images,
                 full_vram_display,
-                surface,
                 future,
+                render_context:
+                    Some(RenderContext {
+                        swapchain,
+                        images,
+                        recreate_swapchain,
+                        window,
+                        ..
+                    }),
                 ..
             } => {
                 let t = Instant::now();
                 let mut current_future = future.take().unwrap();
                 current_future.cleanup_finished();
 
-                let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
                 window.set_title(&format!(
                     "PSX - FPS: {:.1} - Render time: {:.1}us",
                     (self.fps.fps() * 10.).round() / 10.,
                     (self.render_time_average.average() * 10.).round() / 10.
                 ));
+
+                if *recreate_swapchain {
+                    let dimensions: [u32; 2] = window.inner_size().into();
+                    let (new_swapchain, new_images) = swapchain
+                        .recreate(SwapchainCreateInfo {
+                            image_extent: dimensions,
+                            ..swapchain.create_info()
+                        })
+                        .expect("failed to recreate swapchain");
+
+                    *swapchain = new_swapchain;
+                    *images = new_images;
+                }
 
                 let (image_num, suboptimal, acquire_future) =
                     match swapchain::acquire_next_image(swapchain.clone(), None)
@@ -405,18 +358,19 @@ impl VkDisplay {
                     {
                         Ok(r) => r,
                         Err(VulkanError::OutOfDate) => {
-                            panic!("recreate swapchain");
+                            *recreate_swapchain = true;
+                            return;
                         }
                         Err(e) => panic!("Failed to acquire next image: {:?}", e),
                     };
 
                 if suboptimal {
-                    recreate_swapchain = true;
+                    *recreate_swapchain = true;
                 }
 
                 let current_image = images[image_num as usize].clone();
 
-                let current_future = psx.blit_to_front(
+                let current_future = self.psx.blit_to_front(
                     current_image,
                     *full_vram_display,
                     current_future.join(acquire_future).boxed(),
@@ -441,11 +395,6 @@ impl VkDisplay {
             }
             DisplayType::Headless => {}
         }
-
-        if recreate_swapchain {
-            // handles swapchain recreation
-            self.window_resize();
-        }
     }
 
     fn toggle_full_vram_display(&mut self) {
@@ -460,49 +409,208 @@ impl VkDisplay {
         }
     }
 
-    fn run<F>(mut self, mut f: F)
-    where
-        F: 'static + FnMut(&mut VkDisplay, Event<()>) -> Option<ControlFlow>,
-    {
-        match self.display_type {
-            DisplayType::Windowed {
-                ref mut event_loop,
-                ref window,
-                ..
-            } => {
+    fn handle_redraw_requested(&mut self) {
+        // limit the frame rate to the target fps if the display support more than that
+        self.fps.lock();
+        self.fps.tick();
+
+        // if the debugger is enabled, we don't run the emulation
+        if !self.debugger.enabled() {
+            let cpu_state = self.psx.clock_full_video_frame();
+            self.debugger.handle_cpu_state(&mut self.psx, cpu_state);
+
+            let audio_buffer = self.psx.take_audio_buffer();
+            if let Some(audio_player) = &mut self.audio_player {
+                audio_player.queue(&audio_buffer);
+            }
+        }
+        // keep rendering even when debugger is running so that
+        // we don't hang the display
+        self.render_frame();
+    }
+
+    fn run(&mut self) {
+        match &mut self.display_type {
+            DisplayType::Windowed { event_loop, .. } => {
                 let event_loop = event_loop.take().unwrap();
-                let window = window.clone();
-                event_loop
-                    .run(|event, target| match event {
-                        Event::AboutToWait => {
-                            window.request_redraw();
-                        }
-                        _ => {
-                            let r = f(&mut self, event);
-                            if let Some(r) = r {
-                                target.set_control_flow(r);
-                            } else {
-                                target.exit();
-                            }
-                        }
-                    })
-                    .unwrap();
+                event_loop.run_app(self).unwrap();
             }
             DisplayType::Headless => loop {
-                // TODO: support keyboard input and such
-                // NOTE: MainEventCleared is used here to run the emulator
-                let r = f(
-                    &mut self,
-                    Event::WindowEvent {
-                        window_id: unsafe { WindowId::dummy() },
-                        event: WindowEvent::RedrawRequested,
-                    },
-                );
-                if r.is_none() {
-                    break;
-                }
+                self.handle_redraw_requested();
                 std::thread::sleep(Duration::from_millis(1));
             },
+        }
+    }
+}
+
+impl ApplicationHandler for WinitApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        match &mut self.display_type {
+            DisplayType::Windowed {
+                render_context,
+                future,
+                ..
+            } => {
+                let window = Arc::new(
+                    event_loop
+                        .create_window(Window::default_attributes())
+                        .unwrap(),
+                );
+
+                let surface = Surface::from_window(self.instance.clone(), window.clone()).unwrap();
+
+                let (swapchain, images) = {
+                    let caps = self
+                        .device
+                        .physical_device()
+                        .surface_capabilities(&surface, Default::default())
+                        .unwrap();
+
+                    let format = self
+                        .device
+                        .physical_device()
+                        .surface_formats(&surface, Default::default())
+                        .unwrap()[0]
+                        .0;
+                    let window = surface.object().unwrap().downcast_ref::<Window>().unwrap();
+
+                    let present_mode = self
+                        .device
+                        .physical_device()
+                        .surface_present_modes(&surface, Default::default())
+                        .unwrap()
+                        .into_iter()
+                        .min_by_key(|&m| match m {
+                            PresentMode::Mailbox => 0,
+                            PresentMode::Immediate => 1,
+                            PresentMode::Fifo => 2,
+                            PresentMode::FifoRelaxed => 3,
+                            _ => 4,
+                        })
+                        .unwrap();
+
+                    let dimensions: [u32; 2] = window.inner_size().into();
+                    Swapchain::new(
+                        self.device.clone(),
+                        surface.clone(),
+                        SwapchainCreateInfo {
+                            min_image_count: caps.min_image_count,
+                            image_format: format,
+                            image_extent: dimensions,
+                            image_usage: ImageUsage::TRANSFER_DST,
+                            composite_alpha: CompositeAlpha::Opaque,
+                            present_mode,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap()
+                };
+
+                assert!(render_context.is_none());
+                *render_context = Some(RenderContext {
+                    window,
+                    swapchain,
+                    images,
+                    recreate_swapchain: false,
+                });
+                *future = Some(sync::now(self.device.clone()).boxed());
+            }
+            DisplayType::Headless => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let DisplayType::Windowed {
+            render_context: Some(RenderContext { window, .. }),
+            ..
+        } = &mut self.display_type
+        {
+            window.request_redraw();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+            }
+            WindowEvent::Resized(_) => {
+                if let DisplayType::Windowed {
+                    render_context:
+                        Some(RenderContext {
+                            ref mut recreate_swapchain,
+                            ..
+                        }),
+                    ..
+                } = &mut self.display_type
+                {
+                    *recreate_swapchain = true;
+                }
+            }
+            WindowEvent::KeyboardInput { event: input, .. } => {
+                let pressed = input.state == ElementState::Pressed;
+
+                let digital_key = match input.physical_key {
+                    PhysicalKey::Code(KeyCode::Enter) => Some(DigitalControllerKey::Start),
+                    PhysicalKey::Code(KeyCode::Backspace) => Some(DigitalControllerKey::Select),
+
+                    PhysicalKey::Code(KeyCode::Digit1) => Some(DigitalControllerKey::L1),
+                    PhysicalKey::Code(KeyCode::Digit2) => Some(DigitalControllerKey::L2),
+                    PhysicalKey::Code(KeyCode::Digit3) => Some(DigitalControllerKey::L3),
+                    PhysicalKey::Code(KeyCode::Digit0) => Some(DigitalControllerKey::R1),
+                    PhysicalKey::Code(KeyCode::Digit9) => Some(DigitalControllerKey::R2),
+                    PhysicalKey::Code(KeyCode::Digit8) => Some(DigitalControllerKey::R3),
+
+                    PhysicalKey::Code(KeyCode::KeyW) => Some(DigitalControllerKey::Up),
+                    PhysicalKey::Code(KeyCode::KeyS) => Some(DigitalControllerKey::Down),
+                    PhysicalKey::Code(KeyCode::KeyD) => Some(DigitalControllerKey::Right),
+                    PhysicalKey::Code(KeyCode::KeyA) => Some(DigitalControllerKey::Left),
+
+                    PhysicalKey::Code(KeyCode::KeyI) => Some(DigitalControllerKey::Triangle),
+                    PhysicalKey::Code(KeyCode::KeyK) => Some(DigitalControllerKey::X),
+                    PhysicalKey::Code(KeyCode::KeyL) => Some(DigitalControllerKey::Circle),
+                    PhysicalKey::Code(KeyCode::KeyJ) => Some(DigitalControllerKey::Square),
+                    _ => None,
+                };
+                if let Some(k) = digital_key {
+                    self.psx.change_controller_key_state(k, pressed);
+                } else if pressed {
+                    match input.physical_key {
+                        #[cfg(feature = "debugger")]
+                        // Pause CPU and enable debug
+                        PhysicalKey::Code(KeyCode::Slash) => {
+                            println!("{:?}", self.psx.cpu().registers());
+                            self.debugger.set_enabled(true);
+                        }
+                        #[cfg(feature = "debugger")]
+                        // Resume CPU if paused
+                        PhysicalKey::Code(KeyCode::KeyC) => {
+                            self.debugger.set_enabled(false);
+                        }
+                        PhysicalKey::Code(KeyCode::KeyV) => self.toggle_full_vram_display(),
+                        PhysicalKey::Code(KeyCode::BracketRight) => {
+                            self.shell_state_open = !self.shell_state_open;
+                            self.psx
+                                .change_cdrom_shell_open_state(self.shell_state_open);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                self.handle_redraw_requested();
+            }
+            _ => {}
+        }
+        // this is placed outside the emulation event, so that it reacts faster
+        // to user input
+        if self.debugger.enabled() {
+            self.debugger.run(&mut self.psx);
         }
     }
 }
@@ -539,131 +647,6 @@ fn main() {
 
     let args = PsxEmuArgs::parse();
 
-    let display = if args.headless {
-        VkDisplay::headless()
-    } else {
-        VkDisplay::windowed(args.vram)
-    };
-
-    let mut psx = Psx::new(
-        &args.bios,
-        args.disk_file,
-        PsxConfig {
-            stdout_debug: args.debug,
-            fast_boot: args.fast_boot,
-        },
-        display.device.clone(),
-        display.queue.clone(),
-    )
-    .unwrap();
-
-    let mut shell_state_open = false;
-
-    let mut debugger = Debugger::new();
-
-    let mut audio_player = if args.audio {
-        let audio_player = AudioPlayer::<f32>::new(44100, BufferSize::QuarterSecond);
-
-        match audio_player {
-            Ok(p) => {
-                p.play().expect("Audio device to play");
-                Some(p)
-            }
-            Err(e) => {
-                log::error!("Failed to initialize audio player: {:?}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    display.run(move |display, event| {
-        if let Event::WindowEvent { event, .. } = event {
-            match event {
-                WindowEvent::CloseRequested => {
-                    return None;
-                }
-                WindowEvent::Resized(_) => {
-                    display.window_resize();
-                }
-                WindowEvent::KeyboardInput { event: input, .. } => {
-                    let pressed = input.state == ElementState::Pressed;
-
-                    let digital_key = match input.physical_key {
-                        PhysicalKey::Code(KeyCode::Enter) => Some(DigitalControllerKey::Start),
-                        PhysicalKey::Code(KeyCode::Backspace) => Some(DigitalControllerKey::Select),
-
-                        PhysicalKey::Code(KeyCode::Digit1) => Some(DigitalControllerKey::L1),
-                        PhysicalKey::Code(KeyCode::Digit2) => Some(DigitalControllerKey::L2),
-                        PhysicalKey::Code(KeyCode::Digit3) => Some(DigitalControllerKey::L3),
-                        PhysicalKey::Code(KeyCode::Digit0) => Some(DigitalControllerKey::R1),
-                        PhysicalKey::Code(KeyCode::Digit9) => Some(DigitalControllerKey::R2),
-                        PhysicalKey::Code(KeyCode::Digit8) => Some(DigitalControllerKey::R3),
-
-                        PhysicalKey::Code(KeyCode::KeyW) => Some(DigitalControllerKey::Up),
-                        PhysicalKey::Code(KeyCode::KeyS) => Some(DigitalControllerKey::Down),
-                        PhysicalKey::Code(KeyCode::KeyD) => Some(DigitalControllerKey::Right),
-                        PhysicalKey::Code(KeyCode::KeyA) => Some(DigitalControllerKey::Left),
-
-                        PhysicalKey::Code(KeyCode::KeyI) => Some(DigitalControllerKey::Triangle),
-                        PhysicalKey::Code(KeyCode::KeyK) => Some(DigitalControllerKey::X),
-                        PhysicalKey::Code(KeyCode::KeyL) => Some(DigitalControllerKey::Circle),
-                        PhysicalKey::Code(KeyCode::KeyJ) => Some(DigitalControllerKey::Square),
-                        _ => None,
-                    };
-                    if let Some(k) = digital_key {
-                        psx.change_controller_key_state(k, pressed);
-                    } else if pressed {
-                        match input.physical_key {
-                            #[cfg(feature = "debugger")]
-                            // Pause CPU and enable debug
-                            PhysicalKey::Code(KeyCode::Slash) => {
-                                println!("{:?}", psx.cpu().registers());
-                                debugger.set_enabled(true);
-                            }
-                            #[cfg(feature = "debugger")]
-                            // Resume CPU if paused
-                            PhysicalKey::Code(KeyCode::KeyC) => {
-                                debugger.set_enabled(false);
-                            }
-                            PhysicalKey::Code(KeyCode::KeyV) => display.toggle_full_vram_display(),
-                            PhysicalKey::Code(KeyCode::BracketRight) => {
-                                shell_state_open = !shell_state_open;
-                                psx.change_cdrom_shell_open_state(shell_state_open);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                WindowEvent::RedrawRequested => {
-                    // limit the frame rate to the target fps if the display support more than that
-                    display.fps.lock();
-                    display.fps.tick();
-
-                    // if the debugger is enabled, we don't run the emulation
-                    if !debugger.enabled() {
-                        let cpu_state = psx.clock_full_video_frame();
-                        debugger.handle_cpu_state(&mut psx, cpu_state);
-
-                        let audio_buffer = psx.take_audio_buffer();
-                        if let Some(audio_player) = &mut audio_player {
-                            audio_player.queue(&audio_buffer);
-                        }
-                    }
-                    // keep rendering even when debugger is  running so that
-                    // we don't hang the display
-                    display.render_frame(&mut psx);
-                }
-                _ => {}
-            }
-        }
-        // this is placed outside the emulation event, so that it reacts faster
-        // to user input
-        if debugger.enabled() {
-            debugger.run(&mut psx);
-        }
-
-        Some(ControlFlow::Poll)
-    });
+    let mut app = WinitApp::new(&args);
+    app.run();
 }

@@ -2,7 +2,7 @@ mod cdrom;
 mod controller_mem_card;
 mod coprocessor;
 pub mod cpu;
-mod gpu;
+pub mod gpu;
 mod mdec;
 mod memory;
 mod spu;
@@ -17,7 +17,6 @@ use std::{
 };
 
 use cpu::RegisterType;
-pub use memory::hw_registers::HW_REGISTERS;
 use memory::{Bios, BusLine, CpuBus, Result};
 
 pub use controller_mem_card::DigitalControllerKey;

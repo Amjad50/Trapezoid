@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use crossbeam::atomic::AtomicCell;
-
-use super::{BackendCommand, GpuStat, GpuStateSnapshot};
+use super::{AtomicGpuStat, BackendCommand, GpuStat, GpuStateSnapshot};
 use crate::gpu::common::{vertex_position_from_u32, DrawingTextureParams, DrawingVertex};
 
 #[derive(Debug)]
@@ -49,7 +47,7 @@ pub(super) trait Gp0Command: Send {
     fn add_param(&mut self, param: u32);
     fn exec_command(
         self: Box<Self>,
-        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        gpu_stat: Arc<AtomicGpuStat>,
         state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand>;
     fn still_need_params(&mut self) -> bool;
@@ -124,7 +122,7 @@ impl Gp0Command for PolygonCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        gpu_stat: Arc<AtomicGpuStat>,
         state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
@@ -247,7 +245,7 @@ impl Gp0Command for LineCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        gpu_stat: Arc<AtomicGpuStat>,
         state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
@@ -339,7 +337,7 @@ impl Gp0Command for RectangleCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        gpu_stat: Arc<AtomicGpuStat>,
         state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
@@ -440,7 +438,7 @@ impl Gp0Command for MiscCommand {
 
     fn exec_command(
         self: Box<Self>,
-        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _gpu_stat: Arc<AtomicGpuStat>,
         _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         let data = self.0;
@@ -531,7 +529,7 @@ impl Gp0Command for CpuToVramBlitCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _gpu_stat: Arc<AtomicGpuStat>,
         _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         // command was executed normally
@@ -630,7 +628,7 @@ impl Gp0Command for VramToVramBlitCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _gpu_stat: Arc<AtomicGpuStat>,
         _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
@@ -694,7 +692,7 @@ impl Gp0Command for VramToCpuBlitCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _gpu_stat: Arc<AtomicGpuStat>,
         _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
@@ -768,7 +766,7 @@ impl Gp0Command for FillVramCommand {
 
     fn exec_command(
         mut self: Box<Self>,
-        _gpu_stat: Arc<AtomicCell<GpuStat>>,
+        _gpu_stat: Arc<AtomicGpuStat>,
         _state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         assert!(!self.still_need_params());
@@ -806,7 +804,7 @@ impl Gp0Command for EnvironmentCommand {
 
     fn exec_command(
         self: Box<Self>,
-        gpu_stat: Arc<AtomicCell<GpuStat>>,
+        gpu_stat: Arc<AtomicGpuStat>,
         state_snapshot: &mut GpuStateSnapshot,
     ) -> Option<BackendCommand> {
         let data = self.0;
@@ -931,7 +929,7 @@ impl Gp0Command for EnvironmentCommand {
 
 #[test]
 fn cpu_to_vram_interrupt_less_than_1_row() {
-    let gpu_stat = Arc::new(AtomicCell::new(GpuStat::default()));
+    let gpu_stat = Arc::new(AtomicGpuStat::new(GpuStat::default()));
     let mut state_snapshot = GpuStateSnapshot::default();
 
     let mut cmd = Box::new(CpuToVramBlitCommand::new(0x00000000));
@@ -959,7 +957,7 @@ fn cpu_to_vram_interrupt_less_than_1_row() {
 
 #[test]
 fn cpu_to_vram_interrupt_more_than_1_row() {
-    let gpu_stat = Arc::new(AtomicCell::new(GpuStat::default()));
+    let gpu_stat = Arc::new(AtomicGpuStat::new(GpuStat::default()));
     let mut state_snapshot = GpuStateSnapshot::default();
 
     let mut cmd = Box::new(CpuToVramBlitCommand::new(0x00000000));
@@ -999,7 +997,7 @@ fn cpu_to_vram_interrupt_more_than_1_row() {
 
 #[test]
 fn cpu_to_vram_interrupt_full_rows() {
-    let gpu_stat = Arc::new(AtomicCell::new(GpuStat::default()));
+    let gpu_stat = Arc::new(AtomicGpuStat::new(GpuStat::default()));
     let mut state_snapshot = GpuStateSnapshot::default();
 
     let mut cmd = Box::new(CpuToVramBlitCommand::new(0x00000000));
@@ -1042,7 +1040,7 @@ fn cpu_to_vram_interrupt_full_rows() {
 
 #[test]
 fn cpu_to_vram_not_interrupted() {
-    let gpu_stat = Arc::new(AtomicCell::new(GpuStat::default()));
+    let gpu_stat = Arc::new(AtomicGpuStat::new(GpuStat::default()));
     let mut state_snapshot = GpuStateSnapshot::default();
 
     let mut cmd = Box::new(CpuToVramBlitCommand::new(0x00000000));

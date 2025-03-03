@@ -8,7 +8,7 @@ use vulkano::{
         PrimaryAutoCommandBuffer, RenderPassBeginInfo,
     },
     descriptor_set::{
-        allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
+        allocator::StandardDescriptorSetAllocator, DescriptorSet, WriteDescriptorSet,
     },
     device::{Device, Queue},
     format::Format,
@@ -145,15 +145,15 @@ pub(super) struct FrontBlit {
     device: Arc<Device>,
     queue: Arc<Queue>,
 
-    command_buffer_allocator: StandardCommandBufferAllocator,
-    descriptor_set_allocator: StandardDescriptorSetAllocator,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
 
     texture_image: Arc<Image>,
 
     texture_24bit_image: Arc<Image>,
     texture_24bit_in_buffer: Subbuffer<[u16]>,
     texture_24bit_out_buffer: Subbuffer<[u32]>,
-    texture_24bit_desc_set: Arc<PersistentDescriptorSet>,
+    texture_24bit_desc_set: Arc<DescriptorSet>,
 
     render_pass: Arc<RenderPass>,
     g_pipeline: Arc<GraphicsPipeline>,
@@ -182,10 +182,14 @@ impl FrontBlit {
             .entry_point("main")
             .unwrap();
 
-        let descriptor_set_allocator =
-            StandardDescriptorSetAllocator::new(device.clone(), Default::default());
-        let command_buffer_allocator =
-            StandardCommandBufferAllocator::new(device.clone(), Default::default());
+        let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
 
         let render_pass = vulkano::single_pass_renderpass!(
             device.clone(),
@@ -204,9 +208,7 @@ impl FrontBlit {
         )
         .unwrap();
 
-        let vertex_input_state = Vertex::per_vertex()
-            .definition(&vs.info().input_interface)
-            .unwrap();
+        let vertex_input_state = Vertex::per_vertex().definition(&vs).unwrap();
         let g_stages = [
             PipelineShaderStageCreateInfo::new(vs),
             PipelineShaderStageCreateInfo::new(fs),
@@ -301,8 +303,8 @@ impl FrontBlit {
         )
         .unwrap();
 
-        let texture_24bit_desc_set = PersistentDescriptorSet::new(
-            &descriptor_set_allocator,
+        let texture_24bit_desc_set = DescriptorSet::new(
+            descriptor_set_allocator.clone(),
             c_pipeline.layout().set_layouts().first().unwrap().clone(),
             [
                 WriteDescriptorSet::buffer(0, texture_24bit_in_buffer.clone()),
@@ -375,7 +377,7 @@ impl FrontBlit {
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
-                &self.command_buffer_allocator,
+                self.command_buffer_allocator.clone(),
                 self.queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
@@ -396,13 +398,18 @@ impl FrontBlit {
                     0,
                     self.texture_24bit_desc_set.clone(),
                 )
-                .unwrap()
-                .dispatch([
-                    COMPUTE_24BIT_ROW_OPERATIONS / COMPUTE_LOCAL_SIZE_XY,
-                    512 / COMPUTE_LOCAL_SIZE_XY,
-                    1,
-                ])
-                .unwrap()
+                .unwrap();
+            // Safety: Shader safety, tested
+            unsafe {
+                builder
+                    .dispatch([
+                        COMPUTE_24BIT_ROW_OPERATIONS / COMPUTE_LOCAL_SIZE_XY,
+                        512 / COMPUTE_LOCAL_SIZE_XY,
+                        1,
+                    ])
+                    .unwrap()
+            };
+            builder
                 .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
                     self.texture_24bit_out_buffer.clone(),
                     self.texture_24bit_image.clone(),
@@ -439,8 +446,8 @@ impl FrontBlit {
         )
         .unwrap();
 
-        let set = PersistentDescriptorSet::new(
-            &self.descriptor_set_allocator,
+        let set = DescriptorSet::new(
+            self.descriptor_set_allocator.clone(),
             layout.clone(),
             [WriteDescriptorSet::image_view_sampler(
                 0,
@@ -500,11 +507,10 @@ impl FrontBlit {
             .push_constants(self.g_pipeline.layout().clone(), 0, push_constants)
             .unwrap()
             .bind_vertex_buffers(0, self.vertex_buffer.clone())
-            .unwrap()
-            .draw(4, 1, 0, 0)
-            .unwrap()
-            .end_render_pass(Default::default())
             .unwrap();
+        // Safety: Shader safety, tested
+        unsafe { builder.draw(4, 1, 0, 0).unwrap() };
+        builder.end_render_pass(Default::default()).unwrap();
 
         let command_buffer = builder.build().unwrap();
 

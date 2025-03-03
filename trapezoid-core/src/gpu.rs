@@ -1,38 +1,42 @@
 mod command;
 mod common;
 
+mod utils;
 #[cfg(feature = "vulkan")]
-pub mod vulkan;
+mod vulkan;
 
+use utils::PeekableReceiver;
 #[cfg(feature = "vulkan")]
-pub use vulkan as backend;
+use vulkan as backend;
 
 #[cfg(not(feature = "vulkan"))]
-pub mod dummy_render;
+mod dummy_render;
 
 #[cfg(not(feature = "vulkan"))]
-pub use dummy_render as backend;
+use dummy_render as backend;
 
 use crate::memory::{interrupts::InterruptRequester, BusLine, Result};
-use backend::StandardCommandBufferAllocator;
 use command::{instantiate_gp0_command, Gp0CmdType, Gp0Command};
 
-use crossbeam::{
-    atomic::AtomicCell,
-    channel::{Receiver, Sender},
-};
-
+use core::fmt;
 #[cfg(feature = "vulkan")]
 use std::thread::JoinHandle;
 
-use std::{ops::Range, sync::Arc};
+use std::{
+    ops::Range,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        mpsc, Arc,
+    },
+};
 
 use common::{DrawingTextureParams, DrawingVertex};
 
+use backend::StandardCommandBufferAllocator;
 pub use backend::{Device, GpuFuture, Image, Queue};
 
 #[cfg(feature = "vulkan")]
-pub use backend::{AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter};
+use backend::{AutoCommandBufferBuilder, BlitImageInfo, CommandBufferUsage, Filter};
 
 bitflags::bitflags! {
     #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +69,7 @@ bitflags::bitflags! {
     }
 }
 
+#[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
 impl GpuStat {
     fn _texture_page_coords(&self) -> (u32, u32) {
         let x = (self.bits() & Self::TEXTURE_PAGE_X_BASE.bits()) * 64;
@@ -153,11 +158,49 @@ impl GpuStat {
     }
 }
 
+pub(crate) struct AtomicGpuStat {
+    stat: AtomicU32,
+}
+
+impl AtomicGpuStat {
+    fn new(stat: GpuStat) -> Self {
+        Self {
+            stat: AtomicU32::new(stat.bits()),
+        }
+    }
+
+    fn load(&self) -> GpuStat {
+        GpuStat::from_bits(self.stat.load(Ordering::Relaxed)).unwrap()
+    }
+
+    fn store(&self, stat: GpuStat) {
+        self.stat.store(stat.bits(), Ordering::Relaxed);
+    }
+
+    fn fetch_update<F>(&self, mut f: F) -> Result<GpuStat, GpuStat>
+    where
+        F: FnMut(GpuStat) -> Option<GpuStat>,
+    {
+        self.stat
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                Some(f(GpuStat::from_bits(old).unwrap())?.bits())
+            })
+            .map(|old| GpuStat::from_bits(old).unwrap())
+            .map_err(|e| GpuStat::from_bits(e).unwrap())
+    }
+}
+
+impl fmt::Debug for AtomicGpuStat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.load())
+    }
+}
+
 /// The state of the gpu at the execution of the command in the rendering thread
 /// Because the state can chanage after setting the command but before execution,
 /// we need to send the current state and keep it unmodified until the command is executed.
 #[derive(Clone, Default)]
-struct GpuStateSnapshot {
+pub(crate) struct GpuStateSnapshot {
     gpu_stat: GpuStat,
 
     allow_texture_disable: bool,
@@ -181,7 +224,8 @@ struct GpuStateSnapshot {
     cached_gp0_e5: u32,
 }
 
-enum BackendCommand {
+#[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
+pub(crate) enum BackendCommand {
     BlitFront {
         full_vram: bool,
         state_snapshot: GpuStateSnapshot,
@@ -217,7 +261,8 @@ enum BackendCommand {
     },
 }
 
-pub struct Gpu {
+#[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
+pub(crate) struct Gpu {
     // used for blitting to frontend
     queue: Arc<Queue>,
     device: Arc<Device>,
@@ -230,19 +275,19 @@ pub struct Gpu {
     /// to/from VRAM, and rendering
     current_command: Option<Box<dyn Gp0Command>>,
     // GPUREAD channel
-    gpu_read_sender: Sender<u32>,
-    gpu_read_receiver: Receiver<u32>,
+    gpu_read_sender: mpsc::Sender<u32>,
+    gpu_read_receiver: PeekableReceiver<u32>,
     // backend commands channel
-    gpu_backend_sender: Sender<BackendCommand>,
+    gpu_backend_sender: mpsc::Sender<BackendCommand>,
     // channel for front image coming from backend
-    gpu_front_image_receiver: Receiver<Arc<Image>>,
+    gpu_front_image_receiver: mpsc::Receiver<Arc<Image>>,
 
     first_frame: bool,
     current_front_image: Option<Arc<Image>>,
-    command_buffer_allocator: StandardCommandBufferAllocator,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 
     // shared GPUSTAT
-    gpu_stat: Arc<AtomicCell<GpuStat>>,
+    gpu_stat: Arc<AtomicGpuStat>,
     state_snapshot: GpuStateSnapshot,
 
     scanline: u32,
@@ -255,11 +300,13 @@ pub struct Gpu {
 
 impl Gpu {
     pub fn new(device: Arc<Device>, queue: Arc<Queue>) -> Self {
-        let (gpu_read_sender, gpu_read_receiver) = crossbeam::channel::unbounded();
-        let (gpu_backend_sender, gpu_backend_receiver) = crossbeam::channel::unbounded();
-        let (gpu_front_image_sender, gpu_front_image_receiver) = crossbeam::channel::unbounded();
+        let (gpu_read_sender, gpu_read_receiver) = mpsc::channel();
+        #[allow(unused_variables)]
+        let (gpu_backend_sender, gpu_backend_receiver) = mpsc::channel();
+        #[allow(unused_variables)]
+        let (gpu_front_image_sender, gpu_front_image_receiver) = mpsc::channel();
 
-        let gpu_stat = Arc::new(AtomicCell::new(
+        let gpu_stat = Arc::new(AtomicGpuStat::new(
             GpuStat::READY_FOR_CMD_RECV | GpuStat::READY_FOR_DMA_RECV,
         ));
 
@@ -303,16 +350,16 @@ impl Gpu {
 
             current_command: None,
             gpu_read_sender,
-            gpu_read_receiver,
+            gpu_read_receiver: PeekableReceiver::new(gpu_read_receiver),
             gpu_backend_sender,
             gpu_front_image_receiver,
 
             first_frame: true,
             current_front_image: None,
-            command_buffer_allocator: StandardCommandBufferAllocator::new(
+            command_buffer_allocator: Arc::new(StandardCommandBufferAllocator::new(
                 device,
                 Default::default(),
-            ),
+            )),
 
             gpu_stat,
             state_snapshot,
@@ -451,7 +498,7 @@ impl Gpu {
             let mut builder: AutoCommandBufferBuilder<
                 crate::gpu::vulkan::PrimaryAutoCommandBuffer,
             > = AutoCommandBufferBuilder::primary(
-                &self.command_buffer_allocator,
+                self.command_buffer_allocator.clone(),
                 self.queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
