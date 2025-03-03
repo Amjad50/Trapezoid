@@ -284,7 +284,7 @@ pub(crate) struct Gpu {
 
     first_frame: bool,
     current_front_image: Option<Arc<Image>>,
-    command_buffer_allocator: StandardCommandBufferAllocator,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 
     // shared GPUSTAT
     gpu_stat: Arc<AtomicGpuStat>,
@@ -356,10 +356,10 @@ impl Gpu {
 
             first_frame: true,
             current_front_image: None,
-            command_buffer_allocator: StandardCommandBufferAllocator::new(
+            command_buffer_allocator: Arc::new(StandardCommandBufferAllocator::new(
                 device,
                 Default::default(),
-            ),
+            )),
 
             gpu_stat,
             state_snapshot,
@@ -498,7 +498,7 @@ impl Gpu {
             let mut builder: AutoCommandBufferBuilder<
                 crate::gpu::vulkan::PrimaryAutoCommandBuffer,
             > = AutoCommandBufferBuilder::primary(
-                &self.command_buffer_allocator,
+                self.command_buffer_allocator.clone(),
                 self.queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )

@@ -7,7 +7,7 @@ pub use vulkano::{
         PrimaryCommandBufferAbstract, RenderPassBeginInfo,
     },
     descriptor_set::{
-        allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
+        allocator::StandardDescriptorSetAllocator, DescriptorSet, WriteDescriptorSet,
     },
     device::{Device, Queue},
     format::{ClearColorValue, Format},
@@ -182,7 +182,7 @@ pub struct GpuContext {
     queue: Arc<Queue>,
 
     memory_allocator: Arc<StandardMemoryAllocator>,
-    command_buffer_allocator: StandardCommandBufferAllocator,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 
     render_image: Arc<Image>,
     render_image_back_image: Arc<Image>,
@@ -191,7 +191,7 @@ pub struct GpuContext {
     render_image_framebuffer: Arc<Framebuffer>,
     polygon_pipelines: Vec<Arc<GraphicsPipeline>>,
     polyline_pipelines: Vec<Arc<GraphicsPipeline>>,
-    descriptor_set: Arc<PersistentDescriptorSet>,
+    descriptor_set: Arc<DescriptorSet>,
 
     buffered_draw_vertices: Vec<DrawingVertexFull>,
     current_buffered_draws_state: Option<BufferedDrawsState>,
@@ -211,10 +211,14 @@ impl GpuContext {
         gpu_front_image_sender: mpsc::Sender<Arc<Image>>,
     ) -> Self {
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-        let descriptor_set_allocator =
-            StandardDescriptorSetAllocator::new(device.clone(), Default::default());
-        let command_buffer_allocator =
-            StandardCommandBufferAllocator::new(device.clone(), Default::default());
+        let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
 
         let render_image = Image::new(
             memory_allocator.clone(),
@@ -247,7 +251,7 @@ impl GpuContext {
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
-                &command_buffer_allocator,
+                command_buffer_allocator.clone(),
                 queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
@@ -287,9 +291,7 @@ impl GpuContext {
         )
         .unwrap();
 
-        let vertex_input_state = DrawingVertexFull::per_vertex()
-            .definition(&vs.info().input_interface)
-            .unwrap();
+        let vertex_input_state = DrawingVertexFull::per_vertex().definition(&vs).unwrap();
         let stages = [
             PipelineShaderStageCreateInfo::new(vs),
             PipelineShaderStageCreateInfo::new(fs),
@@ -386,8 +388,8 @@ impl GpuContext {
         )
         .unwrap();
 
-        let descriptor_set = PersistentDescriptorSet::new(
-            &descriptor_set_allocator,
+        let descriptor_set = DescriptorSet::new(
+            descriptor_set_allocator.clone(),
             layout.clone(),
             [WriteDescriptorSet::image_view_sampler(
                 0,
@@ -416,7 +418,7 @@ impl GpuContext {
         let gpu_future = Some(image_clear_future.boxed());
 
         let command_builder = AutoCommandBufferBuilder::primary(
-            &command_buffer_allocator,
+            command_buffer_allocator.clone(),
             queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
@@ -603,7 +605,7 @@ impl GpuContext {
 
         let mut builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> =
             AutoCommandBufferBuilder::primary(
-                &self.command_buffer_allocator,
+                self.command_buffer_allocator.clone(),
                 self.queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
@@ -884,7 +886,7 @@ impl GpuContext {
 
     fn new_command_buffer_builder(&mut self) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
         AutoCommandBufferBuilder::primary(
-            &self.command_buffer_allocator,
+            self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
@@ -1014,9 +1016,14 @@ impl GpuContext {
             .push_constants(pipeline.layout().clone(), 0, push_constants)
             .unwrap()
             .bind_vertex_buffers(0, vertex_buffer)
-            .unwrap()
-            .draw(vertices_len as u32, 1, 0, 0)
-            .unwrap()
+            .unwrap();
+        // Safety: Shader safety, tested
+        unsafe {
+            self.command_builder
+                .draw(vertices_len as u32, 1, 0, 0)
+                .unwrap();
+        }
+        self.command_builder
             .end_render_pass(Default::default())
             .unwrap();
 
