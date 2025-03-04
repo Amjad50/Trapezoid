@@ -1,6 +1,6 @@
 [package]
 name = "trapezoid-core"
-version = "0.1.3"
+version = "0.2.0"
 authors = ["Amjad Alsharafi <amjadsharafi10@gmail.com>"]
 edition = "2021"
 readme = "README.md"
