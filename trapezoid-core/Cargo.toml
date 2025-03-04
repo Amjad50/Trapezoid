@@ -17,6 +17,7 @@ default = ["vulkan"]
 # Enable `vulkan` backend rendering, and also correct GPU emulation,
 # without this, GPU emulation will be not working as expected
 vulkan = ["vulkano", "vulkano-shaders"]
+# Enable support for CPU debugger API
 debugger = []
 
 [dependencies]
@@ -27,3 +28,7 @@ bitflags = "2.9"
 vulkano = { version = "0.35", optional = true }
 vulkano-shaders = { version = "0.35", optional = true }
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+rustc-args = ["--cfg", "docsrs"]

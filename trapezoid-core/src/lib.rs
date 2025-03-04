@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 mod cdrom;
 mod controller_mem_card;
 mod coprocessor;

@@ -11,6 +11,7 @@ pub use instruction::{Instruction, Opcode};
 pub use register::{RegisterType, Registers};
 
 #[cfg(feature = "debugger")]
+#[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
 pub use self::debugger::Debugger;
 
 #[cfg(not(feature = "debugger"))]
@@ -94,30 +95,36 @@ pub enum CpuState {
     Normal,
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused on an execution breakpoint, the pause happen BEFORE execution
     InstructionBreakpoint(u32),
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused on a write breakpoint, together with the value that was written
     /// the pause happen AFTER the operation
     WriteBreakpoint { addr: u32, bits: u8 },
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused on a read breakpoint
     /// the pause happen AFTER the operation
     ReadBreakpoint { addr: u32, bits: u8 },
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused after a single instruction was executed
     Step,
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused after a single instruction was executed, if the instruction is `Jal` or `Jalr`
     /// which is used for function calls, the pause will happen after the function returns,
     /// i.e. step over the function
     StepOver,
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Continue execution until the CPU exit the current function
     StepOut,
 }
@@ -173,6 +180,7 @@ impl Cpu {
     }
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     pub fn debugger(&mut self) -> &mut Debugger {
         &mut self.debugger
     }
