@@ -3,7 +3,7 @@ use std::fmt;
 use super::instructions_table::{PRIMARY_OPCODES, SECONDARY_OPCODES};
 use super::RegisterType;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Opcode {
     #[doc(hidden)]
     /// This is a special opcode used when parsing the instruction,
