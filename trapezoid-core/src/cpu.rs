@@ -138,7 +138,8 @@ pub struct Cpu {
 
     elapsed_cycles: u32,
 
-    shell_reached: bool,
+    shell_reached_before: bool,
+    shell_reached_now: bool,
     current_instr_pc: u32,
 
     debugger: Debugger,
@@ -154,7 +155,8 @@ impl Cpu {
             jump_dest_next: None,
 
             elapsed_cycles: 0,
-            shell_reached: false,
+            shell_reached_before: false,
+            shell_reached_now: false,
             current_instr_pc: 0,
 
             debugger: Debugger::new(),
@@ -167,7 +169,7 @@ impl Cpu {
         self.cop2 = Gte::default();
         self.jump_dest_next = None;
         self.elapsed_cycles = 0;
-        self.shell_reached = false;
+        self.shell_reached_before = false;
         self.current_instr_pc = 0;
     }
 
@@ -185,12 +187,13 @@ impl Cpu {
         &mut self.debugger
     }
 
-    pub(crate) fn clock<P: CpuBusProvider>(
-        &mut self,
-        bus: &mut P,
-        clocks: u32,
-    ) -> (bool, u32, CpuState) {
-        let mut shell_reached_return = false;
+    // Attempt to run `instructions` number of instructions
+    // it can return early depending on number of reasons, such as:
+    // - `debugger` reached a breakpoint
+    // - `bus` requested a DMA operation
+    // - shell location is reached
+    pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, instructions: u32) -> (u32, CpuState) {
+        self.shell_reached_now = false;
         let mut state = CpuState::Normal;
 
         // we only need to run this only once before any instruction, as this
@@ -201,11 +204,11 @@ impl Cpu {
         let pending_interrupts = bus.pending_interrupts();
         self.check_and_execute_interrupt(pending_interrupts);
 
-        for _ in 0..clocks {
+        for _ in 0..instructions {
             // notify the UI when the shell location is reached
-            if !self.shell_reached && self.regs.pc == SHELL_LOCATION {
-                self.shell_reached = true;
-                shell_reached_return = true;
+            if !self.shell_reached_before && self.regs.pc == SHELL_LOCATION {
+                self.shell_reached_before = true;
+                self.shell_reached_now = true;
                 log::info!("shell location reached");
                 break;
             }
@@ -273,11 +276,11 @@ impl Cpu {
             self.debugger.clear_state();
         }
 
-        (
-            shell_reached_return,
-            std::mem::take(&mut self.elapsed_cycles),
-            state,
-        )
+        (std::mem::take(&mut self.elapsed_cycles), state)
+    }
+
+    pub fn is_shell_reached(&self) -> bool {
+        self.shell_reached_now
     }
 }
 
