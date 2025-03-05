@@ -5,7 +5,7 @@ mod instructions_table;
 mod register;
 
 use crate::coprocessor::{Gte, SystemControlCoprocessor};
-use crate::memory::BusLine;
+pub use crate::memory::BusLine;
 
 pub use instruction::{Instruction, Opcode};
 pub use register::{RegisterType, Registers};
@@ -70,7 +70,15 @@ impl Debugger {
 
 const SHELL_LOCATION: u32 = 0x80030000;
 
-pub(crate) trait CpuBusProvider: BusLine {
+/// A specific Bus that is connected to the CPU directly, where it can send Interrupt messages
+/// to it and also request DMA access.
+///
+/// The trait only tells if the device is requesting for DMA,
+/// then the implementer should handle the DMA operation as needed.
+///
+/// It's done like that so that the CPU just need to know when it should be interrupted and allow
+/// the other components to run the DMA, here, the CPU doesn't run the DMA itself.
+pub trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
     fn should_run_dma(&self) -> bool;
 }
@@ -146,7 +154,7 @@ pub struct Cpu {
 }
 
 impl Cpu {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             // reset value
             regs: Registers::new(),
