@@ -1956,6 +1956,7 @@ version = "0.2.0"
 dependencies = [
  "bitflags 2.9.0",
  "byteorder",
+ "env_logger",
  "log",
  "vulkano",
  "vulkano-shaders",
