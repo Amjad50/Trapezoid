@@ -5,12 +5,13 @@ mod instructions_table;
 mod register;
 
 use crate::coprocessor::{Gte, SystemControlCoprocessor};
-use crate::memory::BusLine;
+pub use crate::memory::BusLine;
 
 pub use instruction::{Instruction, Opcode};
 pub use register::{RegisterType, Registers};
 
 #[cfg(feature = "debugger")]
+#[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
 pub use self::debugger::Debugger;
 
 #[cfg(not(feature = "debugger"))]
@@ -69,7 +70,15 @@ impl Debugger {
 
 const SHELL_LOCATION: u32 = 0x80030000;
 
-pub(crate) trait CpuBusProvider: BusLine {
+/// A specific Bus that is connected to the CPU directly, where it can send Interrupt messages
+/// to it and also request DMA access.
+///
+/// The trait only tells if the device is requesting for DMA,
+/// then the implementer should handle the DMA operation as needed.
+///
+/// It's done like that so that the CPU just need to know when it should be interrupted and allow
+/// the other components to run the DMA, here, the CPU doesn't run the DMA itself.
+pub trait CpuBusProvider: BusLine {
     fn pending_interrupts(&self) -> bool;
     fn should_run_dma(&self) -> bool;
 }
@@ -94,30 +103,36 @@ pub enum CpuState {
     Normal,
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused on an execution breakpoint, the pause happen BEFORE execution
     InstructionBreakpoint(u32),
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused on a write breakpoint, together with the value that was written
     /// the pause happen AFTER the operation
     WriteBreakpoint { addr: u32, bits: u8 },
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused on a read breakpoint
     /// the pause happen AFTER the operation
     ReadBreakpoint { addr: u32, bits: u8 },
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused after a single instruction was executed
     Step,
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Paused after a single instruction was executed, if the instruction is `Jal` or `Jalr`
     /// which is used for function calls, the pause will happen after the function returns,
     /// i.e. step over the function
     StepOver,
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     /// Continue execution until the CPU exit the current function
     StepOut,
 }
@@ -131,14 +146,15 @@ pub struct Cpu {
 
     elapsed_cycles: u32,
 
-    shell_reached: bool,
+    shell_reached_before: bool,
+    shell_reached_now: bool,
     current_instr_pc: u32,
 
     debugger: Debugger,
 }
 
 impl Cpu {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             // reset value
             regs: Registers::new(),
@@ -147,7 +163,8 @@ impl Cpu {
             jump_dest_next: None,
 
             elapsed_cycles: 0,
-            shell_reached: false,
+            shell_reached_before: false,
+            shell_reached_now: false,
             current_instr_pc: 0,
 
             debugger: Debugger::new(),
@@ -160,7 +177,7 @@ impl Cpu {
         self.cop2 = Gte::default();
         self.jump_dest_next = None;
         self.elapsed_cycles = 0;
-        self.shell_reached = false;
+        self.shell_reached_before = false;
         self.current_instr_pc = 0;
     }
 
@@ -173,16 +190,18 @@ impl Cpu {
     }
 
     #[cfg(feature = "debugger")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "debugger")))]
     pub fn debugger(&mut self) -> &mut Debugger {
         &mut self.debugger
     }
 
-    pub(crate) fn clock<P: CpuBusProvider>(
-        &mut self,
-        bus: &mut P,
-        clocks: u32,
-    ) -> (bool, u32, CpuState) {
-        let mut shell_reached_return = false;
+    // Attempt to run `instructions` number of instructions
+    // it can return early depending on number of reasons, such as:
+    // - `debugger` reached a breakpoint
+    // - `bus` requested a DMA operation
+    // - shell location is reached
+    pub fn clock<P: CpuBusProvider>(&mut self, bus: &mut P, instructions: u32) -> (u32, CpuState) {
+        self.shell_reached_now = false;
         let mut state = CpuState::Normal;
 
         // we only need to run this only once before any instruction, as this
@@ -193,11 +212,11 @@ impl Cpu {
         let pending_interrupts = bus.pending_interrupts();
         self.check_and_execute_interrupt(pending_interrupts);
 
-        for _ in 0..clocks {
+        for _ in 0..instructions {
             // notify the UI when the shell location is reached
-            if !self.shell_reached && self.regs.pc == SHELL_LOCATION {
-                self.shell_reached = true;
-                shell_reached_return = true;
+            if !self.shell_reached_before && self.regs.pc == SHELL_LOCATION {
+                self.shell_reached_before = true;
+                self.shell_reached_now = true;
                 log::info!("shell location reached");
                 break;
             }
@@ -265,11 +284,11 @@ impl Cpu {
             self.debugger.clear_state();
         }
 
-        (
-            shell_reached_return,
-            std::mem::take(&mut self.elapsed_cycles),
-            state,
-        )
+        (std::mem::take(&mut self.elapsed_cycles), state)
+    }
+
+    pub fn is_shell_reached(&self) -> bool {
+        self.shell_reached_now
     }
 }
 

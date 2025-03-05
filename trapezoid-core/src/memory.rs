@@ -29,6 +29,10 @@ use ram::{MainRam, Scratchpad};
 
 pub type Result<T, E = String> = std::result::Result<T, E>;
 
+/// A notion of a Busline, which is an interface to interact with memory mapped devices
+/// it can be a memory, or other stuff.
+///
+/// Here we implement the behavior for `read/write` for each size of data (u32, u16, u8).
 pub trait BusLine {
     fn read_u32(&mut self, addr: u32) -> Result<u32> {
         Err(format!(

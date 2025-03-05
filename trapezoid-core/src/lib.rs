@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 mod cdrom;
 mod controller_mem_card;
 mod coprocessor;
@@ -126,7 +128,8 @@ impl Psx {
             let cpu_cycles;
             let shell_reached;
 
-            (shell_reached, cpu_cycles, cpu_state) = self.cpu.clock(&mut self.bus, 56);
+            (cpu_cycles, cpu_state) = self.cpu.clock(&mut self.bus, 56);
+            shell_reached = self.cpu.is_shell_reached();
 
             // handle fast booting and hijacking the bios to load exe
             if shell_reached && (self.config.fast_boot || self.exe_file.is_some()) {
